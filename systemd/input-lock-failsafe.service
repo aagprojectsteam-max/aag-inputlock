@@ -1,0 +1,19 @@
+[Unit]
+Description=InputLock final ordinary suspend recovery after releasing input
+After=input-lock.service input-lock-protect.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py recover
+ExecStopPost=/usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py record-failure
+TimeoutStartSec=165s
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/input-lock
+StateDirectory=input-lock-protection
+StateDirectoryMode=0755
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX

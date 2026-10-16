@@ -28,7 +28,7 @@ from typing import Callable, Final
 
 import evdev
 import pyudev
-from input_lock_safety import (BREADCRUMB, SafetyPolicy, Sample, Sensor, Telemetry, atomic_json, stack_ready, request_service)
+from input_lock_safety import (BREADCRUMB, SafetyPolicy, Sample, Sensor, Telemetry, atomic_json, protection_errors, request_service)
 from evdev import ecodes
 from locklock_core.allowed_keys import ALLOWED_KEY_CATALOG, validate_allowed_keys
 
@@ -504,6 +504,8 @@ class InputLockDaemon:
             "daemon_started_at": self.daemon_started_at, "updated_at": time.time(),
             "requested": self._saved_lid_ignore_close, "effective": self.ignore_lid_close,
             "generation": self.lid_generation, "clean_shutdown": self.clean_shutdown,
+            "restrictions_released": (self.lid_inhibitor_fd is None and self.sleep_inhibitor_fd is None
+                                      and not any(r.grabbed for r in self.devices.values())),
             "safety": snapshot, "protective_result": self.protective_result,
             "previous_run": self.safety_previous_run,
             "events": self.safety.events[-24:],
@@ -513,14 +515,15 @@ class InputLockDaemon:
 
     def _sample_safety(self) -> None:
         telemetry = Telemetry()
-        ready, probe_at = False, 0.0
+        errors, probe_at = ["native protection probe pending"], 0.0
         telemetry_failed = False
         while not self.safety_stop.is_set():
             now = time.monotonic()
             if now - probe_at >= 30:
-                ready, probe_at = stack_ready(), now
+                errors, probe_at = protection_errors(), now
             try:
-                sample = telemetry.read(stack_ready=ready)
+                sample = telemetry.read(stack_ready=not errors)
+                sample.protection_errors = errors
                 if telemetry_failed:
                     LOG.info("event=TELEMETRY_RESTORED source=kernel")
                 telemetry_failed = False
@@ -544,6 +547,8 @@ class InputLockDaemon:
                     self.protective_result.update(receipt)
                     if receipt["result"] == "suspend-transition-confirmed" and receipt.get("transition_confirmed") is True and not self.ignore_lid_close:
                         self.safety.transition("PROTECTIVE_ACTION_EXECUTED", "PROTECTIVE_ACTION_SUCCEEDED")
+                    elif receipt["result"] == "protection-failed" and not self.ignore_lid_close:
+                        self.safety.transition("PROTECTIVE_ACTION_FAILED", "OPEN_LID_OPERATOR_RECOVERY_REQUIRED")
                     elif receipt["result"].startswith("cancelled") and not self.ignore_lid_close:
                         self.safety.release()
                     self._write_safety(force=True)
@@ -569,8 +574,8 @@ class InputLockDaemon:
         if now - self.last_safety_emit >= 5:
             self.last_safety_emit = now
             self._emit_state_event("safety-status")
-        # A wedged main event loop loses its systemd watchdog. Its OnFailure
-        # belongs to the existing AAG closed-lid recovery owner.
+        # A wedged main event loop loses its watchdog. InputLock recovery stops
+        # the daemon before one final ordinary suspend attempt.
         address = os.environ.get("NOTIFY_SOCKET")
         if address:
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
@@ -582,13 +587,15 @@ class InputLockDaemon:
     def _start_protection(self, reason: str) -> None:
         self.safety.decide(reason)
         self._emergency_unlock("safety-protection", preserve_safety=True)
+        if any(r.grabbed for r in self.devices.values()):
+            raise TransitionError("device release failed; terminating for InputLock recovery")
         self.protective_result = {"reason": reason, "attempted_at": time.time(), "generation": self.lid_generation, "result": "pending"}
         generation = self.lid_generation
         self._write_safety(force=True)
         def dispatch() -> None:
             try:
                 job = request_service()
-                result = {"result": "delegated-to-AAG", "job": job}
+                result = {"result": "delegated-to-inputlock", "job": job}
             except Exception as exc:
                 result = {"result": "request-failed", "error": str(exc)}
             self._post_control("protective-result:" + json.dumps({**result, "generation": generation}))
@@ -632,7 +639,11 @@ class InputLockDaemon:
 
     def _cleanup(self) -> None:
         try:
-            self._emergency_unlock("daemon-shutdown")
+            preserve = (not self.clean_shutdown and
+                        (self.ignore_lid_close or self.safety.state == "PROTECTIVE_ACTION_PENDING"))
+            if preserve:
+                self.safety.decide("DAEMON_FAILED")
+            self._emergency_unlock("daemon-shutdown", preserve_safety=preserve)
             self.last_action = "shutdown-unlocked"
             self._write_state()
             LOG.info("Daemon shutting down; all input devices released")
@@ -719,12 +730,12 @@ class InputLockDaemon:
                 if (self.protective_result is None or self.ignore_lid_close or
                         result.get("generation") != self.protective_result.get("generation")):
                     continue
-                if self.protective_result.get("result") in {"pending", "delegated-to-AAG"}:
+                if self.protective_result.get("result") in {"pending", "delegated-to-inputlock"}:
                     self.protective_result.update(result)
                 self.safety.event("PROTECTIVE_ACTION_FAILED" if result["result"] == "request-failed" else "PROTECTIVE_ACTION_STARTED")
                 self._write_safety(force=True)
                 if result["result"] == "request-failed" and self.safety.state == "PROTECTIVE_ACTION_PENDING":
-                    # Exit failure so systemd invokes the existing AAG fallback,
+                    # Exit failure so systemd invokes InputLock recovery,
                     # independently of the failed D-Bus request.
                     raise TransitionError("protective service dispatch failed")
             elif event.startswith("power-state:"):

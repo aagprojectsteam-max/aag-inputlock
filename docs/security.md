@@ -45,7 +45,7 @@ Logs contain state changes, fixed reasons, device node/name/class, exclusion dec
 
 ## Lid-close warning
 
-Lid suppression is temporary and supervised: bounded deadlines, thermal/battery telemetry, an authenticated controller lease and one daemon owner. No blocking sleep inhibitor or new GNOME/UPower suppression exists. A fixed root systemd adapter requests the established AAG graph; Polkit permits only that named unit and verb. The legacy helper cannot enable a critical-battery override. See [safety policy](SAFETY-REMEDIATION-20260911.md).
+Lid suppression is temporary and supervised: bounded deadlines, thermal/battery telemetry, an authenticated controller lease and one daemon owner. No blocking sleep inhibitor or new GNOME/UPower suppression exists. A fixed root systemd adapter requests ordinary OS suspend after release; InputLock-owned recovery stops the daemon before a final attempt. Terminal failure latches arming off; Polkit permits only that named unit and verb. The legacy helper cannot enable a critical-battery override. See [current independent protection](independent-lid-protection.md) and the [historical safety policy](SAFETY-REMEDIATION-20260911.md).
 
 ## Trust assumptions
 

@@ -212,7 +212,7 @@ class TrayNotifier:
         self.previous_locked = locked
         safety = state.get("safety", {})
         safety_state = safety.get("state") if isinstance(safety, dict) else None
-        if safety_state != prior_safety and safety_state in {"LID_CLOSED_WARNING", "LID_CLOSED_HIGH_RISK", "PROTECTIVE_ACTION_PENDING"}:
+        if safety_state != prior_safety and safety_state in {"LID_CLOSED_WARNING", "LID_CLOSED_HIGH_RISK", "PROTECTIVE_ACTION_PENDING", "PROTECTIVE_ACTION_FAILED"}:
             self._notify("Lid safety", "Open the lid. " + ("Protective action requested." if safety_state == "PROTECTIVE_ACTION_PENDING" else "The supervised closed-lid period is ending or safety monitoring needs attention."), locked=bool(locked))
         return False
 
@@ -222,6 +222,7 @@ class TrayNotifier:
             names = {"SAFE_NORMAL": "normal OS behavior", "RECOVERY": "recovered; re-arm required",
                      "LID_IGNORE_ARMED": "armed; lid open", "LID_CLOSED_MONITORED": "monitoring closed lid",
                      "LID_CLOSED_WARNING": "warning — open the lid", "LID_CLOSED_HIGH_RISK": "deadline near — open the lid",
+                     "PROTECTIVE_ACTION_FAILED": "protection FAILED — open the lid",
                      "PROTECTIVE_ACTION_PENDING": "protective action requested", "PROTECTIVE_ACTION_EXECUTED": "suspend transition confirmed"}
             label = names.get(safety.get("state"), "unavailable")
             deadline = safety.get("deadline")
@@ -844,7 +845,7 @@ class TrayNotifier:
             )
             dialog.format_secondary_text(
                 "Open the lid before enabling. Closed-lid use is supervised for at most four minutes, or two minutes on battery or under heavy load. "
-                "Temperature, lost monitoring, or low battery can request AAG safe suspend sooner. Normal idle sleep and critical-battery protection remain enabled. "
+                "Temperature, lost monitoring, or low battery can request ordinary OS suspend sooner. Normal idle sleep and critical-battery protection remain enabled. "
                 "Do not put it in a bag while this option is enabled, because it may overheat."
             )
             dialog.set_keep_above(True)

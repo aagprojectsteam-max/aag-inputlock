@@ -25,6 +25,7 @@ linux = [
     "test_lid_policy",
     "test_remediation_linux",
     "test_safety",
+    "test_native_protection",
     "test_aag_adapter_contract",
     "test_thermal_status",
 ]

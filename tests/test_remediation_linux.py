@@ -152,6 +152,37 @@ if __name__ == "__main__":
     unittest.main()
 
 class LinuxLifecycleRegressionTests(unittest.TestCase):
+    def test_protection_releases_grabs_and_inhibitor_before_dispatch(self):
+        daemon = daemon_fixture()
+        daemon.ignore_lid_close = True
+        daemon.lid_inhibitor_fd = 123
+        lid = device(daemon, 'lid', 'lid-switch')
+        order = []
+        lid.device.ungrab.side_effect = lambda: order.append('ungrab')
+        def request():
+            self.assertFalse(daemon.ignore_lid_close)
+            self.assertFalse(lid.grabbed)
+            self.assertIsNone(daemon.lid_inhibitor_fd)
+            order.append('request')
+        def thread(**kwargs):
+            return mock.Mock(start=kwargs['target'])
+        with (mock.patch.object(daemon_module.os, 'close', side_effect=lambda _fd: order.append('close')),
+              mock.patch.object(daemon_module, 'request_service', side_effect=request),
+              mock.patch.object(daemon_module.threading, 'Thread', side_effect=thread)):
+            daemon._post_control = mock.Mock()
+            daemon._start_protection('CLOSED_LID_DEADLINE')
+        self.assertEqual(order, ['ungrab', 'close', 'request'])
+
+    def test_failed_release_terminates_without_requesting_sleep(self):
+        daemon = daemon_fixture()
+        lid = device(daemon, 'lid', 'lid-switch')
+        lid.device.ungrab.side_effect = OSError('ungrab failed')
+        lid.device.close.side_effect = OSError('close failed')
+        with mock.patch.object(daemon_module, 'request_service') as request:
+            with self.assertRaises(daemon_module.TransitionError):
+                daemon._start_protection('CLOSED_LID_DEADLINE')
+            request.assert_not_called()
+
     def armable(self):
         from test_safety import sample
         daemon = daemon_fixture()

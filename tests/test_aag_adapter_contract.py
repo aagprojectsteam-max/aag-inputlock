@@ -1,4 +1,4 @@
-"""Regression tests for the narrow AAG safe-suspend adapter contract."""
+"""Historical adapter tests. This module is no longer used by InputLock protection."""
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -8,35 +8,6 @@ import input_lock_safety as safety
 
 
 class AAGAdapterContractTests(unittest.TestCase):
-    def test_stack_ready_delegates_when_transaction_config_exists(self):
-        config = Mock()
-        config.exists.return_value = True
-        runner = Mock()
-        with (
-            patch.object(safety, "AAG_TRANSACTION_CONFIG", config),
-            patch.object(compat, "stack_ready", return_value=True) as delegate,
-        ):
-            self.assertTrue(safety.stack_ready(runner))
-        delegate.assert_called_once_with(runner)
-
-    def test_resume_confirmation_delegates_when_transaction_config_exists(self):
-        config = Mock()
-        config.exists.return_value = True
-        with (
-            patch.object(safety, "AAG_TRANSACTION_CONFIG", config),
-            patch.object(compat, "resume_confirmed", return_value=True) as delegate,
-        ):
-            self.assertTrue(safety.aag_resume_confirmed(123.5))
-        delegate.assert_called_once_with(123.5)
-
-    def test_legacy_graph_remains_fail_closed_without_adapter(self):
-        config = Mock()
-        config.exists.return_value = False
-        runner = Mock(return_value=SimpleNamespace(returncode=1, stdout=""))
-        with patch.object(safety, "AAG_TRANSACTION_CONFIG", config):
-            self.assertFalse(safety.stack_ready(runner))
-        self.assertTrue(runner.called)
-
     def test_adapter_graph_requires_every_expected_token(self):
         good = {
             "systemd-suspend.service": (

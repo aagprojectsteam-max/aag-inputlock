@@ -45,7 +45,8 @@ class ThermalConsumerTests(unittest.TestCase):
             daemon=SimpleNamespace(safety=hot_policy(),ignore_lid_close=False,
                 _saved_lid_ignore_close=False,protective_result=None,
                 safety_signature=None,safety_last_write=0,boot_id='fixture',
-                daemon_started_at=1,lid_generation=2,clean_shutdown=False,safety_previous_run=None)
+                daemon_started_at=1,lid_generation=2,clean_shutdown=False,safety_previous_run=None,
+                lid_inhibitor_fd=None,sleep_inhibitor_fd=None,devices={})
             with patch.object(daemon_module,'BREADCRUMB',path):
                 daemon_module.InputLockDaemon._write_safety(daemon,force=True)
             value=json.loads(path.read_text())
