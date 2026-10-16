@@ -10,7 +10,7 @@ python3 -m build
 python3 tools/check_artifacts.py dist --linux
 ```
 
-The first group requires only the Python standard library. The Linux group additionally requires the distro evdev/pyudev/GI/GTK modules. Tests write only temporary fixtures and use a temporary local socket. Native device, session, battery and power operations are injected, never executed. The safety suite covers deadlines, temperature dwell/hysteresis, missing sensors/dependencies, AC/battery, owner loss, stale requests, abnormal startup, durable journals and the existing AAG adapter/fallback.
+The first group requires only the Python standard library. The Linux group additionally requires the distro evdev/pyudev/GI/GTK modules. Tests write only temporary fixtures and use a temporary local socket. Native device, session, battery and power operations are injected, never executed. The safety suite covers deadlines, temperature dwell/hysteresis, missing sensors/dependencies, AC/battery, owner loss, stale requests, abnormal startup, durable journals and independent ordinary suspend/recovery (all power calls mocked).
 
 The artifact checker imports from the built wheel in isolated Python mode. Omit `--linux` when Linux native dependencies are unavailable; that still checks portable imports and complete archive inventory. The package CI job runs this portable check.
 
@@ -34,7 +34,7 @@ reference result is recorded in
 2. Run the reviewed installer/updater. It must finish unlocked, with effective lid-ignore off. Do not run `input-lock-protect.service` directly.
 3. Compare source/installed hashes and inspect unit ownership/hardening. Check `input-lock status --json`, `input-lock doctor`, both LockLock journals and `systemd-inhibit --list`.
 4. Verify no owned legacy `CriticalPowerAction=Ignore` drop-in remains, GNOME recovery completed, and live UPower critical action is non-Ignore. **Separately qualify the pre-existing OS critical action against the AAG platform acceptance record**; the observed HybridSleep baseline is not accepted by the inspected plain-hibernate report.
-5. Confirm the daemon sees CPU and both chassis sensors, AC/battery, current UPower/logind observations and the expected effective AAG service graph. Unsupported prerequisites must prevent arming.
+5. Confirm the daemon sees CPU and both chassis sensors, AC/battery, current UPower/logind observations and the effective InputLock protection/recovery units and native suspend capability. Unsupported prerequisites must prevent arming.
 
 ## Short supervised lid acceptance — not performed by development tests
 

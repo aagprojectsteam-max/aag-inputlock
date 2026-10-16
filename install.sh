@@ -112,6 +112,7 @@ for required in \
     "$PROJECT_DIR/gnome-extension/extension.js" \
     "$PROJECT_DIR/systemd/input-lock.service" \
     "$PROJECT_DIR/systemd/input-lock-protect.service" \
+    "$PROJECT_DIR/systemd/input-lock-failsafe.service" \
     "$PROJECT_DIR/assets/input-lock-locked.svg" \
     "$PROJECT_DIR/assets/input-lock-unlocked.svg" \
     "$PROJECT_DIR/assets/input-lock-locked-lid-ignored.svg" \
@@ -187,6 +188,8 @@ BACKUP_ITEMS=(
     /usr/share/polkit-1/rules.d/90-input-lock.rules
     /usr/lib/systemd/system/input-lock.service
     /usr/lib/systemd/system/input-lock-protect.service
+    /usr/lib/systemd/system/input-lock-failsafe.service
+    /var/lib/input-lock-protection
     /usr/lib/systemd/user/input-lock-notifier.service
     /usr/lib/systemd/system-sleep/input-lock
     /usr/share/icons/hicolor/scalable/status/input-lock-locked.svg
@@ -286,6 +289,7 @@ chmod 0644 /etc/input-lock/input-lock.conf
 
 install -m 0644 "$PROJECT_DIR/systemd/input-lock.service" /usr/lib/systemd/system/input-lock.service
 install -m 0644 "$PROJECT_DIR/systemd/input-lock-protect.service" /usr/lib/systemd/system/input-lock-protect.service
+install -m 0644 "$PROJECT_DIR/systemd/input-lock-failsafe.service" /usr/lib/systemd/system/input-lock-failsafe.service
 install -m 0644 "$PROJECT_DIR/systemd/input-lock-notifier.service" /usr/lib/systemd/user/input-lock-notifier.service
 install -m 0755 "$PROJECT_DIR/integration/input-lock-system-sleep" /usr/lib/systemd/system-sleep/input-lock
 # Previous cp -a releases left user-owned documentation descendants. Replace

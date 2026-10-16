@@ -1,7 +1,7 @@
 # AAG LockLock 2.0.0-beta.4 — Ubuntu ו־Windows
 
 
-Version 2.0.0-beta.4: Linux keeps the accepted beta.3 safety/thermal correction and formally incorporates the AAG safe-suspend transaction adapter already deployed on the reference machine. Historical remediation evidence remains in the dated documents; Windows-native hardware acceptance remains separate.
+Version 2.0.0-beta.4 source update: Linux lid-ignore now uses independent logind inhibition and InputLock-owned ordinary suspend protection. It requires native protection readiness; retired AAG services and AAG Power APIs are not prerequisites. See [independent lid protection and deployment limits](docs/independent-lid-protection.md). Historical deployment records describe earlier code; this source change is not a claim of physical acceptance.
 
 Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUALIFICATION.md).
 
@@ -39,7 +39,7 @@ Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUA
 
 האפשרות `Hide cursor after no activity` מסתירה את סמן העכבר אחרי זמן של דקות ושניות שנבחר באמצעות כפתורי ‎−/+‎. תזוזה ממשית של הסמן או שינוי במצב כפתורי העכבר מחזירים אותו מיד ומתחילים את הספירה מחדש. המימוש הוא הרחבת GNOME מצומצמת המשתמשת ישירות במיקום הסמן וב־CursorTracker של Mutter, ולכן פועל באופן גלובלי ב־Wayland ואינו מושפע מפעילות Idle מדומה של RustDesk או התקני uinput. האפשרות כבויה כברירת מחדל והעדפת המשתמש נשמרת תחת `~/.config/input-lock/`. GNOME Wayland טוען התקנה או עדכון של קוד ההרחבה בכניסה הבאה למשתמש; המתקין אינו מכבה הרחבה פעילה באמצע Session.
 
-`Ignore Lid Switch (temporary)` מופעל רק עם מכסה פתוח, משתמש גרפי פעיל, בקר Tray מחובר וניטור תקין. הוא אינו מבטל שינת Idle או הגנת סוללה קריטית. הפעולה מפוקחת ומוגבלת בזמן; במקרה סיכון מתבקשת פעולה דרך מנגנון AAG הקיים. ראו [מדיניות הבטיחות והבדיקות](docs/SAFETY-REMEDIATION-20260911.md).
+`Ignore Lid Switch (temporary)` מופעל רק עם מכסה פתוח, משתמש גרפי פעיל, בקר Tray מחובר וניטור תקין. הוא אינו מבטל שינת Idle או הגנת סוללה קריטית. הפעולה מפוקחת ומוגבלת בזמן; במקרה סיכון InputLock משחרר את העיכוב ומבקש השהיה רגילה דרך מערכת ההפעלה. ראו [מדיניות הבטיחות והבדיקות](docs/SAFETY-REMEDIATION-20260911.md).
 
 ### השוואת החלופות
 
@@ -80,7 +80,7 @@ Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUA
 - מסך הנעילה של GNOME שייך לאותו Session פעיל. נעילת Input Lock יכולה להישאר שם; קיצורי החירום ממשיכים לעבוד.
 - למחשב מרובה־מושבים (multi-seat) נדרש פיתוח נוסף. גרסה זו מיועדת ל־seat מקומי יחיד ול־UID מורשה יחיד.
 - אין דרך תוכנתית “להוכיח” חומרה ספציפית בלי בדיקה על המחשב. לכן הבדיקה הראשונה חייבת להיות עם טיימר 30 שניות ודרך חילוץ נוספת.
-- `Ignore Lid Switch (temporary)` מאפשר שימוש זמני ומפוקח בלבד: עד ארבע דקות עם מכסה סגור, או שתי דקות בסוללה או בעומס מעבד גבוה. טמפרטורה גבוהה, אובדן ניטור או סוללה חלשה מבקשים פעולה דרך מנגנון השינה וההתאוששות הקיים של AAG. אין ביטול שינת Idle או הגנת סוללה קריטית. יש לפתוח את המכסה לפני הפעלה; אחרי הפעלה מחדש האפשרות כבויה עד הפעלה מפורשת. אין להשתמש במחשב סגור בתוך תיק. ראו [תיעוד הבטיחות](docs/SAFETY-REMEDIATION-20260911.md).
+- `Ignore Lid Switch (temporary)` מאפשר שימוש זמני ומפוקח בלבד: עד ארבע דקות עם מכסה סגור, או שתי דקות בסוללה או בעומס מעבד גבוה. טמפרטורה גבוהה, אובדן ניטור או סוללה חלשה מבקשים השהיה רגילה דרך מערכת ההפעלה לאחר שחרור העיכוב של InputLock. אין ביטול שינת Idle או הגנת סוללה קריטית. יש לפתוח את המכסה לפני הפעלה; אחרי הפעלה מחדש האפשרות כבויה עד הפעלה מפורשת. אין להשתמש במחשב סגור בתוך תיק. ראו [תיעוד הבטיחות](docs/SAFETY-REMEDIATION-20260911.md).
 
 ## חלק 3 — דרישות מוקדמות
 
@@ -323,7 +323,7 @@ gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/or
 - `Lock Input` / `Unlock Input` — נעילה או שחרור של מצב ברירת־המחדל.
 - `Shortcut: …` — הקיצור הפעיל כעת.
 - `Change Shortcut…` — לכידת קיצור חדש, בדיקת התנגשות ושמירה.
-- `Ignore Lid Switch (temporary)` מאפשר שימוש זמני ומפוקח בלבד: עד ארבע דקות עם מכסה סגור, או שתי דקות בסוללה או בעומס מעבד גבוה. טמפרטורה גבוהה, אובדן ניטור או סוללה חלשה מבקשים פעולה דרך מנגנון השינה וההתאוששות הקיים של AAG. אין ביטול שינת Idle או הגנת סוללה קריטית. יש לפתוח את המכסה לפני הפעלה; אחרי הפעלה מחדש האפשרות כבויה עד הפעלה מפורשת. אין להשתמש במחשב סגור בתוך תיק. ראו [תיעוד הבטיחות](docs/SAFETY-REMEDIATION-20260911.md).
+- `Ignore Lid Switch (temporary)` מאפשר שימוש זמני ומפוקח בלבד: עד ארבע דקות עם מכסה סגור, או שתי דקות בסוללה או בעומס מעבד גבוה. טמפרטורה גבוהה, אובדן ניטור או סוללה חלשה מבקשים השהיה רגילה דרך מערכת ההפעלה לאחר שחרור העיכוב של InputLock. אין ביטול שינת Idle או הגנת סוללה קריטית. יש לפתוח את המכסה לפני הפעלה; אחרי הפעלה מחדש האפשרות כבויה עד הפעלה מפורשת. אין להשתמש במחשב סגור בתוך תיק. ראו [תיעוד הבטיחות](docs/SAFETY-REMEDIATION-20260911.md).
 - `About` — גרסה ותיאור.
 
 בעת הפעלת התעלמות מהמכסה מופיעה אזהרת התחממות. אפשר לשלוט גם במסוף:

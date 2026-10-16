@@ -93,6 +93,7 @@ rm -f -- \
     /usr/share/pixmaps/input-lock-about.png \
     /usr/lib/systemd/system/input-lock.service \
     /usr/lib/systemd/system/input-lock-protect.service \
+    /usr/lib/systemd/system/input-lock-failsafe.service \
     /usr/lib/systemd/user/input-lock-notifier.service \
     /usr/lib/systemd/system-sleep/input-lock \
     /etc/modules-load.d/input-lock.conf \

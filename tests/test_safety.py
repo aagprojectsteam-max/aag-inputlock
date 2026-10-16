@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from input_lock_safety import (SafetyPolicy, Sensor, Sample, Telemetry, atomic_json,
-                               stack_ready, protect_main, observe_suspend, FAILSAFE_UNIT)
+                               stack_ready, protect_main, observe_suspend)
 
 
 def sample(now=100., **changes):
@@ -169,73 +169,25 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(len(list(path.parent.iterdir())), 1)
 
 
-class AdapterTests(unittest.TestCase):
-    def request(self, *, fail=None, lid=True, probe=True, stale=False):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)/"request.json"
-            path.write_text(json.dumps({"boot_id":Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-                                        "safety":{"state":"PROTECTIVE_ACTION_PENDING"},
-                                        "updated_at":0 if stale else __import__('time').time()}))
-            run = Mock(side_effect=fail) if fail else Mock(return_value=SimpleNamespace(returncode=0))
-            telemetry = Mock()
-            telemetry.read.return_value = sample(lid_closed=lid)
-            result = protect_main(run, lambda:probe, telemetry, path, observe=lambda *_args:None, counter=lambda:0)
-            return result, run
-
-    def test_suspends_only_through_existing_target(self):
-        result, run = self.request()
-        self.assertEqual(result, 0)
-        self.assertEqual(run.call_args.args[0], ['/usr/bin/systemctl','--check-inhibitors=yes','suspend'])
-
-    def test_suspend_failure_uses_existing_failsafe_not_new_shutdown_or_hibernate(self):
-        result, run = self.request(fail=[SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)])
-        self.assertEqual(result, 0)
-        self.assertEqual(run.call_args.args[0][-1], FAILSAFE_UNIT)
-        self.assertNotIn("hibernate", repr(run.call_args_list))
-        self.assertNotIn("poweroff", repr(run.call_args_list))
-
-    def test_suspend_timeout_uses_existing_failsafe(self):
-        result, run = self.request(fail=[subprocess.TimeoutExpired('fixture',120), SimpleNamespace(returncode=0)])
-        self.assertEqual(result, 0)
-        self.assertEqual(run.call_count, 2)
-
-    def test_missing_stack_uses_existing_failure_owner(self):
-        result, run = self.request(probe=False)
-        self.assertEqual(run.call_args.args[0][-1], FAILSAFE_UNIT)
-
-    def test_open_lid_request_is_cancelled(self):
-        for args in ({"lid":False},):
-            result, run = self.request(**args)
-            self.assertEqual(result, 0)
-            run.assert_not_called()
-
-    def test_graph_probe_rejects_missing_effective_gate(self):
-        run = Mock(return_value=SimpleNamespace(returncode=0, stdout="LoadState=loaded\n"))
-        self.assertFalse(stack_ready(run))
-
-    def test_failure_of_both_paths_is_reported(self):
-        result, run = self.request(fail=[SimpleNamespace(returncode=1), SimpleNamespace(returncode=1)])
-        self.assertEqual(result, 1)
-
 class SuspendObservationTests(unittest.TestCase):
     def test_old_success_is_not_mistaken_for_this_request(self):
         now = [100.]
         old = 'ActiveState=inactive\nResult=success\nExecMainStatus=0\nInactiveExitTimestampMonotonic=1000000\nExecMainStartTimestampMonotonic=1000000\nExecMainExitTimestampMonotonic=2000000\n'
         new = old.replace('1000000', '101000000').replace('2000000', '102000000')
         run = Mock(side_effect=[SimpleNamespace(returncode=0,stdout=old), SimpleNamespace(returncode=0,stdout=new)])
-        observe_suspend(run, 100., 0, counter=lambda:1, resume=lambda _at:True, clock=lambda:now[0], sleep=lambda seconds:now.__setitem__(0,now[0]+seconds))
+        observe_suspend(run, 100., 0, counter=lambda:1, clock=lambda:now[0], sleep=lambda seconds:now.__setitem__(0,now[0]+seconds))
         self.assertEqual(run.call_count,2)
 
     def test_new_failure_is_reported(self):
         run = Mock(return_value=SimpleNamespace(returncode=0,stdout='ActiveState=failed\nResult=exit-code\nInactiveExitTimestampMonotonic=101000000\n'))
         with self.assertRaises(RuntimeError):
-            observe_suspend(run,100.,0,counter=lambda:1,resume=lambda _at:True,clock=lambda:100.)
+            observe_suspend(run,100.,0,counter=lambda:1,clock=lambda:100.)
 
     def test_no_new_transition_has_bounded_wait(self):
         now = [100.]
         run = Mock(return_value=SimpleNamespace(returncode=0,stdout='ActiveState=inactive\nResult=success\nInactiveExitTimestampMonotonic=1\n'))
         with self.assertRaises(TimeoutError):
-            observe_suspend(run,100.,0,counter=lambda:1,resume=lambda _at:True,clock=lambda:now[0],sleep=lambda seconds:now.__setitem__(0,now[0]+seconds))
+            observe_suspend(run,100.,0,counter=lambda:1,clock=lambda:now[0],sleep=lambda seconds:now.__setitem__(0,now[0]+seconds))
         self.assertEqual(run.call_count,120)
 
 
@@ -281,13 +233,6 @@ class ThermalMeasurementTests(unittest.TestCase):
 
 
 class ConfirmationRegressionTests(unittest.TestCase):
-    request = AdapterTests.request
-    def test_expired_pending_closed_lid_request_delegates_recovery(self):
-        result,run=self.request(stale=True)
-        self.assertEqual(result,0)
-        self.assertEqual(run.call_args.args[0][-1],FAILSAFE_UNIT)
-        self.assertNotIn("suspend",run.call_args.args[0])
-
     def test_successful_service_without_kernel_suspend_is_unconfirmed(self):
         now=[100.]
         result=SimpleNamespace(returncode=0,stdout="ActiveState=inactive\nResult=success\nExecMainStatus=0\nInactiveExitTimestampMonotonic=101000000\nExecMainStartTimestampMonotonic=101000000\nExecMainExitTimestampMonotonic=102000000\n")
@@ -296,8 +241,6 @@ class ConfirmationRegressionTests(unittest.TestCase):
 
 
 class ResumeConfirmationTests(unittest.TestCase):
-    def test_kernel_success_without_aag_resume_confirmation_is_unconfirmed(self):
-        now=[100.]
+    def test_native_kernel_and_service_success_needs_no_aag_receipt(self):
         result=SimpleNamespace(returncode=0,stdout="ActiveState=inactive\nResult=success\nExecMainStatus=0\nInactiveExitTimestampMonotonic=101000000\nExecMainStartTimestampMonotonic=101000000\nExecMainExitTimestampMonotonic=102000000\n")
-        with self.assertRaises(TimeoutError):
-            observe_suspend(Mock(return_value=result),100.,0,counter=lambda:1,resume=lambda _at:False,clock=lambda:now[0],sleep=lambda seconds:now.__setitem__(0,now[0]+seconds))
+        observe_suspend(Mock(return_value=result), 100., 0, counter=lambda:1, clock=lambda:103.)

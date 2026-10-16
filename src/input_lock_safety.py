@@ -1,6 +1,6 @@
 """Supervised lid suppression, not a replacement machine power controller.
 
-Pure decisions are separate from telemetry and the fixed AAG service adapter.
+Pure decisions are separate from telemetry and InputLock's native suspend adapter.
 No incident-time thermal evidence established the cause of the 2026-09-11 stop.
 """
 from __future__ import annotations
@@ -18,8 +18,8 @@ from pathlib import Path
 LOG = logging.getLogger("input-lock-safety")
 BREADCRUMB = Path("/var/lib/input-lock/safety.json")
 PROTECT_UNIT = "input-lock-protect.service"
-FAILSAFE_UNIT = "aag-suspend-failure-failsafe.service"
-AAG_TRANSACTION_CONFIG = Path("/etc/aag-sleep-transaction/config.json")
+FAILSAFE_UNIT = "input-lock-failsafe.service"
+FAILURE_LATCH = Path("/var/lib/input-lock-protection/failure.json")
 THERMAL_MEASUREMENTS = ("NORMAL", "WARNING", "HIGH_RISK", "EMERGENCY")
 THERMAL_STATES = ("NORMAL", "WARNING", "HIGH_RISK", "EMERGENCY_SOFTWARE_PROTECTION")
 
@@ -72,6 +72,7 @@ class Sample:
     dependencies_ok: bool = False
     stack_ready: bool = False
     errors: list[str] = field(default_factory=list)
+    protection_errors: list[str] = field(default_factory=list)
 
     def healthy(self, now: float) -> bool:
         kinds = {sensor.kind for sensor in self.sensors}
@@ -111,8 +112,11 @@ class SafetyPolicy:
             self.event(reason)
 
     def arm(self, sample: Sample) -> None:
+        if not sample.stack_ready:
+            detail = "; ".join(sample.protection_errors) or "native suspend/fail-safe readiness unavailable"
+            raise ValueError("Lid-ignore unavailable: " + detail)
         if not sample.healthy(self.clock()) or sample.lid_closed is not False:
-            raise ValueError("Open the lid and restore safety telemetry/AAG services before arming")
+            raise ValueError("Open the lid and restore fresh safety telemetry before arming")
         if any(sensor.risk() >= 2 for sensor in sample.sensors):
             raise ValueError("Temperature is already too high to arm lid-ignore")
         # A prior protection attempt can retain its forensic timer after
@@ -365,28 +369,83 @@ class Telemetry:
                       cpu_busy, dependencies_ok, stack_ready, errors)
 
 
-def stack_ready(run=subprocess.run) -> bool:
-    # AAG transaction adapter contract; preserve legacy fallback.
-    if AAG_TRANSACTION_CONFIG.exists():
-        from aag_sleep_transaction_compat import stack_ready as adapter_contract
-        return adapter_contract(run)
-    """Check effective systemd dependencies, including locally merged drop-ins."""
-    requirements = {
-        "systemd-suspend.service": ("aag-storage-sleep-v2.service", FAILSAFE_UNIT,
-                                    "aag-ordinary-suspend-usbclone-gate", "aag-t700-auto"),
-        "aag-storage-sleep-v2.service": ("aag-ugreen-sleep-guard-v2", "aag-sleep-recovery"),
-        FAILSAFE_UNIT: ("aag-sleep-recovery failure-recover", "aag-hibernate-qualifier"),
-        PROTECT_UNIT: ("input_lock_safety.py",),
-    }
+def native_status() -> dict:
+    """Read logind only; never acquire an inhibitor or request sleep here."""
+    import dbus
+    bus = dbus.SystemBus(private=True)
     try:
-        for unit, tokens in requirements.items():
-            result = run(["/usr/bin/systemctl", "show", unit, "--property=LoadState,Requires,OnFailure,ExecStart,ExecStartPre,ExecCondition"],
-                         capture_output=True, text=True, timeout=3, check=False)
-            if result.returncode or "LoadState=loaded" not in result.stdout or not all(token in result.stdout for token in tokens):
-                return False
-        return True
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+        obj = bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1")
+        manager = dbus.Interface(obj, "org.freedesktop.login1.Manager")
+        properties = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
+        inhibitors = list(manager.ListInhibitors(timeout=3))
+        return {
+            # The unprivileged monitor cannot suspend itself. "challenge"
+            # still means supported; the fixed root service performs the action
+            # with --no-ask-password and handles any actual authorization refusal.
+            "supported": str(manager.CanSuspend(timeout=3)) in {"yes", "challenge"},
+            "preparing": bool(properties.Get("org.freedesktop.login1.Manager", "PreparingForSleep", timeout=3)),
+            "blocked": any("sleep" in str(row[0]).split(":") and str(row[3]) in {"block", "block-weak"}
+                           for row in inhibitors),
+            "inputlock_holds_lid": any(str(row[1]) == "Input Lock" and
+                                      "handle-lid-switch" in str(row[0]).split(":") for row in inhibitors),
+        }
+    finally:
+        bus.close()
+
+
+def unit_properties(run, unit: str) -> dict:
+    result = run(["/usr/bin/systemctl", "show", unit,
+                  "--property=LoadState,ActiveState,ExecStart,ExecStopPost,OnFailure,WatchdogUSec,Restart,DropInPaths,User,Type,TimeoutStartUSec,TimeoutStopUSec,KillMode"],
+                 capture_output=True, text=True, timeout=3, check=False)
+    if result.returncode:
+        raise RuntimeError("cannot inspect " + unit)
+    return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+
+
+def protection_errors(run=subprocess.run, status=native_status, counter=None) -> list[str]:
+    """Effective native prerequisites; retired services and AAG APIs are irrelevant.
+
+    This is a capability check, not proof that a future kernel suspend succeeds.
+    A failed final attempt latches arming off until explicit operator recovery.
+    """
+    try:
+        if FAILURE_LATCH.exists():
+            return ["previous emergency suspend failed; operator recovery required"]
+        state = status()
+        if not state["supported"] or state["blocked"] or state["preparing"]:
+            return ["ordinary suspend unavailable, blocked, or already in progress"]
+        (counter or suspend_success_count)()
+        for unit, command in {
+            "systemd-suspend.service": "/usr/lib/systemd/systemd-sleep suspend",
+            PROTECT_UNIT: "/usr/lib/input-lock/input_lock_safety.py protect",
+            FAILSAFE_UNIT: "/usr/lib/input-lock/input_lock_safety.py recover",
+            "input-lock.service": "/usr/lib/input-lock/input-lock-daemon",
+        }.items():
+            props = unit_properties(run, unit)
+            if props.get("LoadState") != "loaded" or command not in props.get("ExecStart", ""):
+                return ["missing or incompatible " + unit]
+            if unit in {PROTECT_UNIT, FAILSAFE_UNIT} and (props.get("User") not in {"", "root"}
+                    or props.get("Type") != "oneshot" or props.get("TimeoutStartUSec") != "2min 45s"
+                    or props.get("Restart") != "no"):
+                return ["InputLock root helper/timeout contract changed: " + unit]
+            if unit in {PROTECT_UNIT, "input-lock.service"} and props.get("OnFailure", "").split() != [FAILSAFE_UNIT]:
+                return ["missing InputLock failure handler on " + unit]
+            if unit == FAILSAFE_UNIT and props.get("OnFailure"):
+                return ["unexpected recursive failure handler"]
+            if unit == FAILSAFE_UNIT and "/usr/lib/input-lock/input_lock_safety.py record-failure" not in props.get("ExecStopPost", ""):
+                return ["missing terminal failure recorder"]
+            if unit == "input-lock.service" and (props.get("Restart") != "no" or
+                    props.get("WatchdogUSec") != "20s" or props.get("TimeoutStopUSec") != "5s"
+                    or props.get("KillMode") != "control-group"):
+                return ["InputLock watchdog/restart contract changed"]
+        return []
+    except Exception as exc:
+        return ["native protection probe failed: " + str(exc)]
+
+
+def stack_ready(run=subprocess.run) -> bool:
+    """Compatibility name for the wire field; now checks native prerequisites."""
+    return not protection_errors(run)
 
 
 def request_service() -> str:
@@ -407,22 +466,8 @@ def suspend_success_count() -> int:
     return value
 
 
-def aag_resume_confirmed(requested_at: float) -> bool:
-    # AAG transaction adapter contract; preserve legacy fallback.
-    if AAG_TRANSACTION_CONFIG.exists():
-        from aag_sleep_transaction_compat import resume_confirmed as adapter_contract
-        return adapter_contract(requested_at)
-    try:
-        receipt = json.loads(Path("/run/aag-ugreen-safety-r1/last-terminal.json").read_text())
-        return (receipt.get("boot_id") == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-                and receipt.get("state") == "RESUME_COMPLETE"
-                and float(receipt.get("episode_started_monotonic", -1)) >= requested_at)
-    except (OSError, ValueError, TypeError):
-        return False
-
-
 def observe_suspend(run, requested_at: float, before_success: int, *, clock=time.monotonic,
-                    sleep=time.sleep, counter=suspend_success_count, resume=aag_resume_confirmed) -> None:
+                    sleep=time.sleep, counter=suspend_success_count) -> None:
     """A successful enqueue is not a completed sleep/resume operation."""
     deadline = clock() + 120
     while clock() < deadline:
@@ -440,22 +485,25 @@ def observe_suspend(run, requested_at: float, before_success: int, *, clock=time
             end = int(values.get("ExecMainExitTimestampMonotonic", "0"))
             if (start / 1_000_000 >= requested_at and end >= start
                     and values.get("ActiveState") == "inactive" and values.get("Result") == "success"
-                    and values.get("ExecMainStatus") == "0" and counter() > before_success
-                    and resume(requested_at)):
+                    and values.get("ExecMainStatus") == "0" and counter() > before_success):
                 return
         sleep(1)
     raise TimeoutError("suspend completion was not observed within the awake-time budget")
 
 
-def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BREADCRUMB, observe=observe_suspend, counter=suspend_success_count) -> int:
-    """Root oneshot adapter. All dangerous transitions belong to existing AAG units.
+def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BREADCRUMB,
+                 observe=observe_suspend, counter=suspend_success_count, *, recovery=False,
+                 status=native_status, latch=FAILURE_LATCH) -> int:
+    """One ordinary suspend attempt; systemd invokes a separate final recovery.
 
-    No direct shutdown, force flags, hardware reset, or hibernate dispatch exists
-    here. Plain hibernate has separate platform acceptance, but the current AAG
-    closed-lid failure owner has no automatic hibernate fallback contract.
+    Recovery stops the daemon synchronously, so the kernel closes all its evdev
+    and inhibitor descriptors even if its event loop or release code is broken.
+    No automatic daemon restart may race this operation. Native hooks remain OS
+    policy; we neither invoke their private APIs nor bypass them.
     """
     telemetry = telemetry or Telemetry()
     state = {}
+
     def record(result: str, detail: str = "") -> None:
         receipt = path.with_name("safety-action-result.json")
         atomic_json(receipt, {"schema": 1, "boot_id": state.get("boot_id"),
@@ -463,61 +511,106 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
                     "detail": detail, "observed_at": time.time(),
                     "transition_status": {"suspend-requested": "REQUESTED",
                         "suspend-request-accepted": "ACCEPTED", "suspend-transition-confirmed": "CONFIRMED",
-                        "delegated-to-existing-failsafe": "RECOVERY_REQUIRED",
-                        "failsafe-request-failed": "FAILED"}.get(result, "CANCELLED"),
+                        "recovery-required": "RECOVERY_REQUIRED", "protection-failed": "FAILED"
+                        }.get(result, "CANCELLED"),
                     "transition_confirmed": result == "suspend-transition-confirmed"})
-        os.chmod(receipt, 0o644)  # Readable by the unprivileged daemon.
+        os.chmod(receipt, 0o644)
+
     try:
-        state = json.loads(path.read_text())
+        if recovery:
+            try:
+                state = json.loads(path.read_text())
+            finally:
+                # Release even when the journal is missing/corrupt. Failure to
+                # read evidence must never leave this process's lid suppression.
+                result = run(["/usr/bin/systemctl", "stop", "input-lock.service"], timeout=10, check=False)
+                if result.returncode or unit_properties(run, "input-lock.service").get("ActiveState") not in {"inactive", "failed"}:
+                    raise RuntimeError("cannot confirm InputLock stopped; no sleep dispatched")
+        else:
+            state = json.loads(path.read_text())
         boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-        if (state.get("boot_id") != boot or state.get("safety", {}).get("state") != "PROTECTIVE_ACTION_PENDING"):
-            LOG.warning("event=PROTECTIVE_ACTION_CANCELLED reason=stale-or-cancelled-request")
+        eligible = state.get("safety", {}).get("state") == "PROTECTIVE_ACTION_PENDING"
+        if recovery:
+            eligible = eligible or state.get("effective") is True
+        if state.get("boot_id") != boot or not eligible:
             return 0
+        if recovery:
+            # Do not dispatch a second sleep after a completed first transition.
+            try:
+                receipt = json.loads(path.with_name("safety-action-result.json").read_text())
+                if (receipt.get("boot_id") == boot and receipt.get("generation") == state.get("generation")
+                        and receipt.get("transition_confirmed") is True):
+                    return 0
+            except FileNotFoundError:
+                pass
+        elif state.get("effective") is not False or state.get("restrictions_released") is not True:
+            raise RuntimeError("InputLock restrictions have not been released")
         if telemetry.read().lid_closed is False:
-            LOG.info("event=PROTECTIVE_ACTION_CANCELLED reason=lid-opened")
             record("cancelled-lid-open")
             return 0
-        if not 0 <= time.time() - state.get("updated_at", 0) <= 20:
-            raise RuntimeError("pending closed-lid request expired; recovery required")
+        if not recovery and not 0 <= time.time() - state.get("updated_at", 0) <= 20:
+            raise RuntimeError("pending closed-lid request expired")
         if not probe():
-            raise RuntimeError("AAG suspend graph is unavailable or changed")
-        current = json.loads(path.read_text())
-        if (current.get("generation") != state.get("generation") or
-                current.get("safety", {}).get("state") != "PROTECTIVE_ACTION_PENDING" or
-                telemetry.read().lid_closed is False):
-            LOG.info("event=PROTECTIVE_ACTION_CANCELLED reason=cancelled-before-dispatch")
+            raise RuntimeError("native suspend/fail-safe prerequisites unavailable")
+        if not recovery:
+            current = json.loads(path.read_text())
+            if (current.get("generation") != state.get("generation") or
+                    current.get("safety", {}).get("state") != "PROTECTIVE_ACTION_PENDING"):
+                record("cancelled-before-dispatch")
+                return 0
+        native = status()
+        if (not native["supported"] or native["blocked"] or native["preparing"] or native["inputlock_holds_lid"]):
+            raise RuntimeError("ordinary suspend unavailable, inhibited, or already preparing")
+        if unit_properties(run, "systemd-suspend.service").get("ActiveState") not in {"inactive", "failed"}:
+            raise RuntimeError("a suspend transition is already in progress; refusing duplicate")
+        if telemetry.read().lid_closed is False:
             record("cancelled-before-dispatch")
             return 0
-        LOG.warning("event=PROTECTIVE_ACTION_STARTED path=logind-and-existing-AAG-suspend")
         before_success = counter()
         requested_at = time.monotonic()
         record("suspend-requested")
-        result = run(["/usr/bin/systemctl", "--check-inhibitors=yes", "suspend"], timeout=10, check=False)
+        result = run(["/usr/bin/systemctl", "--no-ask-password", "--check-inhibitors=yes", "suspend"],
+                     timeout=10, check=False)
         if result.returncode:
-            raise RuntimeError(f"suspend request failed: {result.returncode}")
+            raise RuntimeError(f"ordinary suspend request failed: {result.returncode}")
         record("suspend-request-accepted")
         observe(run, requested_at, before_success)
-        LOG.info("event=PROTECTIVE_ACTION_SUCCEEDED result=suspend-transition-confirmed")
         record("suspend-transition-confirmed")
         return 0
     except Exception as exc:
-        LOG.error("event=PROTECTIVE_ACTION_FAILED error=%s", exc)
-        # The existing recovery owner rechecks physical lid, thermal state,
-        # storage owners and immutable episode deadlines before any action.
+        LOG.error("event=PROTECTIVE_ACTION_FAILED recovery=%s error=%s", recovery, exc)
+        # The final failure stays visible across daemon restarts and boots.
+        # There is intentionally no force/hibernate/shutdown escalation.
+        if recovery:
+            try:
+                atomic_json(latch, {"error": str(exc), "observed_at": time.time()})
+                os.chmod(latch, 0o644)
+            except OSError:
+                LOG.exception("Cannot persist emergency failure latch")
         try:
-            result = run(["/usr/bin/systemctl", "--no-block", "start", FAILSAFE_UNIT], timeout=8, check=False)
-            record("delegated-to-existing-failsafe" if result.returncode == 0 else "failsafe-request-failed", str(exc))
-            return 0 if result.returncode == 0 else 1
-        except (OSError, subprocess.TimeoutExpired):
-            return 1
+            record("protection-failed" if recovery else "recovery-required", str(exc))
+        except OSError:
+            LOG.exception("Cannot persist protective result")
+        return 1
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Request the installed AAG protective path")
-    parser.add_argument("action", choices=("protect",))
-    parser.parse_args()
+    parser = argparse.ArgumentParser(description="InputLock ordinary suspend protection")
+    parser.add_argument("action", choices=("protect", "recover", "check", "record-failure"))
+    args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
+    if args.action == "check":
+        errors = protection_errors()
+        print(json.dumps({"ready": not errors, "errors": errors}))
+        raise SystemExit(bool(errors))
     if os.geteuid() != 0:
         raise SystemExit("protective adapter requires the installed root service")
-    raise SystemExit(protect_main())
+    if args.action == "record-failure":
+        # Includes watchdog/timeout/SIGKILL failures outside Python's handler.
+        if os.environ.get("SERVICE_RESULT") != "success":
+            atomic_json(FAILURE_LATCH, {"error": "recovery unit failed: " + os.environ.get("SERVICE_RESULT", "unknown"),
+                                       "observed_at": time.time()})
+            os.chmod(FAILURE_LATCH, 0o644)
+        raise SystemExit(0)
+    raise SystemExit(protect_main(recovery=args.action == "recover"))

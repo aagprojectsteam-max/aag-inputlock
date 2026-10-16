@@ -1,6 +1,6 @@
 [Unit]
-Description=Request the established AAG safe-suspend and closed-lid recovery path
-OnFailure=aag-suspend-failure-failsafe.service
+Description=InputLock ordinary suspend protection
+OnFailure=input-lock-failsafe.service
 
 [Service]
 Type=oneshot
@@ -11,6 +11,8 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/input-lock
+StateDirectory=input-lock-protection
+StateDirectoryMode=0755
 ProtectHome=yes
 PrivateTmp=yes
 RestrictAddressFamilies=AF_UNIX
