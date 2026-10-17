@@ -586,11 +586,16 @@ class InputLockDaemon:
         return self.lid_is_closed or self.safety_sample is None or self.safety_sample.lid_closed is not False
 
     def _start_protection(self, reason: str) -> None:
-        self.safety.decide(reason)
+        # SafetyPolicy.update() already made the decision and recorded the
+        # original evidence. Do not overwrite it or log a second decision.
+        if self.safety.armed or self.safety.state != "PROTECTIVE_ACTION_PENDING" or self.safety.reason != reason:
+            self.safety.decide(reason)
         self._emergency_unlock("safety-protection", preserve_safety=True)
         if any(r.grabbed for r in self.devices.values()):
             raise TransitionError("device release failed; terminating for InputLock recovery")
-        self.protective_result = {"reason": reason, "attempted_at": time.time(), "generation": self.lid_generation, "result": "pending"}
+        self.protective_result = {"reason": reason, "attempted_at": time.time(),
+                                  "generation": self.lid_generation, "result": "pending",
+                                  "decision_evidence": self.safety.last_decision}
         generation = self.lid_generation
         self._write_safety(force=True)
         def dispatch() -> None:

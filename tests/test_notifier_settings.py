@@ -65,6 +65,22 @@ class DisconnectTests(unittest.TestCase):
         tray.lid_item.set_sensitive.assert_called_with(True)
 
 
+class LidEvidenceDisplayTests(unittest.TestCase):
+    def test_deadline_shortener_uses_structured_evidence_and_previous_decision(self):
+        self.assertEqual(notifier_module.lid_deadline_cause({
+            "deadline_shortened_by": ["SUSTAINED_HIGH_CPU", "ON_BATTERY", "ON_BATTERY"]}),
+            "battery power + sustained CPU load")
+        self.assertEqual(notifier_module.lid_deadline_cause({
+            "last_decision": {"deadline_shortened_by": ["ON_BATTERY"]}}),
+            "battery power")
+        self.assertEqual(notifier_module.lid_deadline_cause({"deadline_shortened_by": None}), "")
+        self.assertEqual(notifier_module.lid_deadline_cause({}), "")
+
+    def test_timed_toggle_description_is_explicit_about_auto_suspend(self):
+        self.assertIn("2–4 min", notifier_module.TIMED_LID_LABEL)
+        self.assertIn("auto-suspend", notifier_module.TIMED_LID_LABEL)
+
+
 class CursorSettingsTests(unittest.TestCase):
     def test_defaults_when_file_is_absent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

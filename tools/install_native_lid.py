@@ -46,6 +46,18 @@ FAILED_BASELINE = {
     'input-lock-protect.service': 'a4273d16bb2bc1e0f68faf9c407719bbf17fd873914d281151514532e06751bc',
     'input-lock-failsafe.service': '967d4cf06e66c1b288c192787d1eeaf6469c06b282f227e62e20bf44d989f69b',
 }
+# Exact reviewed active/running InputLock release from the 2026-10-17
+# installation. All seven hashes must match this ONE version; never combine
+# files from different baselines or accept an unknown unit override.
+POST_BOOT_REPAIR_BASELINE = {
+    'input_lock_lid_policy.py': 'd6cc8671226852ad85e0ac6f6a9767e4dfff66a13daef06a8b74bfc8734e22f4',
+    'input_lock_safety.py': 'cf0851bbd01f54cb7edb27b1fe0472540a8c5f2077248b207f2f994f23275437',
+    'input_lock_daemon.py': '3f675f3acd0c8de5c67a659eb1796f87192fbe372f57daab5325a38184882287',
+    'input_lock_notifier.py': '4828c02c96b32f6bb163cc9d179d02356e786911f0164d2eab3f39a244235b92',
+    'input-lock.service': '69bb6695fb0cb11272a44bc32dd67a18feacb6f384fd88ddeced60e2fd094a25',
+    'input-lock-protect.service': 'a4273d16bb2bc1e0f68faf9c407719bbf17fd873914d281151514532e06751bc',
+    'input-lock-failsafe.service': '967d4cf06e66c1b288c192787d1eeaf6469c06b282f227e62e20bf44d989f69b',
+}
 KNOWN_LATCH_SHA256 = 'abd072afb9fd98cc19c4f1dc096c946ec07008f5ccb4cd7a99af7462c688a7f8'
 LATCH = Path('/var/lib/input-lock-protection/failure.json')
 
@@ -150,6 +162,12 @@ def failed_daemon_gate():
             'deployment requires the active local graphical session')
 
 
+def approved_baseline(installed: dict, *, recovery=False) -> bool:
+    """Refuse mixed or unknown deployments even when each file is recognizable."""
+    variants = (FAILED_BASELINE,) if recovery else (BASELINE, POST_BOOT_REPAIR_BASELINE)
+    return any(installed == candidate for candidate in variants)
+
+
 def preflight(*, recovery=False):
     from input_lock_safety import FAILURE_LATCH, suspend_success_count
     if recovery:
@@ -159,15 +177,17 @@ def preflight(*, recovery=False):
     else:
         require(not FAILURE_LATCH.exists(), 'unresolved emergency failure latch')
     suspend_success_count()
+    observed_baseline = {}
     for source, target in FILES.items():
         path = Path(target)
         require(not path.is_symlink(), 'refusing symlink: ' + target)
-        expected = (FAILED_BASELINE if recovery else BASELINE)[path.name]
-        require((digest(path) if path.exists() else None) == expected, 'installed baseline changed: ' + target)
+        observed_baseline[path.name] = digest(path) if path.exists() else None
         if path.exists():
             require(path.stat().st_uid == 0 and path.stat().st_mode & 0o022 == 0, 'installed file ownership/mode is unsafe: ' + target)
         if source.endswith('.py'):
             compile((ROOT / source).read_text(), source, 'exec')
+    require(approved_baseline(observed_baseline, recovery=recovery),
+            'installed baseline changed: unknown or mixed installed release')
     for unit in ('input-lock.service', 'input-lock-protect.service', 'input-lock-failsafe.service'):
         values = dict(line.split('=', 1) for line in run('/usr/bin/systemctl', 'show', unit,
                       '--property=DropInPaths,FragmentPath,ActiveState,SubState,Result,MainPID,ControlPID,Job,ExecMainStartTimestampMonotonic,ExecStartPre').splitlines() if '=' in line)

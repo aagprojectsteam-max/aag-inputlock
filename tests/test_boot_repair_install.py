@@ -49,6 +49,18 @@ class RecoveryPreflightTests(unittest.TestCase):
             gate.assert_called_once()
             normal.assert_not_called()
 
+    def test_upgrade_accepts_only_complete_reviewed_versions(self):
+        self.assertTrue(installer.approved_baseline(installer.BASELINE))
+        self.assertTrue(installer.approved_baseline(installer.POST_BOOT_REPAIR_BASELINE))
+        self.assertTrue(installer.approved_baseline(installer.FAILED_BASELINE, recovery=True))
+        self.assertFalse(installer.approved_baseline(installer.FAILED_BASELINE))
+        mixed = dict(installer.POST_BOOT_REPAIR_BASELINE)
+        mixed['input-lock.service'] = installer.BASELINE['input-lock.service']
+        self.assertFalse(installer.approved_baseline(mixed))
+        modified = dict(installer.POST_BOOT_REPAIR_BASELINE)
+        modified['input_lock_safety.py'] = 'unknown'
+        self.assertFalse(installer.approved_baseline(modified))
+
     def test_exact_known_failure_can_use_independent_gate_without_daemon_state(self):
         self.preflight()
 
