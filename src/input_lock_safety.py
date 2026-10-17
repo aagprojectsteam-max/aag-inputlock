@@ -84,13 +84,17 @@ class Sample:
 
 
 class SafetyPolicy:
-    """Monotonic, bounded, deterministic policy. It never performs power actions."""
+    """Monotonic, continuously supervised lid-ignore; never performs power actions.
+
+    No normal closed-lid duration expires this policy. Only a thermal/battery
+    risk or loss of reliable supervision can request protective suspend.
+    """
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self.state = "SAFE_NORMAL"
         self.armed = False
         self.closed_since = None
-        self.deadline = None
+        self.deadline = None  # Compatibility only: permanent absence of a lid timer.
         self.missing_since = None
         self.thermal_level = 0
         self.thermal_candidate = 0
@@ -101,10 +105,6 @@ class SafetyPolicy:
         self.events: list[str] = []
         self.required_sensors: set[str] = set()
         self.previous_ac = None
-        self.busy_since = None
-        # Explicit evidence of why the finite deadline became two minutes.
-        # Reasons are monotonic within one closed-lid episode.
-        self.deadline_shortened_by: set[str] = set()
         self.last_decision: dict | None = None
 
     def event(self, reason: str) -> None:
@@ -124,9 +124,8 @@ class SafetyPolicy:
             raise ValueError("Open the lid and restore fresh safety telemetry before arming")
         if any(sensor.risk() >= 2 for sensor in sample.sensors):
             raise ValueError("Temperature is already too high to arm lid-ignore")
-        # A prior protection attempt can retain its forensic timer after
-        # disarming. Explicit re-arm with a freshly observed open lid starts
-        # a new episode even if no periodic open-lid update ran in between.
+        # Explicit re-arm with a freshly observed open lid starts a new
+        # episode even if no periodic open-lid update ran in between.
         self.release()
         self.last_decision = None
         self.previous_ac = sample.ac
@@ -138,9 +137,8 @@ class SafetyPolicy:
     def release(self, reason: str = "SAFE_STATE_RESTORED") -> None:
         self.armed = False
         self.closed_since = self.deadline = self.missing_since = None
-        self.thermal_since = self.critical_since = self.busy_since = None
+        self.thermal_since = self.critical_since = None
         self.thermal_level = self.thermal_candidate = 0
-        self.deadline_shortened_by.clear()
         self.transition("SAFE_NORMAL", reason)
 
     def update(self, sample: Sample) -> str | None:
@@ -151,20 +149,18 @@ class SafetyPolicy:
         if sample.lid_closed is False:
             if self.closed_since is not None:
                 self.event("LID_OPENED")
-                self.event("SAFETY_TIMER_CANCELLED")
+                self.event("CONTINUOUS_MONITORING_ENDED")
             self.closed_since = self.deadline = self.missing_since = None
-            self.thermal_since = self.critical_since = self.busy_since = None
+            self.thermal_since = self.critical_since = None
             self.thermal_level = self.thermal_candidate = 0
-            self.deadline_shortened_by.clear()
             self.transition("LID_IGNORE_ARMED", "LID_IGNORE_ARMED")
             return None
         if self.closed_since is None:
             self.closed_since = now
-            self.deadline = now + 240
             self.transition("LID_CLOSED_MONITORED", "LID_CLOSED")
-            self.event("SAFETY_TIMER_STARTED")
-        # Unknown lid state is conservatively supervised as closed. Recovery of
-        # a dependency must never restart the closed-lid deadline.
+            self.event("CONTINUOUS_MONITORING_STARTED")
+        # Unknown lid state is conservatively supervised as closed.
+        # Supervision-loss duration is bounded independently of closed-lid time.
         ids = {s.identity for s in sample.sensors}
         healthy = sample.healthy(now) and self.required_sensors <= ids
         if not healthy:
@@ -180,28 +176,8 @@ class SafetyPolicy:
         if self.previous_ac is not None and self.previous_ac != sample.ac:
             self.event("AC_CONNECTED" if sample.ac else "AC_LOST")
         self.previous_ac = sample.ac
-        # Load shortens an already finite, non-destructive suspend deadline.
-        if sample.cpu_busy is not None and sample.cpu_busy >= .75:
-            if self.busy_since is None:
-                self.busy_since = now
-        else:
-            self.busy_since = None
-        shorteners = set()
-        if sample.ac is False:
-            shorteners.add("ON_BATTERY")
-        if self.busy_since is not None and now - self.busy_since >= 10:
-            shorteners.add("SUSTAINED_HIGH_CPU")
-        if shorteners:
-            self.deadline = min(self.deadline, self.closed_since + 120)
-            # A second cause can appear after the first one shortened the
-            # deadline. Record each cause once; never pretend which occurred
-            # first when they were observed simultaneously.
-            for source in sorted(shorteners - self.deadline_shortened_by):
-                self.deadline_shortened_by.add(source)
-                self.event("DEADLINE_SHORTENED_" + source)
-                LOG.info("deadline_shortened_by=%s ac=%s cpu_busy=%s cpu_busy_seconds=%s",
-                         source, sample.ac, sample.cpu_busy,
-                         None if self.busy_since is None else round(now - self.busy_since, 1))
+        # AC loss and processor load are observations, never normal
+        # time-based suspend triggers. Thermal sensors are still supervised.
         raw = max((s.risk() for s in sample.sensors), default=0)
         if raw < self.thermal_level and any(s.risk(3) >= self.thermal_level for s in sample.sensors):
             raw = self.thermal_level
@@ -225,15 +201,13 @@ class SafetyPolicy:
             self.critical_since = None
         if self.thermal_level >= 2:
             return self.decide("THERMAL_HIGH_RISK" if self.thermal_level == 2 else "THERMAL_EMERGENCY")
-        if now >= self.deadline:
-            return self.decide("CLOSED_LID_DEADLINE")
-        elapsed = now - self.closed_since
-        duration = self.deadline - self.closed_since
-        if elapsed >= duration * .75:
-            self.transition("LID_CLOSED_HIGH_RISK", "SAFETY_DEADLINE_NEAR")
-        elif (elapsed >= duration * .5 or self.thermal_level >= 1 or not healthy
-              or (sample.battery is not None and sample.battery <= 20)):
-            self.transition("LID_CLOSED_WARNING", "BATTERY_WARNING" if sample.battery is not None and sample.battery <= 20 else "SAFETY_WARNING")
+        if (self.thermal_level >= 1 or not healthy
+                or (sample.battery is not None and sample.battery <= 20)):
+            self.transition(
+                "LID_CLOSED_WARNING",
+                "BATTERY_WARNING" if sample.battery is not None and sample.battery <= 20
+                else "SAFETY_WARNING",
+            )
         else:
             self.transition("LID_CLOSED_MONITORED", "MONITORING")
         return None
@@ -244,9 +218,9 @@ class SafetyPolicy:
         self.last_decision = {
             "reason": reason,
             "closed_seconds": round(now - self.closed_since, 1) if self.closed_since is not None else None,
-            "time_limit_seconds": round(self.deadline - self.closed_since, 1)
-            if self.closed_since is not None and self.deadline is not None else None,
-            "deadline_shortened_by": sorted(self.deadline_shortened_by),
+            # Legacy fields are explicit None/empty, never a finite timeout.
+            "time_limit_seconds": None,
+            "deadline_shortened_by": [],
             "ac": sample.ac if sample is not None else None,
             "battery": sample.battery if sample is not None else None,
             "cpu_busy": sample.cpu_busy if sample is not None else None,
@@ -276,8 +250,11 @@ class SafetyPolicy:
     def snapshot(self) -> dict:
         measured = self.measured_thermal()
         return {"state": self.state, "reason": self.reason, "closed_since": self.closed_since,
-                "deadline": self.deadline,
-                "deadline_shortened_by": sorted(self.deadline_shortened_by),
+                "lid_ignore_mode": "continuous_until_disabled",
+                "closed_seconds": round(self.clock() - self.closed_since, 1)
+                if self.armed and self.closed_since is not None else None,
+                "deadline": None,  # Legacy wire field, no longer scheduled.
+                "deadline_shortened_by": [],  # Legacy wire field.
                 "last_decision": self.last_decision,
                 "thermal": measured["state"],
                 "thermal_measurement": measured,
@@ -399,7 +376,7 @@ class Telemetry:
                     cpu_busy = max(0., min(1., 1 - (idle - self.previous_cpu[1]) / delta))
             self.previous_cpu = total, idle
         except (OSError, ValueError, IndexError):
-            pass  # Optional multiplier, never required for the finite deadline.
+            pass  # Optional CPU usage observation; no lid-close time limit.
         return Sample(observed_at, any(lids) if lids else None, sensors,
                       any(ac_values) if ac_values else None,
                       min(batteries) if batteries else None,

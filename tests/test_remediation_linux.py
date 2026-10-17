@@ -170,7 +170,7 @@ class LinuxLifecycleRegressionTests(unittest.TestCase):
               mock.patch.object(daemon_module, 'request_service', side_effect=request),
               mock.patch.object(daemon_module.threading, 'Thread', side_effect=thread)):
             daemon._post_control = mock.Mock()
-            daemon._start_protection('CLOSED_LID_DEADLINE')
+            daemon._start_protection('THERMAL_EMERGENCY')
         self.assertEqual(order, ['ungrab', 'close', 'request'])
 
     def test_failed_release_terminates_without_requesting_sleep(self):
@@ -180,7 +180,7 @@ class LinuxLifecycleRegressionTests(unittest.TestCase):
         lid.device.close.side_effect = OSError('close failed')
         with mock.patch.object(daemon_module, 'request_service') as request:
             with self.assertRaises(daemon_module.TransitionError):
-                daemon._start_protection('CLOSED_LID_DEADLINE')
+                daemon._start_protection('THERMAL_EMERGENCY')
             request.assert_not_called()
 
     def armable(self):
@@ -288,7 +288,7 @@ class LinuxLifecycleRegressionTests(unittest.TestCase):
             daemon._set_locked_kinds({'keyboard','mouse'}, reason='fixture', timeout=None)
         daemon._ensure_allowed_uinput.assert_not_called()
 
-    def test_evdev_close_starts_timer_before_next_poll_and_stale_poll_cannot_reopen(self):
+    def test_evdev_close_starts_continuous_monitor_before_next_poll_and_stale_poll_cannot_reopen(self):
         from test_safety import sample
         from dataclasses import asdict
         daemon = self.armable()
@@ -297,7 +297,9 @@ class LinuxLifecycleRegressionTests(unittest.TestCase):
         with mock.patch.object(daemon_module.time, 'monotonic', return_value=101):
             daemon._handle_lid_switch_event(True)
         self.assertEqual(daemon.safety.closed_since, 101)
-        self.assertEqual(daemon.safety.deadline, 341)
+        self.assertIsNone(daemon.safety.deadline)
+        self.assertEqual(daemon.safety.events.count("CONTINUOUS_MONITORING_STARTED"), 1)
+        self.assertTrue(daemon.safety.armed)
         daemon.wakeup_read = mock.Mock()
         daemon.wakeup_read.recv.side_effect = BlockingIOError()
         daemon.control_queue = daemon_module.queue.SimpleQueue()
