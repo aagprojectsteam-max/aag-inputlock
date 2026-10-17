@@ -13,6 +13,24 @@ closed-lid limit, shortened to two minutes on battery or sustained high CPU load
 thermal dwell/hysteresis, critical-battery checks and bounded telemetry-loss grace
 remain intact. Unknown lid state is supervised conservatively as closed.
 
+**Important:** The checkbox is a *time-limited* lid override, **not** "ignore
+until I switch it off." The timeout requests ordinary system suspend **even if
+all thermal readings are normal**. The UI now says "timed: 2–4 min; auto-suspend"
+and explicitly repeats the limit before enabling. No timer or protection limit
+was removed by the October 18 evidence/UX change.
+
+The policy now records each actual shortening cause at its first observation as
+`DEADLINE_SHORTENED_ON_BATTERY` and/or `DEADLINE_SHORTENED_SUSTAINED_HIGH_CPU`.
+Independent causes can co-occur; no source is guessed. The read-only status
+contains `safety.deadline_shortened_by` while the lid is closed, and
+`safety.last_decision` after a protective decision with the effective time
+limit, elapsed seconds, source(s), battery, AC and CPU sample. The input-lock
+journal records `protective_decision_evidence` once per normal expiry. The
+generation-tagged `protective_result.decision_evidence` preserves attribution
+across the protection attempt. A protection decision created inside the pure
+policy is not recorded again during daemon dispatch. Source tests use synthetic
+clocks and mocked power calls; they do not test physical suspend.
+
 The compatibility wire field `stack_ready` now means native protection readiness.
 `sample.protection_errors` reports the actual refusal. The probe checks logind
 ordinary suspend support, blocking sleep inhibitors, the kernel suspend-success

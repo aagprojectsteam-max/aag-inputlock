@@ -101,6 +101,10 @@ class SafetyPolicy:
         self.required_sensors: set[str] = set()
         self.previous_ac = None
         self.busy_since = None
+        # Explicit evidence of why the finite deadline became two minutes.
+        # Reasons are monotonic within one closed-lid episode.
+        self.deadline_shortened_by: set[str] = set()
+        self.last_decision: dict | None = None
 
     def event(self, reason: str) -> None:
         self.events.append(reason)
@@ -123,6 +127,7 @@ class SafetyPolicy:
         # disarming. Explicit re-arm with a freshly observed open lid starts
         # a new episode even if no periodic open-lid update ran in between.
         self.release()
+        self.last_decision = None
         self.previous_ac = sample.ac
         self.required_sensors = {s.identity for s in sample.sensors}
         self.armed = True
@@ -134,6 +139,7 @@ class SafetyPolicy:
         self.closed_since = self.deadline = self.missing_since = None
         self.thermal_since = self.critical_since = self.busy_since = None
         self.thermal_level = self.thermal_candidate = 0
+        self.deadline_shortened_by.clear()
         self.transition("SAFE_NORMAL", reason)
 
     def update(self, sample: Sample) -> str | None:
@@ -148,6 +154,7 @@ class SafetyPolicy:
             self.closed_since = self.deadline = self.missing_since = None
             self.thermal_since = self.critical_since = self.busy_since = None
             self.thermal_level = self.thermal_candidate = 0
+            self.deadline_shortened_by.clear()
             self.transition("LID_IGNORE_ARMED", "LID_IGNORE_ARMED")
             return None
         if self.closed_since is None:
@@ -178,8 +185,22 @@ class SafetyPolicy:
                 self.busy_since = now
         else:
             self.busy_since = None
-        if sample.ac is False or (self.busy_since is not None and now - self.busy_since >= 10):
+        shorteners = set()
+        if sample.ac is False:
+            shorteners.add("ON_BATTERY")
+        if self.busy_since is not None and now - self.busy_since >= 10:
+            shorteners.add("SUSTAINED_HIGH_CPU")
+        if shorteners:
             self.deadline = min(self.deadline, self.closed_since + 120)
+            # A second cause can appear after the first one shortened the
+            # deadline. Record each cause once; never pretend which occurred
+            # first when they were observed simultaneously.
+            for source in sorted(shorteners - self.deadline_shortened_by):
+                self.deadline_shortened_by.add(source)
+                self.event("DEADLINE_SHORTENED_" + source)
+                LOG.info("deadline_shortened_by=%s ac=%s cpu_busy=%s cpu_busy_seconds=%s",
+                         source, sample.ac, sample.cpu_busy,
+                         None if self.busy_since is None else round(now - self.busy_since, 1))
         raw = max((s.risk() for s in sample.sensors), default=0)
         if raw < self.thermal_level and any(s.risk(3) >= self.thermal_level for s in sample.sensors):
             raw = self.thermal_level
@@ -217,6 +238,19 @@ class SafetyPolicy:
         return None
 
     def decide(self, reason: str) -> str:
+        now = self.clock()
+        sample = self.sample
+        self.last_decision = {
+            "reason": reason,
+            "closed_seconds": round(now - self.closed_since, 1) if self.closed_since is not None else None,
+            "time_limit_seconds": round(self.deadline - self.closed_since, 1)
+            if self.closed_since is not None and self.deadline is not None else None,
+            "deadline_shortened_by": sorted(self.deadline_shortened_by),
+            "ac": sample.ac if sample is not None else None,
+            "battery": sample.battery if sample is not None else None,
+            "cpu_busy": sample.cpu_busy if sample is not None else None,
+        }
+        LOG.info("protective_decision_evidence=%s", json.dumps(self.last_decision, sort_keys=True))
         self.armed = False  # One dispatch per explicit arm.
         self.transition("PROTECTIVE_ACTION_PENDING", "PROTECTIVE_ACTION_DECIDED")
         self.reason = reason
@@ -241,7 +275,10 @@ class SafetyPolicy:
     def snapshot(self) -> dict:
         measured = self.measured_thermal()
         return {"state": self.state, "reason": self.reason, "closed_since": self.closed_since,
-                "deadline": self.deadline, "thermal": measured["state"],
+                "deadline": self.deadline,
+                "deadline_shortened_by": sorted(self.deadline_shortened_by),
+                "last_decision": self.last_decision,
+                "thermal": measured["state"],
                 "thermal_measurement": measured,
                 "protection_armed": self.armed,
                 "thermal_protection": "ARMED" if self.armed else "DISARMED",

@@ -46,6 +46,23 @@ LOG = logging.getLogger("input-lock-tray")
 CURSOR_SETTINGS_PATH: Final = Path.home() / ".config/input-lock/cursor-settings.json"
 DEFAULT_CURSOR_TIMEOUT_SECONDS: Final = 60
 MAX_CURSOR_TIMEOUT_SECONDS: Final = 86_399
+TIMED_LID_LABEL: Final = "Ignore Lid Close (timed: 2–4 min; auto-suspend)"
+
+
+def lid_deadline_cause(safety: object) -> str:
+    """Reason for a shortened closed-lid limit; safe for legacy status data."""
+    if not isinstance(safety, dict):
+        return ""
+    sources = safety.get("deadline_shortened_by", [])
+    if not sources:
+        decision = safety.get("last_decision")
+        if isinstance(decision, dict):
+            sources = decision.get("deadline_shortened_by", [])
+    if not isinstance(sources, list):
+        return ""
+    labels = {"ON_BATTERY": "battery power", "SUSTAINED_HIGH_CPU": "sustained CPU load"}
+    return " + ".join(labels[source] for source in
+                      sorted({item for item in sources if isinstance(item, str) and item in labels}))
 
 
 class TrayNotifier:
@@ -93,7 +110,7 @@ class TrayNotifier:
         self.settings_item.connect("activate", self._on_settings)
         self.menu.append(self.settings_item)
 
-        self.lid_item = Gtk.CheckMenuItem(label="Ignore Lid Switch (temporary)")
+        self.lid_item = Gtk.CheckMenuItem(label=TIMED_LID_LABEL)
         self.lid_item.set_sensitive(False)
         self.lid_item.connect("toggled", self._on_lid_toggled)
         self.menu.append(self.lid_item)
@@ -217,8 +234,20 @@ class TrayNotifier:
         self.previous_locked = locked
         safety = state.get("safety", {})
         safety_state = safety.get("state") if isinstance(safety, dict) else None
-        if safety_state != prior_safety and safety_state in {"LID_CLOSED_WARNING", "LID_CLOSED_HIGH_RISK", "PROTECTIVE_ACTION_PENDING", "PROTECTIVE_ACTION_FAILED"}:
-            self._notify("Lid safety", "Open the lid. " + ("Protective action requested." if safety_state == "PROTECTIVE_ACTION_PENDING" else "The supervised closed-lid period is ending or safety monitoring needs attention."), locked=bool(locked))
+        if safety_state != prior_safety and safety_state in {"LID_CLOSED_WARNING", "LID_CLOSED_HIGH_RISK", "PROTECTIVE_ACTION_PENDING", "PROTECTIVE_ACTION_FAILED", "PROTECTIVE_ACTION_EXECUTED"}:
+            message = "Open the lid. The supervised closed-lid period is ending or safety monitoring needs attention."
+            if safety_state == "PROTECTIVE_ACTION_PENDING":
+                decision = safety.get("last_decision")
+                if isinstance(decision, dict) and decision.get("reason") == "CLOSED_LID_DEADLINE":
+                    cause = lid_deadline_cause(safety)
+                    message = "The timed lid-ignore limit expired" + (f" (shortened by {cause})" if cause else "") + ". Ordinary system suspend was requested."
+                else:
+                    message = "Open the lid. A protective action was requested."
+            elif safety_state == "PROTECTIVE_ACTION_EXECUTED":
+                message = "A suspend transition was confirmed. Lid-ignore is now off; enable it again if needed."
+            elif safety_state == "PROTECTIVE_ACTION_FAILED":
+                message = "Open the lid. The automatic protection failed; see InputLock diagnostics."
+            self._notify("Lid safety", message, locked=bool(locked))
         return False
 
     def _update_menu(self, locked: frozenset[str], hotkey: str) -> None:
@@ -233,6 +262,9 @@ class TrayNotifier:
             deadline = safety.get("deadline")
             if isinstance(deadline, (int, float)) and self.current_state.get("ignore_lid_close"):
                 label += f" ({max(0, round(deadline - time.monotonic()))}s remaining)"
+                cause = lid_deadline_cause(safety)
+                if cause:
+                    label += f" — shortened by {cause}"
             self.safety_item.set_label("Lid safety: " + label + " | Temperature: "
                                        + str(safety.get("thermal", "UNKNOWN"))
                                        + " | Protection: " + str(safety.get("thermal_protection", "UNKNOWN")))
@@ -269,9 +301,9 @@ class TrayNotifier:
         self.updating_lid_item = True
         self.lid_item.set_active(ignore_lid)
         self.lid_item.set_label(
-            "Ignore Lid Switch (temporary)"
+            TIMED_LID_LABEL
             if not ignore_lid or policy_healthy
-            else "Ignore Lid Switch (safety unavailable)"
+            else "Ignore Lid Close (safety unavailable)"
         )
         lid_count = self.current_state.get("lid_switch_devices", 0)
         self.lid_item.set_sensitive(isinstance(lid_count, int) and lid_count > 0)
@@ -860,7 +892,8 @@ class TrayNotifier:
                 text="Keep running with the lid closed?",
             )
             dialog.format_secondary_text(
-                "Open the lid before enabling. Closed-lid use is supervised for at most four minutes, or two minutes on battery or under heavy load. "
+                "This is NOT an indefinite lid-close override: InputLock automatically requests suspend after at most four minutes, "
+                "or two minutes on battery or under heavy load, even when temperatures are normal. Open the lid before enabling. "
                 "Temperature, lost monitoring, or low battery can request ordinary OS suspend sooner. Normal idle sleep and critical-battery protection remain enabled. "
                 "Do not put it in a bag while this option is enabled, because it may overheat."
             )
@@ -901,9 +934,9 @@ class TrayNotifier:
         self.updating_lid_item = True
         self.lid_item.set_active(enabled)
         self.lid_item.set_label(
-            "Ignore Lid Switch (temporary)"
+            TIMED_LID_LABEL
             if not enabled or self.current_state.get("lid_policy_healthy") is True
-            else "Ignore Lid Switch (safety unavailable)"
+            else "Ignore Lid Close (safety unavailable)"
         )
         lid_count = self.current_state.get("lid_switch_devices", 0)
         self.lid_item.set_sensitive(isinstance(lid_count, int) and lid_count > 0)

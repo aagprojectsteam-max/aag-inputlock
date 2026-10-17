@@ -51,9 +51,15 @@ class PolicyTests(unittest.TestCase):
         self.update(cpu_busy=.9)
         self.update(10, cpu_busy=.9)
         self.assertEqual(self.policy.deadline, 220)
+        self.assertEqual(self.policy.snapshot()["deadline_shortened_by"], ["SUSTAINED_HIGH_CPU"])
+        self.assertEqual(self.policy.events.count("DEADLINE_SHORTENED_SUSTAINED_HIGH_CPU"), 1)
         self.update(50, cpu_busy=.1)
         self.assertEqual(self.policy.deadline, 220)
         self.assertEqual(self.update(60), "CLOSED_LID_DEADLINE")
+        evidence = self.policy.snapshot()["last_decision"]
+        self.assertEqual(evidence["deadline_shortened_by"], ["SUSTAINED_HIGH_CPU"])
+        self.assertEqual(evidence["time_limit_seconds"], 120)
+        self.assertEqual(evidence["reason"], "CLOSED_LID_DEADLINE")
 
     def test_battery_and_ac_loss_shorten_timer(self):
         self.update()
@@ -62,6 +68,35 @@ class PolicyTests(unittest.TestCase):
         self.update(30)
         self.assertEqual(self.policy.deadline, 220)
         self.assertIn("AC_LOST", self.policy.events)
+        self.assertEqual(self.policy.snapshot()["deadline_shortened_by"], ["ON_BATTERY"])
+        self.assertEqual(self.policy.events.count("DEADLINE_SHORTENED_ON_BATTERY"), 1)
+
+    def test_both_deadline_causes_are_recorded_once_without_extending_it(self):
+        self.update(ac=False, discharging=True)
+        self.update(10, ac=False, discharging=True, cpu_busy=.85)
+        self.update(10, ac=False, discharging=True, cpu_busy=.85)
+        self.update(10, ac=True, discharging=False, cpu_busy=.1)
+        self.assertEqual(self.policy.deadline, 220)
+        self.assertEqual(self.policy.snapshot()["deadline_shortened_by"],
+                         ["ON_BATTERY", "SUSTAINED_HIGH_CPU"])
+        for cause in ("ON_BATTERY", "SUSTAINED_HIGH_CPU"):
+            self.assertEqual(self.policy.events.count("DEADLINE_SHORTENED_" + cause), 1)
+        self.assertEqual(self.update(90), "CLOSED_LID_DEADLINE")
+        self.assertEqual(self.policy.snapshot()["last_decision"]["deadline_shortened_by"],
+                         ["ON_BATTERY", "SUSTAINED_HIGH_CPU"])
+        self.policy.release()
+        self.assertEqual(self.policy.snapshot()["last_decision"]["time_limit_seconds"], 120)
+        self.assertEqual(self.policy.snapshot()["deadline_shortened_by"], [])
+
+    def test_new_close_resets_deadline_cause_from_previous_episode(self):
+        self.update(ac=False, discharging=True)
+        self.assertEqual(self.policy.deadline_shortened_by, {"ON_BATTERY"})
+        self.now += 5
+        self.policy.update(sample(self.now, lid_closed=False))
+        self.assertEqual(self.policy.deadline_shortened_by, set())
+        self.update(ac=True, discharging=False, cpu_busy=.1)
+        self.assertEqual(self.policy.deadline, self.now + 240)
+        self.assertEqual(self.policy.snapshot()["deadline_shortened_by"], [])
 
     def test_battery_critical_requires_sustained_samples(self):
         self.assertIsNone(self.update(battery=5))
@@ -136,6 +171,33 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(self.policy.armed)
         self.assertEqual(self.policy.closed_since, self.now)
         self.assertEqual(self.policy.deadline, self.now + 240)
+
+
+class DecisionDispatchTests(unittest.TestCase):
+    def test_policy_and_daemon_create_one_decision_with_original_evidence(self):
+        from input_lock_daemon import InputLockDaemon
+
+        now = [100.]
+        policy = SafetyPolicy(lambda: now[0])
+        policy.arm(sample())
+        policy.update(sample(now[0], lid_closed=True, ac=False, discharging=True))
+        now[0] += 120
+        reason = policy.update(sample(now[0], lid_closed=True, ac=False, discharging=True))
+        self.assertEqual(reason, "CLOSED_LID_DEADLINE")
+        original = policy.last_decision.copy()
+        daemon = InputLockDaemon.__new__(InputLockDaemon)
+        daemon.safety = policy
+        daemon.devices = {}
+        daemon.lid_generation = 7
+        daemon._emergency_unlock = Mock()
+        daemon._write_safety = Mock()
+        daemon._post_control = Mock()
+        with patch("input_lock_daemon.threading.Thread") as worker:
+            daemon._start_protection(reason)
+            worker.return_value.start.assert_called_once()
+        self.assertEqual(policy.events.count("PROTECTIVE_ACTION_DECIDED"), 1)
+        self.assertEqual(policy.last_decision, original)
+        self.assertEqual(daemon.protective_result["decision_evidence"], original)
 
 
 class TelemetryTests(unittest.TestCase):
