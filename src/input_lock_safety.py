@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -406,6 +407,23 @@ class Telemetry:
                       cpu_busy, dependencies_ok, stack_ready, errors)
 
 
+def root_hard_block_supported(run=subprocess.run) -> bool:
+    """Require systemd >= 257 before relying on default root block semantics.
+
+    Versions before 257 could ignore ordinary inhibitors for privileged callers
+    unless explicitly asked to check them. Deny unknown/older versions rather
+    than ever silently suspending through a hard sleep blocker.
+    """
+    try:
+        result = run(["/usr/bin/systemctl", "--version"], capture_output=True,
+                     text=True, timeout=3, check=False)
+        first = result.stdout.splitlines()[0] if result.returncode == 0 else ""
+        match = re.fullmatch(r"systemd\s+(\d+)(?:\s+.*)?", first)
+        return bool(match and int(match.group(1)) >= 257)
+    except (OSError, IndexError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+
 def native_status() -> dict:
     """Read logind only; never acquire an inhibitor or request sleep here."""
     import dbus
@@ -419,9 +437,14 @@ def native_status() -> dict:
             # The unprivileged monitor cannot suspend itself. "challenge"
             # still means supported; the fixed root service performs the action
             # without interactive authorization and handles any actual refusal.
-            "supported": str(manager.CanSuspend(timeout=3)) in {"yes", "challenge"},
+            "supported": (root_hard_block_supported()
+                          and str(manager.CanSuspend(timeout=3)) in {"yes", "challenge"}),
             "preparing": bool(properties.Get("org.freedesktop.login1.Manager", "PreparingForSleep", timeout=3)),
-            "blocked": any("sleep" in str(row[0]).split(":") and str(row[3]) in {"block", "block-weak"}
+            # systemd >= 257 always enforces hard "block" sleep locks for
+            # privileged callers. "block-weak" intentionally does not block
+            # the root helper with SuspendWithFlags(0). Keep both the native
+            # dispatch and this readiness probe in exact agreement.
+            "blocked": any("sleep" in str(row[0]).split(":") and str(row[3]) == "block"
                            for row in inhibitors),
             "inputlock_holds_lid": any(str(row[1]) == "Input Lock" and
                                       "handle-lid-switch" in str(row[0]).split(":") for row in inhibitors),
@@ -529,19 +552,23 @@ def observe_suspend(run, requested_at: float, before_success: int, *, clock=time
 
 
 def request_native_suspend() -> None:
-    """Ask logind once, non-interactively, honoring inhibitors even as root.
+    """Ask logind once, non-interactively, honoring hard sleep inhibitors.
 
-    SD_LOGIND_ROOT_CHECK_INHIBITORS=1 also honors block-weak locks. The
-    legacy Suspend(false) method does not guarantee this for privileged callers.
-    Unsupported APIs/refusals/timeouts fail closed; never retry with weaker flags.
+    On systemd >= 257, regular "block" inhibitors apply to root regardless
+    of flags. SuspendWithFlags(0) follows that native policy, where weak
+    "block-weak" session inhibitors do not stop a root-owned protective helper.
+    Do NOT set SD_LOGIND_SKIP_INHIBITORS (0x10): it would bypass hard blocks.
+    Unsupported APIs/refusals/timeouts fail closed; do not retry or escalate.
     A method reply means accepted, not a completed kernel transition.
     """
+    if not root_hard_block_supported():
+        raise RuntimeError("systemd 257+ hard inhibitor enforcement is required")
     import dbus
     bus = dbus.SystemBus(private=True)
     try:
         manager = dbus.Interface(bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1"),
                                  "org.freedesktop.login1.Manager")
-        manager.SuspendWithFlags(dbus.UInt64(1), timeout=10)
+        manager.SuspendWithFlags(dbus.UInt64(0), timeout=10)
     finally:
         bus.close()
 

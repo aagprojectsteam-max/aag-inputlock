@@ -95,7 +95,7 @@ class ProtectionTests(unittest.TestCase):
                 raise dispatch
             return SimpleNamespace(returncode=dispatch)
         def request_suspend():
-            calls.append(['logind', 'SuspendWithFlags', 1])
+            calls.append(['logind', 'SuspendWithFlags', 0])
             if isinstance(dispatch, Exception):
                 raise dispatch
             if dispatch:
@@ -121,7 +121,7 @@ class ProtectionTests(unittest.TestCase):
     def test_only_ordinary_suspend_after_release(self):
         result, calls, records, observe = self.request()
         self.assertEqual(result, 0)
-        self.assertEqual(calls, [['logind', 'SuspendWithFlags', 1]])
+        self.assertEqual(calls, [['logind', 'SuspendWithFlags', 0]])
         self.assertEqual(records[-1].args[1]['result'], 'suspend-transition-confirmed')
         observe.assert_called_once()
 
@@ -155,7 +155,7 @@ class ProtectionTests(unittest.TestCase):
         result, calls, *_ = self.request(recovery=True, state_changes={'effective': True, 'restrictions_released': False})
         self.assertEqual(result, 0)
         self.assertEqual(calls[0], ['/usr/bin/systemctl', 'stop', 'input-lock.service'])
-        self.assertEqual(calls[1], ['logind', 'SuspendWithFlags', 1])
+        self.assertEqual(calls[1], ['logind', 'SuspendWithFlags', 0])
 
     def test_startup_failure_cannot_use_old_same_boot_or_previous_boot_journal(self):
         for changes in ({'invocation_id': 'previous', 'effective': True},
@@ -196,13 +196,95 @@ class ProtectionTests(unittest.TestCase):
         self.assertTrue(any(call.args[0] == safety.FAILURE_LATCH for call in record.call_args_list))
 
 
+class LogindInhibitorSemanticsTests(unittest.TestCase):
+    """Read-only mock of the actual logind list; never request real sleep."""
+
+    def inspect(self, rows):
+        bus, manager, props = Mock(), Mock(), Mock()
+        manager.CanSuspend.return_value = "yes"
+        manager.ListInhibitors.return_value = rows
+        props.Get.return_value = False
+        dbus = SimpleNamespace(SystemBus=Mock(return_value=bus),
+                               Interface=Mock(side_effect=[manager, props]))
+        with patch.dict(sys.modules, dbus=dbus), patch.object(
+                safety, 'root_hard_block_supported', return_value=True):
+            state = safety.native_status()
+        manager.ListInhibitors.assert_called_once_with(timeout=3)
+        bus.close.assert_called_once()
+        return state
+
+    def test_weak_gnome_session_sleep_lock_is_advisory_for_root(self):
+        status = self.inspect([
+            ('sleep', 'gnome-session', 'user session inhibited', 'block-weak', 1000, 8275),
+            ('sleep', 'GNOME Shell', 'save session', 'delay', 1000, 8287),
+            ('handle-lid-switch', 'AAG Power', 'native lid owner', 'block', 0, 2269),
+        ])
+        self.assertTrue(status['supported'])
+        self.assertFalse(status['blocked'])
+        self.assertFalse(status['inputlock_holds_lid'])
+
+    def test_real_hard_sleep_locks_fail_closed_even_with_weak_lock(self):
+        for what in ('sleep', 'shutdown:sleep', 'sleep:shutdown'):
+            with self.subTest(what=what):
+                self.assertTrue(self.inspect([
+                    ('sleep', 'gnome-session', 'weak', 'block-weak', 1000, 82),
+                    (what, 'APT', 'upgrading', 'block', 0, 123),
+                ])['blocked'])
+
+    def test_non_sleep_hard_lock_or_only_delays_do_not_block_sleep(self):
+        self.assertFalse(self.inspect([
+            ('shutdown', 'APT', 'upgrade', 'block', 0, 123),
+            ('sleep', 'AAG Power', 'checkpoint', 'delay', 0, 2269),
+        ])['blocked'])
+
+    def test_own_lid_inhibitor_is_detected_independently(self):
+        status = self.inspect([
+            ('handle-lid-switch', 'Input Lock', 'armed', 'block', 0, 404),
+        ])
+        self.assertTrue(status['inputlock_holds_lid'])
+        self.assertFalse(status['blocked'])
+
+
+class SystemdVersionSafetyTests(unittest.TestCase):
+    def test_hard_sleep_block_semantics_are_never_assumed_on_old_or_unknown_versions(self):
+        for first_line, allowed in (
+            ('systemd 256 (256.5)', False),
+            ('systemd 257 (257.8)', True),
+            ('systemd 259 (259.5-0ubuntu3.4)', True),
+            ('systemd 999', True),
+            ('malformed output', False),
+            ('', False),
+        ):
+            with self.subTest(version=first_line):
+                run = Mock(return_value=SimpleNamespace(returncode=0, stdout=first_line + '\n'))
+                self.assertEqual(safety.root_hard_block_supported(run=run), allowed)
+                run.assert_called_once_with(
+                    ['/usr/bin/systemctl', '--version'],
+                    capture_output=True, text=True, timeout=3, check=False)
+        self.assertFalse(safety.root_hard_block_supported(
+            run=Mock(return_value=SimpleNamespace(returncode=1, stdout='systemd 259\n'))))
+        self.assertFalse(safety.root_hard_block_supported(
+            run=Mock(side_effect=subprocess.TimeoutExpired('systemctl', 3))))
+        self.assertFalse(safety.root_hard_block_supported(
+            run=Mock(side_effect=FileNotFoundError())))
+
+    def test_old_systemd_refuses_suspend_before_connecting_to_dbus(self):
+        dbus = SimpleNamespace(SystemBus=Mock())
+        with patch.dict(sys.modules, dbus=dbus), patch.object(
+                safety, 'root_hard_block_supported', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, '257'):
+                safety.request_native_suspend()
+        dbus.SystemBus.assert_not_called()
+
+
 class LogindDispatchTests(unittest.TestCase):
-    def test_bounded_noninteractive_inhibitor_checked_request_and_bus_cleanup(self):
+    def test_bounded_noninteractive_hard_inhibitor_checked_request_and_bus_cleanup(self):
         for error in (None, RuntimeError('AccessDenied'), TimeoutError('NoReply'), RuntimeError('UnknownMethod')):
             bus, manager = Mock(), Mock()
             manager.SuspendWithFlags.side_effect = error
             dbus = SimpleNamespace(SystemBus=Mock(return_value=bus), Interface=Mock(return_value=manager), UInt64=int)
-            with patch.dict(sys.modules, dbus=dbus):
+            with patch.dict(sys.modules, dbus=dbus), patch.object(
+                    safety, 'root_hard_block_supported', return_value=True):
                 if error:
                     with self.assertRaises(type(error)):
                         safety.request_native_suspend()
@@ -210,8 +292,10 @@ class LogindDispatchTests(unittest.TestCase):
                     safety.request_native_suspend()
             dbus.SystemBus.assert_called_once_with(private=True)
             bus.get_object.assert_called_once_with('org.freedesktop.login1', '/org/freedesktop/login1')
-            manager.SuspendWithFlags.assert_called_once_with(1, timeout=10)
-            self.assertEqual(manager.method_calls, [('SuspendWithFlags', (1,), {'timeout': 10})])
+            manager.SuspendWithFlags.assert_called_once_with(0, timeout=10)
+            self.assertEqual(manager.method_calls, [('SuspendWithFlags', (0,), {'timeout': 10})])
+            # 0x10 (SD_LOGIND_SKIP_INHIBITORS) must never be set.
+            self.assertEqual(manager.SuspendWithFlags.call_args.args[0] & 0x10, 0)
             bus.close.assert_called_once()
 
 
