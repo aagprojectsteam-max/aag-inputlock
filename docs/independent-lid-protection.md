@@ -1,35 +1,78 @@
-# Independent temporary lid-ignore
+# Continuous lid-ignore with independent safety supervision
 
-InputLock owns a logind `handle-lid-switch` inhibitor and evdev lid grabs while
-the explicitly armed tray lease is active. Disabling releases those restrictions
-immediately. The normal logind policy, or another installed lid owner, can resume
-ownership. InputLock does not call AAG Power APIs or test retired AAG services.
-AAG Power's competitor detection can yield and reclaim its inhibitor without any
-service restart or configuration change.
+InputLock owns a logind `handle-lid-switch` inhibitor and evdev lid grabs
+while the explicitly armed local tray lease is active. Disabling the option
+releases these restrictions immediately. The normal logind policy or another
+installed lid manager (including AAG Power) can resume ownership.
+InputLock does not call AAG Power APIs or depend on retired AAG services.
 
-Arming still requires an open lid, fresh CPU/chassis/battery telemetry, an active
-authorized graphical session and a connected controller. The existing four-minute
-closed-lid limit, shortened to two minutes on battery or sustained high CPU load,
-thermal dwell/hysteresis, critical-battery checks and bounded telemetry-loss grace
-remain intact. Unknown lid state is supervised conservatively as closed.
+## No timeout while healthy
 
-**Important:** The checkbox is a *time-limited* lid override, **not** "ignore
-until I switch it off." The timeout requests ordinary system suspend **even if
-all thermal readings are normal**. The UI now says "timed: 2–4 min; auto-suspend"
-and explicitly repeats the limit before enabling. No timer or protection limit
-was removed by the October 18 evidence/UX change.
+**The 120/240-second closed-lid deadline was removed by explicit owner
+approval on 2026-10-18.** A normal lid closure no longer causes any
+time-based sleep after two minutes, four minutes, hours or days. Changing
+between AC/battery or maintaining high processor utilization does not
+shorten a non-existent deadline. Sustained load can still raise measured
+temperatures and trigger the independent thermal protection.
 
-The policy now records each actual shortening cause at its first observation as
-`DEADLINE_SHORTENED_ON_BATTERY` and/or `DEADLINE_SHORTENED_SUSTAINED_HIGH_CPU`.
-Independent causes can co-occur; no source is guessed. The read-only status
-contains `safety.deadline_shortened_by` while the lid is closed, and
-`safety.last_decision` after a protective decision with the effective time
-limit, elapsed seconds, source(s), battery, AC and CPU sample. The input-lock
-journal records `protective_decision_evidence` once per normal expiry. The
-generation-tagged `protective_result.decision_evidence` preserves attribution
-across the protection attempt. A protection decision created inside the pure
-policy is not recorded again during daemon dispatch. Source tests use synthetic
-clocks and mocked power calls; they do not test physical suspend.
+Arming requires an open lid, fresh CPU/chassis/battery telemetry, an
+authorized active graphical session and a connected tray controller.
+While the lid is closed, high-risk temperature or emergency temperature
+(with hysteresis/dwell) and genuinely critical battery cause ordinary
+system suspend after InputLock has released its inhibitor and device grabs.
+Low battery (above the critical threshold), elevated-but-noncritical
+temperature, AC changes and high CPU load may generate warnings but do
+**not** start any closed-lid countdown. Temporary loss of telemetry is
+granted no more than 15 seconds before fail-safe intervention. Lost device
+identity, controller/session, watchdog or daemon are other fail-safe
+exceptions: running unmonitored with a closed lid must not be allowed.
+
+## GNOME's separate 15-minute idle suspend on battery
+
+The inspected GNOME power configuration has
+`sleep-inactive-battery-type='suspend'` and
+`sleep-inactive-battery-timeout=900`. Removing the InputLock timer
+alone cannot satisfy continuous operation, since GNOME could otherwise
+request ordinary idle sleep after 15 minutes on battery.
+
+The authenticated **per-user tray process** now obtains a temporary
+`org.gnome.SessionManager.Inhibit(flags=8)` lease for **idle only**
+while the effective lid-ignore state is on. This prevents GNOME from
+classifying its session as idle while explicitly requested to remain
+running. It **does not** request `flags=4` (suspend inhibition), hold
+a logind sleep inhibitor, change any GNOME GSettings value, suppress
+the OS's critical-battery protection or obstruct a manual/thermal
+suspend. The cookie is unregistered when the feature is disabled or
+the tray disconnects. It is held on a **private session D-Bus connection**
+which is always closed on disable, including when Inhibit/Uninhibit
+acknowledgment is lost, so orphaned inhibitors cannot persist. A GNOME
+session-manager owner change reacquires the cookie.
+If GNOME idle suppression becomes unavailable, the tray requests
+a guarded lid-ignore disable; if this communication fails, it drops
+its controller connection to engage the existing daemon
+`CONTROLLER_LOST` fail-safe. This is a deliberate dependency on the
+already-required session controller, not on any AAG Power process.
+
+The setting is **continuous while healthy**, not persistent across
+logouts, InputLock daemon restarts, reboot, missing telemetry or safety
+actions. A new session/daemon starts disarmed and must be explicitly
+armed again with the lid open. Firmware emergency shutdowns and explicit
+operator sleep remain under the operating system's authority. Never use
+the laptop closed inside a bag or without ventilation.
+
+## Durable evidence / backwards compatibility
+
+The read-only safety status publishes
+`lid_ignore_mode="continuous_until_disabled"`, a `closed_seconds`
+counter for diagnostics, and `deadline=null`.
+The obsolete `deadline_shortened_by=[]` and
+`last_decision.time_limit_seconds=null` fields are retained only
+for older consumers; no active code uses them to schedule sleep.
+The journal records `CONTINUOUS_MONITORING_STARTED` /
+`CONTINUOUS_MONITORING_ENDED` on lid changes, plus
+`protective_decision_evidence` on genuine risk or supervision loss.
+No normal `CLOSED_LID_DEADLINE` or
+`DEADLINE_SHORTENED_*` events are generated.
 
 The compatibility wire field `stack_ready` now means native protection readiness.
 `sample.protection_errors` reports the actual refusal. The probe checks logind
@@ -41,7 +84,7 @@ There is no AAG readiness exemption that simply sets this field true.
 
 ## Protection and failure sequence
 
-1. At a deadline or safety trigger, release evdev grabs and the low-level lid
+1. At a genuine safety/fail-safe trigger, release evdev grabs and the low-level lid
    inhibitor, then durably record a generation-tagged request. Failed release
    terminates the daemon so systemd recovery can close its descriptors.
 2. `input-lock-protect.service` verifies the current boot/generation, release

@@ -58,6 +58,18 @@ POST_BOOT_REPAIR_BASELINE = {
     'input-lock-protect.service': 'a4273d16bb2bc1e0f68faf9c407719bbf17fd873914d281151514532e06751bc',
     'input-lock-failsafe.service': '967d4cf06e66c1b288c192787d1eeaf6469c06b282f227e62e20bf44d989f69b',
 }
+# Exact host baseline after the merged October 18 weak-inhibitor fix (PR #4).
+# Recognize the complete release atomically; mixed or modified files still
+# fail closed. This adds no privilege bypass or new recovery exception.
+OCT18_WEAK_INHIBITOR_BASELINE = {
+    'input_lock_lid_policy.py': 'd6cc8671226852ad85e0ac6f6a9767e4dfff66a13daef06a8b74bfc8734e22f4',
+    'input_lock_safety.py': '1fc2eb1e556a9e1436df75116d625b5ce5c9ca7e34c80f28ab42844c0af70a6c',
+    'input_lock_daemon.py': '91a7855a50ba4e3da00183833c8bd402c989a3dbec1effb961e24ac93fdca86e',
+    'input_lock_notifier.py': '05476066f5745729eae6e7c78c0b35668ae85d295c3667c9a3a3097f185ae2ad',
+    'input-lock.service': '69bb6695fb0cb11272a44bc32dd67a18feacb6f384fd88ddeced60e2fd094a25',
+    'input-lock-protect.service': 'a4273d16bb2bc1e0f68faf9c407719bbf17fd873914d281151514532e06751bc',
+    'input-lock-failsafe.service': '967d4cf06e66c1b288c192787d1eeaf6469c06b282f227e62e20bf44d989f69b',
+}
 KNOWN_LATCH_SHA256 = 'abd072afb9fd98cc19c4f1dc096c946ec07008f5ccb4cd7a99af7462c688a7f8'
 LATCH = Path('/var/lib/input-lock-protection/failure.json')
 
@@ -164,7 +176,8 @@ def failed_daemon_gate():
 
 def approved_baseline(installed: dict, *, recovery=False) -> bool:
     """Refuse mixed or unknown deployments even when each file is recognizable."""
-    variants = (FAILED_BASELINE,) if recovery else (BASELINE, POST_BOOT_REPAIR_BASELINE)
+    variants = (FAILED_BASELINE,) if recovery else (
+        BASELINE, POST_BOOT_REPAIR_BASELINE, OCT18_WEAK_INHIBITOR_BASELINE)
     return any(installed == candidate for candidate in variants)
 
 

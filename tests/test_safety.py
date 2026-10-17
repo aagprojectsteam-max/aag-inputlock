@@ -28,75 +28,55 @@ class PolicyTests(unittest.TestCase):
         self.now += after
         return self.policy.update(sample(self.now, lid_closed=True, **changes))
 
-    def test_deadline_warning_high_and_protect(self):
-        self.update()
+    def test_closed_lid_has_no_time_limit_over_days_and_weeks(self):
+        self.assertIsNone(self.update())
         self.assertEqual(self.policy.state, "LID_CLOSED_MONITORED")
-        self.update(120)
-        self.assertEqual(self.policy.state, "LID_CLOSED_WARNING")
-        self.update(60)
-        self.assertEqual(self.policy.state, "LID_CLOSED_HIGH_RISK")
-        self.assertEqual(self.update(60), "CLOSED_LID_DEADLINE")
-        self.assertFalse(self.policy.armed)
-        self.assertIsNone(self.update(400))  # No duplicate action.
+        for seconds in (120, 120, 3600, 86400, 14 * 86400):
+            self.assertIsNone(self.update(seconds))
+            self.assertTrue(self.policy.armed)
+            self.assertIsNone(self.policy.deadline)
+            self.assertIsNone(self.policy.snapshot()["deadline"])
+            self.assertEqual(self.policy.snapshot()["lid_ignore_mode"],
+                             "continuous_until_disabled")
+            self.assertNotIn("CLOSED_LID_DEADLINE", self.policy.events)
+        self.assertEqual(self.policy.events.count("CONTINUOUS_MONITORING_STARTED"), 1)
+        self.assertGreater(self.policy.snapshot()["closed_seconds"], 14 * 86400)
 
-    def test_open_cancels_and_new_close_gets_new_episode(self):
+    def test_opening_and_reclosing_keeps_arm_and_starts_new_observation(self):
         self.update()
         self.now += 120
         self.policy.update(sample(self.now))
+        self.assertIsNone(self.policy.closed_since)
+        self.assertTrue(self.policy.armed)
         self.assertIsNone(self.policy.deadline)
-        self.update()
-        self.assertEqual(self.policy.deadline, 460)
+        self.assertIn("CONTINUOUS_MONITORING_ENDED", self.policy.events)
+        self.update(1)
+        self.assertEqual(self.policy.closed_since, self.now)
+        self.assertIsNone(self.policy.deadline)
+        self.assertEqual(self.policy.events.count("CONTINUOUS_MONITORING_STARTED"), 2)
 
-    def test_high_load_shortens_deadline_and_does_not_extend_when_load_falls(self):
-        self.update(cpu_busy=.9)
-        self.update(10, cpu_busy=.9)
-        self.assertEqual(self.policy.deadline, 220)
-        self.assertEqual(self.policy.snapshot()["deadline_shortened_by"], ["SUSTAINED_HIGH_CPU"])
-        self.assertEqual(self.policy.events.count("DEADLINE_SHORTENED_SUSTAINED_HIGH_CPU"), 1)
-        self.update(50, cpu_busy=.1)
-        self.assertEqual(self.policy.deadline, 220)
-        self.assertEqual(self.update(60), "CLOSED_LID_DEADLINE")
-        evidence = self.policy.snapshot()["last_decision"]
-        self.assertEqual(evidence["deadline_shortened_by"], ["SUSTAINED_HIGH_CPU"])
-        self.assertEqual(evidence["time_limit_seconds"], 120)
-        self.assertEqual(evidence["reason"], "CLOSED_LID_DEADLINE")
+    def test_battery_and_sustained_high_cpu_do_not_trigger_suspend_or_timer(self):
+        self.update(ac=False, discharging=True, cpu_busy=.99)
+        for passed in (10, 110, 120, 600, 86400):
+            self.assertIsNone(self.update(passed, ac=False, discharging=True, cpu_busy=.99))
+            self.assertEqual(self.policy.state, "LID_CLOSED_MONITORED")
+            self.assertTrue(self.policy.armed)
+            self.assertIsNone(self.policy.snapshot()["deadline"])
+            self.assertEqual(self.policy.snapshot()["deadline_shortened_by"], [])
+        self.assertNotIn("DEADLINE_SHORTENED_ON_BATTERY", self.policy.events)
+        self.assertNotIn("DEADLINE_SHORTENED_SUSTAINED_HIGH_CPU", self.policy.events)
+        self.assertIsNone(self.update(3600, ac=True, discharging=False, cpu_busy=.02))
+        self.assertIn("AC_CONNECTED", self.policy.events)
 
-    def test_battery_and_ac_loss_shorten_timer(self):
-        self.update()
-        self.update(30, ac=False, discharging=True)
-        self.assertEqual(self.policy.deadline, 220)
-        self.update(30)
-        self.assertEqual(self.policy.deadline, 220)
-        self.assertIn("AC_LOST", self.policy.events)
-        self.assertEqual(self.policy.snapshot()["deadline_shortened_by"], ["ON_BATTERY"])
-        self.assertEqual(self.policy.events.count("DEADLINE_SHORTENED_ON_BATTERY"), 1)
-
-    def test_both_deadline_causes_are_recorded_once_without_extending_it(self):
-        self.update(ac=False, discharging=True)
-        self.update(10, ac=False, discharging=True, cpu_busy=.85)
-        self.update(10, ac=False, discharging=True, cpu_busy=.85)
-        self.update(10, ac=True, discharging=False, cpu_busy=.1)
-        self.assertEqual(self.policy.deadline, 220)
-        self.assertEqual(self.policy.snapshot()["deadline_shortened_by"],
-                         ["ON_BATTERY", "SUSTAINED_HIGH_CPU"])
-        for cause in ("ON_BATTERY", "SUSTAINED_HIGH_CPU"):
-            self.assertEqual(self.policy.events.count("DEADLINE_SHORTENED_" + cause), 1)
-        self.assertEqual(self.update(90), "CLOSED_LID_DEADLINE")
-        self.assertEqual(self.policy.snapshot()["last_decision"]["deadline_shortened_by"],
-                         ["ON_BATTERY", "SUSTAINED_HIGH_CPU"])
-        self.policy.release()
-        self.assertEqual(self.policy.snapshot()["last_decision"]["time_limit_seconds"], 120)
-        self.assertEqual(self.policy.snapshot()["deadline_shortened_by"], [])
-
-    def test_new_close_resets_deadline_cause_from_previous_episode(self):
-        self.update(ac=False, discharging=True)
-        self.assertEqual(self.policy.deadline_shortened_by, {"ON_BATTERY"})
-        self.now += 5
-        self.policy.update(sample(self.now, lid_closed=False))
-        self.assertEqual(self.policy.deadline_shortened_by, set())
-        self.update(ac=True, discharging=False, cpu_busy=.1)
-        self.assertEqual(self.policy.deadline, self.now + 240)
-        self.assertEqual(self.policy.snapshot()["deadline_shortened_by"], [])
+    def test_low_battery_warns_but_only_critical_battery_requests_suspend(self):
+        self.assertIsNone(self.update(battery=18, ac=False, discharging=True))
+        self.assertEqual(self.policy.state, "LID_CLOSED_WARNING")
+        self.assertEqual(self.policy.reason, "BATTERY_WARNING")
+        self.assertIsNone(self.update(7200, battery=18, ac=False, discharging=True))
+        self.assertTrue(self.policy.armed)
+        self.assertIsNone(self.policy.update(sample(self.now, lid_closed=False)))
+        self.assertTrue(self.policy.armed)
+        self.assertIsNone(self.policy.deadline)
 
     def test_battery_critical_requires_sustained_samples(self):
         self.assertIsNone(self.update(battery=5))
@@ -122,6 +102,33 @@ class PolicyTests(unittest.TestCase):
         self.update()
         self.assertEqual(self.update(15), "TELEMETRY_LOST")
 
+    def test_sustained_high_temperature_still_forces_protection_after_six_seconds(self):
+        hot = [Sensor("cpu", "cpu", 96, 85, 95, 100), sample().sensors[1]]
+        self.assertIsNone(self.update(sensors=hot))
+        self.assertIsNone(self.update(5, sensors=hot))
+        self.assertEqual(self.update(1, sensors=hot), "THERMAL_HIGH_RISK")
+        self.assertFalse(self.policy.armed)
+        self.assertEqual(self.policy.last_decision["reason"], "THERMAL_HIGH_RISK")
+        self.assertIsNone(self.policy.last_decision["time_limit_seconds"])
+
+    def test_multiweek_operation_still_fails_safe_on_lost_telemetry(self):
+        self.assertIsNone(self.update())
+        self.assertIsNone(self.update(21 * 86400))
+        self.assertTrue(self.policy.armed)
+        self.assertIsNone(self.update(1, dependencies_ok=False))
+        self.assertEqual(self.update(15, dependencies_ok=False), "TELEMETRY_LOST")
+        self.assertFalse(self.policy.armed)
+        self.assertGreater(self.policy.last_decision["closed_seconds"], 21 * 86400)
+
+    def test_explicit_release_ends_continuous_mode_without_sleep(self):
+        self.assertIsNone(self.update())
+        self.policy.release()
+        self.assertFalse(self.policy.armed)
+        self.assertIsNone(self.policy.closed_since)
+        self.assertIsNone(self.policy.deadline)
+        self.assertEqual(self.policy.state, "SAFE_NORMAL")
+        self.assertIsNone(self.update(31 * 86400))
+
     def test_thermal_spike_does_not_trigger(self):
         hot = [Sensor("cpu", "cpu", 102, 85, 95, 100), sample().sensors[1]]
         self.assertIsNone(self.update(sensors=hot))
@@ -144,12 +151,13 @@ class PolicyTests(unittest.TestCase):
         self.update(15)
         self.assertEqual(self.policy.thermal_level, 0)
 
-    def test_telemetry_recovery_does_not_reset_closed_timer(self):
+    def test_telemetry_recovery_retains_closed_lid_continuity(self):
         self.update(dependencies_ok=False)
-        original = self.policy.deadline
+        original = self.policy.closed_since
         self.update(10)
-        self.assertEqual(self.policy.deadline, original)
+        self.assertEqual(self.policy.closed_since, original)
         self.assertIsNone(self.policy.missing_since)
+        self.assertIsNone(self.policy.deadline)
 
     def test_arm_requires_open_lid_healthy_telemetry_and_acceptable_temperature(self):
         for s in (sample(lid_closed=True), sample(dependencies_ok=False), sample(stack_ready=False),
@@ -163,14 +171,17 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(fresh.armed)
         self.assertEqual(fresh.state, "SAFE_NORMAL")
 
-    def test_explicit_rearm_after_protection_starts_a_fresh_episode(self):
-        self.update()
-        self.assertEqual(self.update(240), "CLOSED_LID_DEADLINE")
+    def test_explicit_rearm_after_thermal_protection_starts_a_fresh_episode(self):
+        hot = [Sensor("cpu", "cpu", 102, 85, 95, 100), sample().sensors[1]]
+        self.update(sensors=hot)
+        self.assertEqual(self.update(2, sensors=hot), "THERMAL_EMERGENCY")
+        self.assertFalse(self.policy.armed)
+        self.assertEqual(self.policy.last_decision["time_limit_seconds"], None)
         self.policy.arm(sample(self.now))  # Fresh observed open lid.
         self.update(1)
         self.assertTrue(self.policy.armed)
         self.assertEqual(self.policy.closed_since, self.now)
-        self.assertEqual(self.policy.deadline, self.now + 240)
+        self.assertIsNone(self.policy.deadline)
 
 
 class DecisionDispatchTests(unittest.TestCase):
@@ -180,10 +191,11 @@ class DecisionDispatchTests(unittest.TestCase):
         now = [100.]
         policy = SafetyPolicy(lambda: now[0])
         policy.arm(sample())
-        policy.update(sample(now[0], lid_closed=True, ac=False, discharging=True))
-        now[0] += 120
-        reason = policy.update(sample(now[0], lid_closed=True, ac=False, discharging=True))
-        self.assertEqual(reason, "CLOSED_LID_DEADLINE")
+        hot = [Sensor("cpu", "cpu", 102, 85, 95, 100), sample().sensors[1]]
+        policy.update(sample(now[0], lid_closed=True, sensors=hot))
+        now[0] += 2
+        reason = policy.update(sample(now[0], lid_closed=True, sensors=hot))
+        self.assertEqual(reason, "THERMAL_EMERGENCY")
         original = policy.last_decision.copy()
         daemon = InputLockDaemon.__new__(InputLockDaemon)
         daemon.safety = policy
@@ -291,7 +303,7 @@ class ThermalMeasurementTests(unittest.TestCase):
         self.assertIsNone(p.update(sample(lid_closed=True,sensors=[Sensor("cpu","cpu",96,85,95,100),sample().sensors[1]])))
         self.assertEqual(p.snapshot()["thermal"],"HIGH_RISK")
         self.assertEqual(p.thermal_level,0)
-        self.assertEqual(p.deadline,340.)
+        self.assertIsNone(p.deadline)
 
 
 class ConfirmationRegressionTests(unittest.TestCase):
