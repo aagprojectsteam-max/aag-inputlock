@@ -26,6 +26,7 @@ linux = [
     "test_remediation_linux",
     "test_safety",
     "test_native_protection",
+    "test_boot_repair_install",
     "test_aag_adapter_contract",
     "test_thermal_status",
 ]

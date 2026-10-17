@@ -501,6 +501,7 @@ class InputLockDaemon:
             return
         atomic_json(BREADCRUMB, {
             "schema": 1, "version": VERSION, "boot_id": self.boot_id,
+            "invocation_id": os.environ.get("INVOCATION_ID"),
             "daemon_started_at": self.daemon_started_at, "updated_at": time.time(),
             "requested": self._saved_lid_ignore_close, "effective": self.ignore_lid_close,
             "generation": self.lid_generation, "clean_shutdown": self.clean_shutdown,
