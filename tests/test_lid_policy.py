@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import tempfile
 import json
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import unittest
 from pathlib import Path
 
@@ -42,6 +42,13 @@ class MemorySettings:
 
 
 class LidNoSuspendPolicyTests(unittest.TestCase):
+    def test_verified_noop_allows_independent_user_restore_without_claiming_runtime_health(self):
+        policy = LidNoSuspendPolicy(MemorySettings(), helper=Mock(return_value={
+            'restoration_required': False, 'normal_os_policy': None}))
+        with patch.object(policy, 'restore_user') as restore, patch.object(policy, 'status', return_value={}):
+            policy.disable()
+        restore.assert_called_once_with(remove_backup=True)
+
     def test_legacy_user_restoration_is_verified(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = MemorySettings()
@@ -79,6 +86,64 @@ class LidNoSuspendPolicyTests(unittest.TestCase):
 
 
 class UPowerPolicyControllerTests(unittest.TestCase):
+    def test_no_owned_state_does_not_query_or_restart_unready_upower(self):
+        controller = UPowerPolicyController(restart=Mock(), service_active=Mock(side_effect=OSError('not ready')),
+                                           runtime_action=Mock())
+        with patch('input_lock_lid_policy.os.path.lexists', return_value=False):
+            result = controller.disable()
+        self.assertIs(result['restoration_required'], False)
+        self.assertIsNone(result['normal_os_policy'])  # No invented runtime success.
+        controller._service_active.assert_not_called()
+        controller._runtime_action.assert_not_called()
+        controller._restart.assert_not_called()
+
+    def test_pending_only_unready_upower_fails_and_retains_marker(self):
+        controller = UPowerPolicyController(restart=Mock(), service_active=lambda: False)
+        with (patch('input_lock_lid_policy.os.path.lexists', side_effect=lambda p: p.name.startswith('.')),
+              patch.object(Path, 'exists', autospec=True, side_effect=lambda p: p.name.startswith('.')),
+              patch.object(Path, 'is_symlink', return_value=False),
+              patch.object(controller, '_effective', return_value={}), patch.object(Path, 'unlink') as unlink):
+            with self.assertRaisesRegex(PolicyError, 'not verified'):
+                controller.disable()
+        controller._restart.assert_called_once()
+        unlink.assert_not_called()
+
+    def test_pending_symlink_never_becomes_a_noop(self):
+        controller = UPowerPolicyController(restart=Mock())
+        with (patch('input_lock_lid_policy.os.path.lexists', return_value=True),
+              patch.object(Path, 'is_symlink', return_value=True)):
+            with self.assertRaisesRegex(PolicyError, 'symlink'):
+                controller.disable()
+        controller._restart.assert_not_called()
+
+    def test_owned_override_unready_runtime_retains_new_recovery_marker(self):
+        controller = UPowerPolicyController(restart=Mock(), service_active=lambda: False)
+        with (patch('input_lock_lid_policy.os.path.lexists', return_value=True),
+              patch.object(Path, 'is_symlink', return_value=False),
+              patch.object(Path, 'exists', return_value=True),
+              patch.object(Path, 'read_text', return_value=UPOWER_DROPIN_CONTENT),
+              patch('input_lock_lid_policy._atomic_json') as journal,
+              patch('input_lock_lid_policy._sync_directory'),
+              patch.object(controller, '_effective', return_value={}),
+              patch.object(Path, 'unlink', autospec=True) as unlink):
+            with self.assertRaisesRegex(PolicyError, 'not verified'):
+                controller.disable()
+        journal.assert_called_once()
+        self.assertEqual(journal.call_args.args[0].name, '.input-lock-restore-pending.json')
+        unlink.assert_called_once_with(controller.dropin_path)
+        controller._restart.assert_called_once()
+
+    def test_pending_runtime_bus_failure_retains_marker(self):
+        controller = UPowerPolicyController(restart=Mock(), service_active=lambda: True,
+                                           runtime_action=Mock(side_effect=OSError('bus unavailable')))
+        with (patch('input_lock_lid_policy.os.path.lexists', return_value=True),
+              patch.object(Path, 'is_symlink', return_value=False),
+              patch.object(Path, 'exists', autospec=True, side_effect=lambda p: p.name.startswith('.')),
+              patch.object(controller, '_effective', return_value={}), patch.object(Path, 'unlink') as unlink):
+            with self.assertRaisesRegex(OSError, 'bus unavailable'):
+                controller.disable()
+        unlink.assert_not_called()
+
     def test_runtime_failure_retains_durable_retry_after_dropin_removed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

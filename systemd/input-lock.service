@@ -1,8 +1,8 @@
 [Unit]
 Description=Input Lock evdev daemon
 Documentation=file:/usr/share/doc/input-lock/README.md
-After=systemd-udevd.service systemd-user-sessions.service
-Wants=systemd-udevd.service
+After=systemd-udevd.service systemd-user-sessions.service upower.service
+Wants=systemd-udevd.service upower.service
 OnFailure=input-lock-failsafe.service
 StartLimitIntervalSec=60s
 StartLimitBurst=3

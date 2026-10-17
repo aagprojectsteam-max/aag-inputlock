@@ -199,7 +199,7 @@ class LidNoSuspendPolicy:
         errors = []
         try:
             result = self._helper("disable", True)
-            if result.get("normal_os_policy") is not True:
+            if result.get("normal_os_policy") is not True and result.get("restoration_required") is not False:
                 raise PolicyError("UPower restoration was not verified")
         except Exception as exc:
             errors.append(str(exc))
@@ -335,6 +335,14 @@ class UPowerPolicyController:
 
     def disable(self) -> dict[str, object]:
         pending = self.dropin_dir / ".input-lock-restore-pending.json"
+        # No owned mutation means there is nothing to restore. In particular,
+        # boot must not depend on UPower already answering its runtime API.
+        # lexists also prevents dangling recovery symlinks being treated as absent.
+        if not os.path.lexists(self.dropin_path) and not os.path.lexists(pending):
+            return {"restoration_required": False, "normal_os_policy": None,
+                    "dropin_present": False, "recovery_pending": False}
+        if pending.is_symlink() or self.dropin_path.is_symlink():
+            raise PolicyError("refusing symlink in UPower restoration state")
         if self.dropin_path.exists():
             if self.dropin_path.is_symlink() or self.dropin_path.read_text(encoding="utf-8") != UPOWER_DROPIN_CONTENT:
                 raise PolicyError(f"refusing to remove unmanaged {self.dropin_path}")
@@ -349,6 +357,8 @@ class UPowerPolicyController:
         if pending.exists():
             pending.unlink()
             _sync_directory(self.dropin_dir)
+        result["recovery_pending"] = False
+        result["restoration_required"] = True
         return result
 
 

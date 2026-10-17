@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -53,6 +54,7 @@ class TrayNotifier:
         self.running = True
         self.previous_locked: frozenset[str] | None = None
         self.current_state: dict[str, object] = {}
+        self.connected = False
         self.selected_hotkey: str | None = None
         self.updating_lid_item = False
         self.updating_autostart_item = False
@@ -79,6 +81,7 @@ class TrayNotifier:
 
         self.menu.append(Gtk.SeparatorMenuItem())
         self.toggle_item = Gtk.MenuItem(label="Lock Input")
+        self.toggle_item.set_sensitive(False)
         self.toggle_item.connect("activate", self._on_toggle)
         self.menu.append(self.toggle_item)
 
@@ -91,6 +94,7 @@ class TrayNotifier:
         self.menu.append(self.settings_item)
 
         self.lid_item = Gtk.CheckMenuItem(label="Ignore Lid Switch (temporary)")
+        self.lid_item.set_sensitive(False)
         self.lid_item.connect("toggled", self._on_lid_toggled)
         self.menu.append(self.lid_item)
 
@@ -198,6 +202,7 @@ class TrayNotifier:
             return False
 
         prior_safety = self.current_state.get("safety", {}).get("state")
+        self.connected = True
         self.current_state = state
         locked_value = state.get("locked_kinds", [])
         if not isinstance(locked_value, list):
@@ -274,9 +279,21 @@ class TrayNotifier:
         self.toggle_item.set_sensitive(True)
 
     def _show_disconnected(self) -> bool:
+        self.connected = False
         self.status_item.set_label("Input Lock — Service unavailable")
+        self.safety_item.set_label("Lid safety: disconnected — status unknown; open the lid")
         self.toggle_item.set_sensitive(False)
+        self._restore_lid_item()
         return False
+
+    def _action_error(self, title: str, error: Exception) -> bool:
+        if isinstance(error, OSError) and error.errno in {errno.ENOENT, errno.ECONNREFUSED}:
+            self._show_disconnected()
+            return self._show_error(title, "InputLock background service unavailable. Open the lid and check "
+                                    "input-lock.service with systemctl status input-lock.service. "
+                                    "After the service is repaired, the tray will reconnect automatically.")
+        self.toggle_item.set_sensitive(getattr(self, "connected", False))
+        return self._show_error(title, str(error))
 
     def _on_toggle(self, _item: Gtk.MenuItem) -> None:
         self.toggle_item.set_sensitive(False)
@@ -297,8 +314,7 @@ class TrayNotifier:
                 )
             )
         except Exception as exc:
-            GLib.idle_add(self._show_error, "Input Lock", str(exc))
-            GLib.idle_add(self.toggle_item.set_sensitive, True)
+            GLib.idle_add(self._action_error, "Input Lock", exc)
 
     @staticmethod
     def _event_hotkey(event: Gdk.EventKey) -> str | None:
@@ -873,10 +889,14 @@ class TrayNotifier:
                 socket_path=self.config.socket_path, timeout=5.0))
         except Exception as exc:
             GLib.idle_add(self._restore_lid_item)
-            GLib.idle_add(self._show_error, "Lid Setting Failed", str(exc))
+            GLib.idle_add(self._action_error, "Lid Setting Failed", exc)
 
 
     def _restore_lid_item(self) -> bool:
+        if not getattr(self, "connected", False):
+            self.lid_item.set_sensitive(False)
+            self.lid_item.set_label("Ignore Lid Switch (service unavailable)")
+            return False
         enabled = self.current_state.get("ignore_lid_close") is True
         self.updating_lid_item = True
         self.lid_item.set_active(enabled)

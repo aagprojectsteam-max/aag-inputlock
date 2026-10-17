@@ -1,6 +1,7 @@
 """No files, buses, devices or power operations: all effects are injected."""
 import json
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +21,7 @@ def properties(unit):
         safety.FAILSAFE_UNIT: '/usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py recover',
         'systemd-suspend.service': '/usr/lib/systemd/systemd-sleep suspend',
     }
-    return dict(LoadState='loaded', ActiveState='inactive', ExecStart=commands[unit],
+    return dict(LoadState='loaded', ActiveState='inactive', ExecStart=commands[unit], InvocationID='invocation',
                 OnFailure=safety.FAILSAFE_UNIT if unit in {'input-lock.service', safety.PROTECT_UNIT} else '',
                 Restart='no', WatchdogUSec='20s', TimeoutStopUSec='5s', KillMode='control-group',
                 User='', Type='oneshot', TimeoutStartUSec='2min 45s',
@@ -72,7 +73,7 @@ class ProtectionTests(unittest.TestCase):
     def request(self, *, recovery=False, lid=True, ready=True, state_changes=None,
                 native_changes=None, dispatch=0, observe_error=None, stop=0, active='inactive',
                 changed_generation=False, receipt=None):
-        state = dict(boot_id='boot', generation=9, updated_at=100., effective=False,
+        state = dict(boot_id='boot', invocation_id='invocation', generation=9, updated_at=100., effective=False,
                      restrictions_released=True, safety={'state': 'PROTECTIVE_ACTION_PENDING'})
         state.update(state_changes or {})
         reads = [0]
@@ -93,6 +94,12 @@ class ProtectionTests(unittest.TestCase):
             if isinstance(dispatch, Exception):
                 raise dispatch
             return SimpleNamespace(returncode=dispatch)
+        def request_suspend():
+            calls.append(['logind', 'SuspendWithFlags', 1])
+            if isinstance(dispatch, Exception):
+                raise dispatch
+            if dispatch:
+                raise RuntimeError('logind refused request')
         status = native()
         status.update(native_changes or {})
         telemetry = Mock()
@@ -108,13 +115,13 @@ class ProtectionTests(unittest.TestCase):
               patch.object(safety, 'unit_properties', side_effect=props)):
             result = safety.protect_main(run, lambda: ready, telemetry, Path('/fixture/request.json'),
                                         observe, lambda: 1, recovery=recovery, status=lambda: status,
-                                        latch=Path('/fixture/failure.json'))
+                                        latch=Path('/fixture/failure.json'), dispatch=request_suspend)
         return result, calls, records.call_args_list, observe
 
     def test_only_ordinary_suspend_after_release(self):
         result, calls, records, observe = self.request()
         self.assertEqual(result, 0)
-        self.assertEqual(calls, [['/usr/bin/systemctl', '--no-ask-password', '--check-inhibitors=yes', 'suspend']])
+        self.assertEqual(calls, [['logind', 'SuspendWithFlags', 1]])
         self.assertEqual(records[-1].args[1]['result'], 'suspend-transition-confirmed')
         observe.assert_called_once()
 
@@ -148,7 +155,18 @@ class ProtectionTests(unittest.TestCase):
         result, calls, *_ = self.request(recovery=True, state_changes={'effective': True, 'restrictions_released': False})
         self.assertEqual(result, 0)
         self.assertEqual(calls[0], ['/usr/bin/systemctl', 'stop', 'input-lock.service'])
-        self.assertEqual(calls[1][-1], 'suspend')
+        self.assertEqual(calls[1], ['logind', 'SuspendWithFlags', 1])
+
+    def test_startup_failure_cannot_use_old_same_boot_or_previous_boot_journal(self):
+        for changes in ({'invocation_id': 'previous', 'effective': True},
+                        {'invocation_id': None, 'effective': True},
+                        {'boot_id': 'previous-boot', 'effective': True},
+                        {'safety': {'state': 'SAFE_NORMAL'}, 'effective': False}):
+            result, calls, records, observe = self.request(recovery=True, state_changes=changes)
+            self.assertEqual(result, 0)
+            self.assertEqual(calls, [['/usr/bin/systemctl', 'stop', 'input-lock.service']])
+            observe.assert_not_called()
+            self.assertFalse(any(c.args[0].name == 'failure.json' for c in records))
 
     def test_final_failure_latches_and_never_hibernates_or_forces(self):
         result, calls, records, _ = self.request(recovery=True, dispatch=1)
@@ -176,6 +194,25 @@ class ProtectionTests(unittest.TestCase):
         self.assertEqual(result, 1)
         run.assert_called_once_with(['/usr/bin/systemctl', 'stop', 'input-lock.service'], timeout=10, check=False)
         self.assertTrue(any(call.args[0] == safety.FAILURE_LATCH for call in record.call_args_list))
+
+
+class LogindDispatchTests(unittest.TestCase):
+    def test_bounded_noninteractive_inhibitor_checked_request_and_bus_cleanup(self):
+        for error in (None, RuntimeError('AccessDenied'), TimeoutError('NoReply'), RuntimeError('UnknownMethod')):
+            bus, manager = Mock(), Mock()
+            manager.SuspendWithFlags.side_effect = error
+            dbus = SimpleNamespace(SystemBus=Mock(return_value=bus), Interface=Mock(return_value=manager), UInt64=int)
+            with patch.dict(sys.modules, dbus=dbus):
+                if error:
+                    with self.assertRaises(type(error)):
+                        safety.request_native_suspend()
+                else:
+                    safety.request_native_suspend()
+            dbus.SystemBus.assert_called_once_with(private=True)
+            bus.get_object.assert_called_once_with('org.freedesktop.login1', '/org/freedesktop/login1')
+            manager.SuspendWithFlags.assert_called_once_with(1, timeout=10)
+            self.assertEqual(manager.method_calls, [('SuspendWithFlags', (1,), {'timeout': 10})])
+            bus.close.assert_called_once()
 
 
 if __name__ == '__main__':

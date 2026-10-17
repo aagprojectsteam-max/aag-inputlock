@@ -27,9 +27,13 @@ There is no AAG readiness exemption that simply sets this field true.
    inhibitor, then durably record a generation-tagged request. Failed release
    terminates the daemon so systemd recovery can close its descriptors.
 2. `input-lock-protect.service` verifies the current boot/generation, release
-   acknowledgment, open-lid cancellation and native capability. It requests only
-   `systemctl --no-ask-password --check-inhibitors=yes suspend`. Native OS hooks
-   and inhibitors remain effective. A request accepted by systemd is not success.
+   acknowledgment, open-lid cancellation and native capability. It requests
+   ordinary Suspend through logind's `SuspendWithFlags(1)` D-Bus API, where flag
+   `SD_LOGIND_ROOT_CHECK_INHIBITORS` preserves checks of both ordinary and weak
+   sleep inhibitors even for the root helper. This avoids the separate CLI
+   multi-login refusal observed on 2026-10-16 (the desktop user had a tty2
+   session). There is no forced/ignored-inhibitor fallback. Native OS hooks and
+   inhibitors remain effective. An accepted D-Bus request is not success.
 3. Confirm a new successful `systemd-suspend.service` execution plus an increased
    kernel suspend-success counter within 120 seconds of awake monotonic time.
    No AAG receipt or wakeguard state is read. This confirms a kernel cycle, not
@@ -64,15 +68,20 @@ overrides, active protection jobs, stale telemetry, a closed lid, locked inputs
 or unavailable native capability. It never arms lid-ignore or starts either
 protection unit as a test.
 
-Run the read-only preflight with the system Python. A normal terminal command
-`sudo /usr/bin/python3 -I -B tools/install_native_lid.py --install` from the project
-root performs the guarded upgrade. It creates a verified, root-owned rollback
-backup under the desktop user's `~/ARCHIVE/InputLock`, preserves installed code,
-configuration, units and recovery state, and records source/installed hashes.
-It replaces only three Python modules and three InputLock units, reloads systemd,
-starts InputLock disarmed, checks readiness and restarts the user's notifier.
-It never changes or restarts AAG Power. Host authentication and writable system
-paths are required; a sandboxed source edit is not an installation.
+Run the read-only preflight with the system Python. For the 2026-10-17
+boot failure only, `--recover-known-boot-failure` requires a reviewed source
+SHA-256 manifest and exact installed-file and historical-failure hashes. An
+administrator must explicitly add `--acknowledge-failed-protection` for that
+known recovery installation. This does **not** retroactively make the failed
+sleep protection successful; the original latch is backed up and renamed for
+forensic retention. Do not use this special path on other machines or failures.
+The installer creates a verified root-only backup under root's `ARCHIVE/InputLock`,
+preserves installed code, configuration, units and recovery state, and records
+source/installed hashes. It replaces the four reviewed Python modules plus
+InputLock's reviewed service unit and dependency units, reloads systemd, starts
+InputLock disarmed, checks readiness and reconnects the user notifier. It never
+changes or restarts AAG Power. Host authentication and writable system paths
+are required; a sandboxed source edit is not an installation.
 
 On deployment failure the installer restores the previous files and leaves
 InputLock stopped. Manual rollback uses the same script with `--rollback` and

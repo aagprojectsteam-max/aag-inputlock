@@ -381,7 +381,7 @@ def native_status() -> dict:
         return {
             # The unprivileged monitor cannot suspend itself. "challenge"
             # still means supported; the fixed root service performs the action
-            # with --no-ask-password and handles any actual authorization refusal.
+            # without interactive authorization and handles any actual refusal.
             "supported": str(manager.CanSuspend(timeout=3)) in {"yes", "challenge"},
             "preparing": bool(properties.Get("org.freedesktop.login1.Manager", "PreparingForSleep", timeout=3)),
             "blocked": any("sleep" in str(row[0]).split(":") and str(row[3]) in {"block", "block-weak"}
@@ -395,7 +395,7 @@ def native_status() -> dict:
 
 def unit_properties(run, unit: str) -> dict:
     result = run(["/usr/bin/systemctl", "show", unit,
-                  "--property=LoadState,ActiveState,ExecStart,ExecStopPost,OnFailure,WatchdogUSec,Restart,DropInPaths,User,Type,TimeoutStartUSec,TimeoutStopUSec,KillMode"],
+                  "--property=LoadState,ActiveState,ExecStart,ExecStopPost,OnFailure,WatchdogUSec,Restart,DropInPaths,User,Type,TimeoutStartUSec,TimeoutStopUSec,KillMode,InvocationID"],
                  capture_output=True, text=True, timeout=3, check=False)
     if result.returncode:
         raise RuntimeError("cannot inspect " + unit)
@@ -491,9 +491,27 @@ def observe_suspend(run, requested_at: float, before_success: int, *, clock=time
     raise TimeoutError("suspend completion was not observed within the awake-time budget")
 
 
+def request_native_suspend() -> None:
+    """Ask logind once, non-interactively, honoring inhibitors even as root.
+
+    SD_LOGIND_ROOT_CHECK_INHIBITORS=1 also honors block-weak locks. The
+    legacy Suspend(false) method does not guarantee this for privileged callers.
+    Unsupported APIs/refusals/timeouts fail closed; never retry with weaker flags.
+    A method reply means accepted, not a completed kernel transition.
+    """
+    import dbus
+    bus = dbus.SystemBus(private=True)
+    try:
+        manager = dbus.Interface(bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1"),
+                                 "org.freedesktop.login1.Manager")
+        manager.SuspendWithFlags(dbus.UInt64(1), timeout=10)
+    finally:
+        bus.close()
+
+
 def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BREADCRUMB,
                  observe=observe_suspend, counter=suspend_success_count, *, recovery=False,
-                 status=native_status, latch=FAILURE_LATCH) -> int:
+                 status=native_status, latch=FAILURE_LATCH, dispatch=request_native_suspend) -> int:
     """One ordinary suspend attempt; systemd invokes a separate final recovery.
 
     Recovery stops the daemon synchronously, so the kernel closes all its evdev
@@ -518,7 +536,11 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
 
     try:
         if recovery:
+            # Capture before stopping: a pre-hook failure has a new invocation
+            # but cannot have written a journal. Old same-boot state is not an
+            # authorization to suspend on behalf of that failed startup.
             try:
+                invocation = unit_properties(run, "input-lock.service").get("InvocationID")
                 state = json.loads(path.read_text())
             finally:
                 # Release even when the journal is missing/corrupt. Failure to
@@ -535,6 +557,9 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
         if state.get("boot_id") != boot or not eligible:
             return 0
         if recovery:
+            if not invocation or state.get("invocation_id") != invocation:
+                record("cancelled-stale-invocation")
+                return 0
             # Do not dispatch a second sleep after a completed first transition.
             try:
                 receipt = json.loads(path.with_name("safety-action-result.json").read_text())
@@ -569,10 +594,7 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
         before_success = counter()
         requested_at = time.monotonic()
         record("suspend-requested")
-        result = run(["/usr/bin/systemctl", "--no-ask-password", "--check-inhibitors=yes", "suspend"],
-                     timeout=10, check=False)
-        if result.returncode:
-            raise RuntimeError(f"ordinary suspend request failed: {result.returncode}")
+        dispatch()
         record("suspend-request-accepted")
         observe(run, requested_at, before_success)
         record("suspend-transition-confirmed")
