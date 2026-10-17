@@ -46,12 +46,18 @@ There is no AAG readiness exemption that simply sets this field true.
    terminates the daemon so systemd recovery can close its descriptors.
 2. `input-lock-protect.service` verifies the current boot/generation, release
    acknowledgment, open-lid cancellation and native capability. It requests
-   ordinary Suspend through logind's `SuspendWithFlags(1)` D-Bus API, where flag
-   `SD_LOGIND_ROOT_CHECK_INHIBITORS` preserves checks of both ordinary and weak
-   sleep inhibitors even for the root helper. This avoids the separate CLI
-   multi-login refusal observed on 2026-10-16 (the desktop user had a tty2
-   session). There is no forced/ignored-inhibitor fallback. Native OS hooks and
-   inhibitors remain effective. An accepted D-Bus request is not success.
+   ordinary Suspend through logind's `SuspendWithFlags(0)` D-Bus API on
+   systemd 257+. Hard `block` inhibitors are **still enforced for root**;
+   normal `delay` inhibitors/hooks still participate. Weak `block-weak` locks
+   (e.g. GNOME Session's own `sleep: block-weak`) intentionally do not block
+   the root helper, matching documented native logind semantics. The previous
+   flag `SD_LOGIND_ROOT_CHECK_INHIBITORS` (value 1) explicitly promoted weak
+   locks to hard blockers and caused a permanent false-unready state on the
+   October 18 Ubuntu 26.04 host. We do **not** use
+   `SD_LOGIND_SKIP_INHIBITORS` (0x10), bypass hard blocks, or ignore a real
+   `sleep: block` inhibitor. This also avoids the separate CLI multi-login
+   refusal observed on 2026-10-16. An accepted D-Bus request is not proof
+   of a completed kernel transition.
 3. Confirm a new successful `systemd-suspend.service` execution plus an increased
    kernel suspend-success counter within 120 seconds of awake monotonic time.
    No AAG receipt or wakeguard state is read. This confirms a kernel cycle, not
