@@ -27,6 +27,45 @@ granted no more than 15 seconds before fail-safe intervention. Lost device
 identity, controller/session, watchdog or daemon are other fail-safe
 exceptions: running unmonitored with a closed lid must not be allowed.
 
+## Preventive CPU cooling without bypassing thermal protection
+
+A short, elevated CPU-package reading can cross the existing InputLock software
+thermal-emergency limit even when total CPU utilization is low, and then trigger
+an ordinary OS safety suspend. Removing the old timed lid deadline did not
+remove this explicitly approved safety intervention.
+
+While the user explicitly enables continuous lid-ignore, the **per-user tray**
+now acquires a temporary power-profiles-daemon
+`net.hadess.PowerProfiles.HoldProfile("power-saver", reason, app_id)`
+lease **before** asking the daemon to arm the lid inhibitor. The cooling
+lease remains active while lid-ignore is effective, even if the lid reopens;
+this prevents renewed CPU boost spikes when the user closes it again.
+
+This is a reversible profile **hold**, not a persistent choice: the user's
+previous `balanced` or `performance` selection is restored automatically by
+power-profiles-daemon when the lease ends. The tray uses an isolated private
+system D-Bus connection and explicitly releases the hold on disable, session
+disconnect and exit. If D-Bus fails, closing that connection releases any
+unconfirmed hold. A power-profiles-daemon owner restart reacquires a fresh
+hold; the tray verifies the **effective** profile is actually
+`power-saver`. A failed/inapplicable cooling lease prevents arming, or
+causes an active lid override to be disabled via the existing native
+supervision-loss fail-safe. There are no privileged daemon writes to sysfs.
+
+**No thermal thresholds, hysteresis/dwell, systemd sleep hooks, root safety
+units, battery-critical rules or genuine sleep inhibitors are bypassed.** If
+the CPU/chassis really remain dangerously hot even under cooling, InputLock
+will still request protective suspend. Users must not close an unventilated
+laptop inside a bag; a software hold cannot guarantee hardware cooling.
+
+When thermal intervention occurs, the durable
+`last_decision.thermal_evidence` additionally records each known sensor
+identity, observed temperature, high/emergency thresholds and instantaneous
+risk; it includes candidate/intervention durations. This makes future
+thermal emergency diagnoses evidence-based rather than inferring a specific
+sensor from the generic `THERMAL_EMERGENCY` reason. No continuous raw
+high-frequency temperature recording is introduced.
+
 ## GNOME's separate 15-minute idle suspend on battery
 
 The inspected GNOME power configuration has
@@ -37,9 +76,9 @@ request ordinary idle sleep after 15 minutes on battery.
 
 The authenticated **per-user tray process** now obtains a temporary
 `org.gnome.SessionManager.Inhibit(flags=8)` lease for **idle only**
-while the effective lid-ignore state is on. This prevents GNOME from
-classifying its session as idle while explicitly requested to remain
-running. It **does not** request `flags=4` (suspend inhibition), hold
+while the effective lid-ignore state is on. This is held alongside the
+reversible CPU cooling profile. It prevents GNOME from classifying its
+session as idle while explicitly requested to remain running. It **does not** request `flags=4` (suspend inhibition), hold
 a logind sleep inhibitor, change any GNOME GSettings value, suppress
 the OS's critical-battery protection or obstruct a manual/thermal
 suspend. The cookie is unregistered when the feature is disabled or

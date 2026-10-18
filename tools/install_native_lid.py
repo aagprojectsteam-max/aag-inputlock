@@ -70,6 +70,19 @@ OCT18_WEAK_INHIBITOR_BASELINE = {
     'input-lock-protect.service': 'a4273d16bb2bc1e0f68faf9c407719bbf17fd873914d281151514532e06751bc',
     'input-lock-failsafe.service': '967d4cf06e66c1b288c192787d1eeaf6469c06b282f227e62e20bf44d989f69b',
 }
+# Exact installed October 18 continuous mode (PR #5), independently verified
+# against the running root service and all 7 installed source/unit hashes.
+# This release had software thermal auto-suspend at 100C but no preventive
+# power-saver lease. It is the only additional normal upgrade baseline.
+OCT18_CONTINUOUS_BASELINE = {
+    'input_lock_lid_policy.py': 'd6cc8671226852ad85e0ac6f6a9767e4dfff66a13daef06a8b74bfc8734e22f4',
+    'input_lock_safety.py': 'e01102cb1112afc4772a1c8472a46305bf6431f8612a34f9d39ce3430e2e8658',
+    'input_lock_daemon.py': '91a7855a50ba4e3da00183833c8bd402c989a3dbec1effb961e24ac93fdca86e',
+    'input_lock_notifier.py': '16a668052f86378e1f13c384b06b52a724394033e17fcf40426244f68ed503b3',
+    'input-lock.service': '69bb6695fb0cb11272a44bc32dd67a18feacb6f384fd88ddeced60e2fd094a25',
+    'input-lock-protect.service': 'a4273d16bb2bc1e0f68faf9c407719bbf17fd873914d281151514532e06751bc',
+    'input-lock-failsafe.service': '967d4cf06e66c1b288c192787d1eeaf6469c06b282f227e62e20bf44d989f69b',
+}
 KNOWN_LATCH_SHA256 = 'abd072afb9fd98cc19c4f1dc096c946ec07008f5ccb4cd7a99af7462c688a7f8'
 LATCH = Path('/var/lib/input-lock-protection/failure.json')
 
@@ -177,7 +190,8 @@ def failed_daemon_gate():
 def approved_baseline(installed: dict, *, recovery=False) -> bool:
     """Refuse mixed or unknown deployments even when each file is recognizable."""
     variants = (FAILED_BASELINE,) if recovery else (
-        BASELINE, POST_BOOT_REPAIR_BASELINE, OCT18_WEAK_INHIBITOR_BASELINE)
+        BASELINE, POST_BOOT_REPAIR_BASELINE,
+        OCT18_WEAK_INHIBITOR_BASELINE, OCT18_CONTINUOUS_BASELINE)
     return any(installed == candidate for candidate in variants)
 
 

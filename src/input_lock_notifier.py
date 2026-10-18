@@ -146,6 +146,110 @@ class GnomeIdleGuard:
             self._close_connection()
 
 
+class PowerSaverGuard:
+    """Reversible heat-prevention hold while continuous lid-ignore is active.
+
+    HoldProfile is a *lease*, not a persistent power-profile setting. Releasing
+    it (or closing this dedicated system-bus connection on a tray crash) lets
+    power-profiles-daemon return to the underlying user preference. Holding
+    power-saver is mitigation, never an excuse to weaken thermal thresholds.
+    """
+
+    def __init__(self, proxy_factory=None) -> None:
+        self.proxy_factory = proxy_factory or self._new_proxy
+        self.proxy = None
+        self.cookie: int | None = None
+        self.owner: str | None = None
+
+    @staticmethod
+    def _new_proxy():
+        address = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SYSTEM, None)
+        bus = Gio.DBusConnection.new_for_address_sync(
+            address,
+            Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT |
+            Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+            None, None,
+        )
+        try:
+            return Gio.DBusProxy.new_sync(
+                bus, Gio.DBusProxyFlags.NONE, None,
+                "net.hadess.PowerProfiles", "/net/hadess/PowerProfiles",
+                "net.hadess.PowerProfiles", None,
+            )
+        except Exception:
+            bus.close_sync(None)
+            raise
+
+    def _active_profile(self) -> str:
+        # Ask the service rather than trusting a possibly stale cached signal.
+        assert self.proxy is not None
+        result = self.proxy.get_connection().call_sync(
+            "net.hadess.PowerProfiles", "/net/hadess/PowerProfiles",
+            "org.freedesktop.DBus.Properties", "Get",
+            GLib.Variant("(ss)", ("net.hadess.PowerProfiles", "ActiveProfile")),
+            GLib.VariantType.new("(v)"), Gio.DBusCallFlags.NONE, 3000, None,
+        )
+        return str(result.unpack()[0])
+
+    def acquire(self) -> None:
+        if self.proxy is None:
+            self.proxy = self.proxy_factory()
+        try:
+            owner = self.proxy.get_name_owner()
+            if not owner:
+                raise RuntimeError("Power Profiles service is unavailable")
+            if self.cookie is not None and self.owner != owner:
+                # The manager restarted, so any old cookie became invalid.
+                self._close_connection()
+                self.proxy = self.proxy_factory()
+                owner = self.proxy.get_name_owner()
+                if not owner:
+                    raise RuntimeError("Power Profiles service disappeared")
+            if self.cookie is None:
+                # Request only the lower-power profile, never disable
+                # hardware throttling or override system thermal services.
+                reply = self.proxy.call_sync(
+                    "HoldProfile", GLib.Variant("(sss)", (
+                        "power-saver",
+                        "Keep closed-lid laptop cool during supervised InputLock",
+                        "org.aag.InputLock",
+                    )), Gio.DBusCallFlags.NONE, 3000, None,
+                )
+                self.cookie = int(reply.unpack()[0])
+                self.owner = owner
+            if self._active_profile() != "power-saver":
+                raise RuntimeError("Power-saver hold did not become effective")
+        except Exception:
+            # Includes uncertain replies: close the dedicated connection so
+            # no orphan power lease can outlive a failed activation.
+            self._close_connection()
+            raise
+
+    def _close_connection(self) -> None:
+        proxy = self.proxy
+        self.proxy = None
+        self.cookie = None
+        self.owner = None
+        if proxy is not None:
+            try:
+                proxy.get_connection().close_sync(None)
+            except Exception as exc:
+                LOG.warning("Power-saver system-bus release unconfirmed: %s", exc)
+
+    def release(self) -> None:
+        cookie, owner, proxy = self.cookie, self.owner, self.proxy
+        try:
+            if cookie is not None and proxy is not None and proxy.get_name_owner() == owner:
+                proxy.call_sync(
+                    "ReleaseProfile", GLib.Variant("(u)", (cookie,)),
+                    Gio.DBusCallFlags.NONE, 2500, None,
+                )
+        except Exception as exc:
+            LOG.warning("Power-saver hold release unconfirmed: %s", exc)
+        finally:
+            self._close_connection()
+
+
 class TrayNotifier:
     def __init__(self) -> None:
         self.config = load_config()
@@ -157,6 +261,7 @@ class TrayNotifier:
         self.updating_lid_item = False
         self.updating_autostart_item = False
         self.idle_guard = GnomeIdleGuard()
+        self.power_guard = PowerSaverGuard()
         self.idle_guard_failed_generation: int | None = None
 
         self.indicator = AyatanaAppIndicator3.Indicator.new(
@@ -236,9 +341,12 @@ class TrayNotifier:
             daemon=True,
         )
         worker.start()
-        Gtk.main()
-        self.running = False
-        self.idle_guard.release()
+        try:
+            Gtk.main()
+        finally:
+            self.running = False
+            self.idle_guard.release()
+            self.power_guard.release()
         return 0
 
 
@@ -339,25 +447,35 @@ class TrayNotifier:
         return False
 
     def _reconcile_idle_guard(self, state: dict[str, object]) -> None:
-        """Suppress only automatic GNOME idle sleep while lid-ignore is active.
+        """Hold reversible cooling + GNOME-idle leases during lid-ignore only.
 
-        All explicit and emergency suspend requests remain possible.
-        If GNOME idle protection cannot run, fail closed: disable lid-ignore
-        rather than advertising indefinite wakefulness without a guarantee.
+        GNOME idle and the power-saver hold are not system sleep inhibitors.
+        On either lease failure, drop both and disable the lid override:
+        never trade away thermal protection just to remain awake.
         """
         guard = getattr(self, "idle_guard", None)
+        cooling = getattr(self, "power_guard", None)
         if guard is None:
             return
         if state.get("ignore_lid_close") is not True:
             guard.release()
+            if cooling is not None:
+                cooling.release()
             self.idle_guard_failed_generation = None
             return
         try:
+            # Throttle CPU spikes as soon as the user explicitly arms lid-ignore
+            # rather than awaiting the first hot sample with the lid closed.
+            if cooling is not None:
+                cooling.acquire()
             guard.acquire()
             self.idle_guard_failed_generation = None
         except Exception as exc:
+            guard.release()
+            if cooling is not None:
+                cooling.release()
             generation = state.get("lid_generation")
-            LOG.error("GNOME idle inhibition unavailable: %s", exc)
+            LOG.error("Continuous lid safety leases unavailable: %s", exc)
             if getattr(self, "idle_guard_failed_generation", None) == generation:
                 return
             self.idle_guard_failed_generation = generation
@@ -372,7 +490,7 @@ class TrayNotifier:
             try:
                 self._notify(
                     "Lid safety",
-                    "GNOME idle prevention failed. Lid-ignore is being disabled; open the lid.",
+                    "Continuous lid cooling/idle protection is unavailable. Lid-ignore is being disabled; open the lid.",
                     locked=bool(state.get("locked_kinds")),
                 )
             except Exception as notification_error:
@@ -380,7 +498,7 @@ class TrayNotifier:
                             notification_error)
 
     def _idle_guard_safety_disable(self, generation: int | None) -> None:
-        """Fail closed if the session bus cannot honor the continuous policy.
+        """Fail closed if the cooling or GNOME idle service cannot honor policy.
 
         If the daemon rejects the guarded off command, disconnect our own
         controller. The daemon's existing CONTROLLER_LOST fail-safe can then
@@ -400,7 +518,7 @@ class TrayNotifier:
                     pass
             GLib.idle_add(
                 self._action_error, "Lid Safety",
-                RuntimeError("Idle supervision failed; InputLock controller was released. Open the lid."),
+                RuntimeError("Continuous lid safety prerequisites failed; controller released. Open the lid."),
             )
 
     def _update_menu(self, locked: frozenset[str], hotkey: str) -> None:
@@ -414,7 +532,7 @@ class TrayNotifier:
                      "PROTECTIVE_ACTION_PENDING": "protective action requested", "PROTECTIVE_ACTION_EXECUTED": "suspend transition confirmed"}
             label = names.get(safety.get("state"), "unavailable")
             if self.current_state.get("ignore_lid_close"):
-                label += " (continuous; no timer)"
+                label += " (continuous; power-saver cooling active)"
             self.safety_item.set_label("Lid safety: " + label + " | Temperature: "
                                        + str(safety.get("thermal", "UNKNOWN"))
                                        + " | Protection: " + str(safety.get("thermal_protection", "UNKNOWN")))
@@ -462,8 +580,11 @@ class TrayNotifier:
 
     def _show_disconnected(self) -> bool:
         guard = getattr(self, "idle_guard", None)
+        cooling = getattr(self, "power_guard", None)
         if guard is not None:
             guard.release()
+        if cooling is not None:
+            cooling.release()
         self.connected = False
         self.status_item.set_label("Input Lock — Service unavailable")
         self.safety_item.set_label("Lid safety: disconnected — status unknown; open the lid")
@@ -1048,7 +1169,9 @@ class TrayNotifier:
                 "Lid closure will be ignored continuously, with NO 2/4-minute timeout. "
                 "This stays enabled until you turn it off, or a safety/fail-safe condition intervenes. "
                 "Dangerous temperature, critical battery, lost monitoring or controller/daemon failure can request regular OS suspend. "
-                "GNOME automatic idle suspend is prevented while enabled, but manual system sleep and OS critical-battery rules remain available. "
+                "GNOME idle suspend is prevented and a temporary power-saver cooling profile is held while enabled; "
+                "the previous performance preference automatically returns when disabled. "
+                "Manual system sleep and OS critical-battery protection remain available. "
                 "The setting starts OFF after a service restart or reboot. "
                 "Keep the lid OPEN when enabling, keep the vents unobstructed, and NEVER put the running laptop in a bag."
             )
@@ -1059,6 +1182,18 @@ class TrayNotifier:
                 self.updating_lid_item = True
                 item.set_active(False)
                 self.updating_lid_item = False
+                return
+            try:
+                # Acquire cooling BEFORE even requesting the lid inhibitor:
+                # the user may physically close the lid immediately after
+                # accepting the dialog. Temperature supervision remains armed.
+                self.power_guard.acquire()
+            except Exception as exc:
+                self.updating_lid_item = True
+                item.set_active(False)
+                self.updating_lid_item = False
+                self._show_error(
+                    "Lid Safety", "Temporary power-saver cooling unavailable: " + str(exc))
                 return
         item.set_sensitive(False)
         threading.Thread(
