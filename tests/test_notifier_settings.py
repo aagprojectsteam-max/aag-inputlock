@@ -177,7 +177,9 @@ class GnomeIdleGuardTests(unittest.TestCase):
         self.assertEqual(worker.call_args.kwargs["target"], tray._idle_guard_safety_disable)
         tray._notify.assert_called_once()
         tray._reconcile_idle_guard({"ignore_lid_close": False})
-        tray.idle_guard.release.assert_called_once()
+        # Two failed lease attempts and an explicit off transition each
+        # release the GNOME cookie idempotently.
+        self.assertEqual(tray.idle_guard.release.call_count, 3)
 
     def test_notification_failure_does_not_prevent_immediate_idle_safety_disable(self):
         tray = TrayNotifier.__new__(TrayNotifier)
@@ -224,6 +226,154 @@ class GnomeIdleGuardTests(unittest.TestCase):
         tray._reconcile_idle_guard({"ignore_lid_close": True, "lid_generation": 1})
         tray.idle_guard.acquire.assert_called_once()
         tray._notify.assert_not_called()
+
+
+class CoolingArmAdmissionTests(unittest.TestCase):
+    def fake(self):
+        tray = TrayNotifier.__new__(TrayNotifier)
+        tray.updating_lid_item = False
+        tray.current_state = {"lid_generation": 19, "ignore_lid_close": False}
+        tray.power_guard = mock.Mock()
+        tray._show_error = mock.Mock(return_value=False)
+        return tray
+
+    def test_arm_preacquires_cooling_before_starting_daemon_request(self):
+        tray = self.fake()
+        item = mock.Mock()
+        item.get_active.return_value = True
+        actions = []
+        tray.power_guard.acquire.side_effect = lambda: actions.append("power-saver")
+        dialog = mock.Mock()
+        dialog.run.return_value = notifier_module.Gtk.ResponseType.YES
+        with (mock.patch.object(notifier_module.Gtk, "MessageDialog", return_value=dialog),
+              mock.patch.object(notifier_module.threading, "Thread") as thread):
+            thread.return_value.start.side_effect = lambda: actions.append("daemon-request")
+            tray._on_lid_toggled(item)
+        self.assertEqual(actions, ["power-saver", "daemon-request"])
+        tray._show_error.assert_not_called()
+
+    def test_cooling_failure_refuses_arm_before_root_lid_inhibitor(self):
+        tray = self.fake()
+        tray.power_guard.acquire.side_effect = RuntimeError("power daemon absent")
+        item = mock.Mock()
+        item.get_active.return_value = True
+        dialog = mock.Mock()
+        dialog.run.return_value = notifier_module.Gtk.ResponseType.YES
+        with (mock.patch.object(notifier_module.Gtk, "MessageDialog", return_value=dialog),
+              mock.patch.object(notifier_module.threading, "Thread") as thread):
+            tray._on_lid_toggled(item)
+        thread.assert_not_called()
+        item.set_active.assert_called_with(False)
+        tray._show_error.assert_called_once()
+        self.assertIn("power-saver", tray._show_error.call_args.args[1])
+
+class PowerSaverGuardTests(unittest.TestCase):
+    def fake(self):
+        proxy = mock.Mock()
+        proxy.get_name_owner.return_value = ":1.456"
+        proxy.call_sync.return_value.unpack.return_value = (77,)
+        return proxy
+
+    def test_hold_is_power_saver_only_and_releases_on_user_disable(self):
+        proxy = self.fake()
+        guard = notifier_module.PowerSaverGuard(proxy_factory=lambda: proxy)
+        with mock.patch.object(guard, "_active_profile", return_value="power-saver"):
+            guard.acquire()
+            guard.acquire()
+        proxy.call_sync.assert_called_once()
+        call = proxy.call_sync.call_args
+        self.assertEqual(call.args[0], "HoldProfile")
+        self.assertEqual(call.args[1].get_type_string(), "(sss)")
+        self.assertEqual(call.args[1].unpack()[0], "power-saver")
+        self.assertEqual(guard.cookie, 77)
+        guard.release()
+        self.assertEqual(proxy.call_sync.call_count, 2)
+        self.assertEqual(proxy.call_sync.call_args.args[0], "ReleaseProfile")
+        self.assertEqual(proxy.call_sync.call_args.args[1].unpack(), (77,))
+        self.assertIsNone(guard.proxy)
+        proxy.get_connection.return_value.close_sync.assert_called_once_with(None)
+        guard.release()
+        self.assertEqual(proxy.call_sync.call_count, 2)
+
+    def test_ineffective_profile_fails_closed_and_drops_system_bus(self):
+        proxy = self.fake()
+        guard = notifier_module.PowerSaverGuard(proxy_factory=lambda: proxy)
+        with mock.patch.object(guard, "_active_profile", return_value="balanced"):
+            with self.assertRaisesRegex(RuntimeError, "did not become effective"):
+                guard.acquire()
+        proxy.get_connection.return_value.close_sync.assert_called_once_with(None)
+        self.assertIsNone(guard.cookie)
+        self.assertIsNone(guard.proxy)
+
+    def test_lost_reply_closes_private_bus_and_retry_acquires_clean_cookie(self):
+        first, second = self.fake(), self.fake()
+        first.call_sync.side_effect = TimeoutError("unknown acceptance")
+        factory = mock.Mock(side_effect=[first, second])
+        guard = notifier_module.PowerSaverGuard(proxy_factory=factory)
+        with self.assertRaises(TimeoutError):
+            guard.acquire()
+        first.get_connection.return_value.close_sync.assert_called_once_with(None)
+        with mock.patch.object(guard, "_active_profile", return_value="power-saver"):
+            guard.acquire()
+        self.assertEqual(guard.cookie, 77)
+        self.assertEqual(factory.call_count, 2)
+        guard.release()
+        second.get_connection.return_value.close_sync.assert_called_once_with(None)
+
+    def test_restarted_power_daemon_reacquires_cookie_on_fresh_connection(self):
+        first, second = self.fake(), self.fake()
+        first.get_name_owner.side_effect = [":1.old", ":1.new"]
+        second.get_name_owner.return_value = ":1.new"
+        factory = mock.Mock(side_effect=[first, second])
+        guard = notifier_module.PowerSaverGuard(proxy_factory=factory)
+        with mock.patch.object(guard, "_active_profile", return_value="power-saver"):
+            guard.acquire()
+            guard.acquire()
+        first.get_connection.return_value.close_sync.assert_called_once_with(None)
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual(guard.owner, ":1.new")
+        guard.release()
+
+    def test_missing_power_daemon_refuses_guard_before_any_hold(self):
+        proxy = self.fake()
+        proxy.get_name_owner.return_value = None
+        guard = notifier_module.PowerSaverGuard(proxy_factory=lambda: proxy)
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            guard.acquire()
+        proxy.call_sync.assert_not_called()
+        proxy.get_connection.return_value.close_sync.assert_called_once_with(None)
+
+    def test_reconcile_acquires_cooling_first_then_idle_and_releases_both(self):
+        tray = TrayNotifier.__new__(TrayNotifier)
+        calls = []
+        tray.power_guard = mock.Mock()
+        tray.idle_guard = mock.Mock()
+        tray.power_guard.acquire.side_effect = lambda: calls.append("power")
+        tray.idle_guard.acquire.side_effect = lambda: calls.append("idle")
+        tray.idle_guard_failed_generation = None
+        tray._reconcile_idle_guard({"ignore_lid_close": True, "lid_generation": 7})
+        self.assertEqual(calls, ["power", "idle"])
+        tray._reconcile_idle_guard({"ignore_lid_close": False})
+        tray.power_guard.release.assert_called_once()
+        tray.idle_guard.release.assert_called_once()
+
+    def test_cooling_hold_failure_prevents_idle_and_disables_lid_override(self):
+        tray = TrayNotifier.__new__(TrayNotifier)
+        tray.power_guard = mock.Mock()
+        tray.power_guard.acquire.side_effect = RuntimeError("power policy unavailable")
+        tray.idle_guard = mock.Mock()
+        tray.idle_guard_failed_generation = None
+        tray._notify = mock.Mock()
+        tray._idle_guard_safety_disable = mock.Mock()
+        with mock.patch.object(notifier_module.threading, "Thread") as worker:
+            tray._reconcile_idle_guard({
+                "ignore_lid_close": True, "lid_generation": 45, "locked_kinds": []})
+        tray.power_guard.release.assert_called_once()
+        tray.idle_guard.release.assert_called_once()
+        tray.idle_guard.acquire.assert_not_called()
+        worker.assert_called_once()
+        self.assertEqual(worker.call_args.kwargs["args"], (45,))
+        worker.return_value.start.assert_called_once()
 
 
 class CursorSettingsTests(unittest.TestCase):

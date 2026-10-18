@@ -53,6 +53,7 @@ class RecoveryPreflightTests(unittest.TestCase):
         self.assertTrue(installer.approved_baseline(installer.BASELINE))
         self.assertTrue(installer.approved_baseline(installer.POST_BOOT_REPAIR_BASELINE))
         self.assertTrue(installer.approved_baseline(installer.OCT18_WEAK_INHIBITOR_BASELINE))
+        self.assertTrue(installer.approved_baseline(installer.OCT18_CONTINUOUS_BASELINE))
         self.assertTrue(installer.approved_baseline(installer.FAILED_BASELINE, recovery=True))
         self.assertFalse(installer.approved_baseline(installer.OCT18_WEAK_INHIBITOR_BASELINE, recovery=True))
         self.assertFalse(installer.approved_baseline(installer.FAILED_BASELINE))
@@ -65,6 +66,15 @@ class RecoveryPreflightTests(unittest.TestCase):
         mixed_oct18 = dict(installer.OCT18_WEAK_INHIBITOR_BASELINE)
         mixed_oct18['input_lock_safety.py'] = installer.POST_BOOT_REPAIR_BASELINE['input_lock_safety.py']
         self.assertFalse(installer.approved_baseline(mixed_oct18))
+        mixed_continuous = dict(installer.OCT18_CONTINUOUS_BASELINE)
+        mixed_continuous['input_lock_notifier.py'] = (
+            installer.OCT18_WEAK_INHIBITOR_BASELINE['input_lock_notifier.py'])
+        self.assertFalse(installer.approved_baseline(mixed_continuous))
+        modified_continuous = dict(installer.OCT18_CONTINUOUS_BASELINE)
+        modified_continuous['input_lock_safety.py'] = 'unknown'
+        self.assertFalse(installer.approved_baseline(modified_continuous))
+        self.assertFalse(installer.approved_baseline(
+            installer.OCT18_CONTINUOUS_BASELINE, recovery=True))
 
     def test_exact_known_failure_can_use_independent_gate_without_daemon_state(self):
         self.preflight()

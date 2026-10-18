@@ -111,6 +111,31 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(self.policy.last_decision["reason"], "THERMAL_HIGH_RISK")
         self.assertIsNone(self.policy.last_decision["time_limit_seconds"])
 
+    def test_thermal_emergency_preserves_exact_sensor_witnesses_and_thresholds(self):
+        cpu = Sensor("thermal:TCPU", "cpu", 102.05, 85, 95, 100)
+        other = Sensor("hwmon:coretemp", "cpu", 62, 85, 95, 100)
+        chassis = Sensor("thermal:SEN2", "chassis", 44.05, 60, 68, 73)
+        self.assertIsNone(self.update(sensors=[cpu, other, chassis]))
+        self.assertEqual(self.update(2, sensors=[cpu, other, chassis]), "THERMAL_EMERGENCY")
+        evidence = self.policy.last_decision["thermal_evidence"]
+        self.assertEqual(evidence["thermal_level"], 3)
+        self.assertEqual(evidence["candidate_seconds"], 2.0)
+        self.assertEqual(len(evidence["sensors"]), 3)
+        witness = evidence["sensors"][0]
+        self.assertEqual(witness["identity"], "thermal:TCPU")
+        self.assertEqual(witness["celsius"], 102.05)
+        self.assertEqual(witness["emergency_c"], 100)
+        self.assertEqual(witness["risk"], 3)
+        self.assertEqual(evidence["sensors"][-1]["celsius"], 44.05)
+        self.assertEqual(self.policy.snapshot()["last_decision"], self.policy.last_decision)
+
+    def test_thermal_brief_spike_does_not_create_a_false_witness(self):
+        cpu = Sensor("thermal:TCPU", "cpu", 102, 85, 95, 100)
+        self.assertIsNone(self.update(sensors=[cpu, sample().sensors[1]]))
+        self.assertIsNone(self.update(1))
+        self.assertIsNone(self.policy.last_decision)
+        self.assertTrue(self.policy.armed)
+
     def test_multiweek_operation_still_fails_safe_on_lost_telemetry(self):
         self.assertIsNone(self.update())
         self.assertIsNone(self.update(21 * 86400))

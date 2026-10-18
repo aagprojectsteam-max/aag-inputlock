@@ -225,6 +225,27 @@ class SafetyPolicy:
             "battery": sample.battery if sample is not None else None,
             "cpu_busy": sample.cpu_busy if sample is not None else None,
         }
+        if reason in {"THERMAL_HIGH_RISK", "THERMAL_EMERGENCY"} and sample is not None:
+            # Retain the actual hot readings and software intervention levels.
+            # Previously only the generic THERMAL_EMERGENCY reason survived,
+            # making false/single-sensor spikes indistinguishable from
+            # sustained corroborated heat after the device resumed.
+            self.last_decision["thermal_evidence"] = {
+                "thermal_level": self.thermal_level,
+                "candidate_level": self.thermal_candidate,
+                "candidate_seconds": (round(now - self.thermal_since, 2)
+                                      if self.thermal_since is not None else None),
+                "sensors": [
+                    {"identity": s.identity, "kind": s.kind,
+                     "celsius": round(s.celsius, 2),
+                     "warning_c": round(s.warning, 2),
+                     "high_c": round(s.high, 2),
+                     "emergency_c": round(s.emergency, 2),
+                     "risk": s.risk(),
+                     "risk_hysteresis_3c": s.risk(3)}
+                    for s in sorted(sample.sensors, key=lambda s: (-s.risk(), -s.celsius))
+                ],
+            }
         LOG.info("protective_decision_evidence=%s", json.dumps(self.last_decision, sort_keys=True))
         self.armed = False  # One dispatch per explicit arm.
         self.transition("PROTECTIVE_ACTION_PENDING", "PROTECTIVE_ACTION_DECIDED")

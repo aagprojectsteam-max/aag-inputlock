@@ -40,9 +40,9 @@ reference result is recorded in
 
 Use a ventilated desk, an open lid, idle/light work and a present operator. Keep another recovery channel available. Do not put the laptop in a bag, stress it, drain its battery or wait for high temperature.
 
-1. With lid open, explicitly enable continuous lid-ignore from the tray. Confirm `LID_IGNORE_ARMED`, a connected controller, GNOME's idle-only session inhibitor (flag 8), and the lid-switch inhibitor. Native suspend and critical-battery protection must remain enabled.
+1. With lid open, explicitly enable continuous lid-ignore from the tray. Confirm `LID_IGNORE_ARMED`, a connected controller, GNOME's idle-only session inhibitor (flag 8), a temporary **effective `power-saver` profile hold** and the lid-switch inhibitor. The cooling hold must have been obtained **before** the lid inhibitor. Native suspend and critical-battery protection must remain enabled.
 2. Close for **5–10 seconds only** during supervised acceptance. Observe `LID_CLOSED_MONITORED`, fresh sensor values, `lid_ignore_mode=continuous_until_disabled`, `deadline=null`, and no timed protective action. Do **not** physically test hours of closure; source tests simulate that with injected monotonic clocks.
-3. Reopen immediately. Confirm monitoring ended and return to armed/open state. Disable lid-ignore and confirm neither InputLock lid-grab nor its GNOME idle-only inhibitor remains. GNOME's original idle power settings must be unchanged.
+3. Reopen immediately. Confirm monitoring ended and return to armed/open state. Disable lid-ignore and confirm InputLock lid-grab, GNOME idle-only inhibitor and power-saver hold all disappeared; the originally selected `balanced`/`performance` profile and GNOME idle policy must be unchanged.
 4. Exercise warning/high-risk/emergency and failure paths through the automated simulations, not by raising the machine's temperature or waiting for an unattended shutdown.
 
 Actual suspend/resume, storage release/recovery, modem/GNSS recovery, session logout and reboot acceptance must be scheduled separately with the existing AAG procedures. Development did none of these. A queued systemd transition may already be beyond cancellation when the lid reopens.
