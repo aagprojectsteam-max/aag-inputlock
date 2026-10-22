@@ -79,6 +79,51 @@ class TransitionError(RuntimeError):
     """A requested lock transition could not be completed transactionally."""
 
 
+# Interface 3: the tray maps these keys (or reasons containing thermal,
+# battery, telemetry, supervision or sleep) to plain text.
+_PROTECTION_LID_KEYS: Final = {
+    "CONTROLLER_LOST": "controller-disconnected",
+    "SUPERVISION_LOST": "supervision-lost",
+    "TELEMETRY_LOST": "telemetry-lost",
+    "LID_TELEMETRY_LOST": "telemetry-lid-switch-lost",
+    "LID_DEVICE_LOST": "telemetry-lid-switch-lost",
+    "BATTERY_CRITICAL": "battery-critical",
+    "THERMAL_HIGH_RISK": "thermal-high-risk",
+    "THERMAL_EMERGENCY": "thermal-emergency",
+    "DAEMON_FAILED": "daemon-shutdown",
+}
+_LID_DISABLE_KEYS: Final = {
+    "emergency-hotkey": "emergency-unlock",
+    "gnome-emergency-hotkey": "emergency-unlock",
+    "tty-recovery-hotkey": "emergency-unlock",
+    "ipc-emergency-unlock": "emergency-unlock",
+    "authorized-session-inactive": "session-inactive",
+    "user-session-ended": "session-inactive",
+    "logind-unavailable": "supervision-logind-unavailable",
+    "safety-journal-failed": "supervision-journal-unwritable",
+    "hotkey-change": "settings-reset",
+    "lock-kinds-change": "settings-reset",
+    "allowed-keys-change": "settings-reset",
+    "configuration-reload": "settings-reset",
+    "invalid-config-reload": "settings-reset",
+    "system-suspend": "sleep-input-release-failed",
+    "system-sleep-hook": "sleep-input-release-failed",
+    "controller-lost": "controller-disconnected",
+    "lid-device-lost": "telemetry-lid-switch-lost",
+}
+
+
+def lid_disable_key(reason: str) -> str:
+    """Normalize an internal reason to the readable key reported to the tray."""
+    text = reason.strip()
+    if text.startswith("protective-suspend:"):
+        text = text.partition(":")[2]
+    if text in _PROTECTION_LID_KEYS:
+        return _PROTECTION_LID_KEYS[text]
+    text = text.lower().replace("_", "-")
+    return _LID_DISABLE_KEYS.get(text, text)
+
+
 def sd_notify(message: str, environ: dict[str, str] | None = None) -> bool:
     """Send one sd_notify(3) datagram without libsystemd.
 
@@ -918,7 +963,7 @@ class InputLockDaemon:
         if self._lid_may_be_closed():
             self._start_protection(reason)
         else:
-            self._disable_lid(reason.lower().replace("_", "-"))
+            self._disable_lid(lid_disable_key(reason))
 
     # ------------------------------ logind -------------------------------
 
@@ -1481,13 +1526,17 @@ class InputLockDaemon:
 
     def _record_lid_disable(self, reason: str, *, requested_by_user: bool) -> None:
         """Interface 3 (A8): every end of an active lid-ignore is logged with its
-        reason and reported to the tray in the state snapshot."""
+        reason and reported to the tray in the state snapshot. Only a
+        "set-lid-ignore false" request is user-requested; an emergency unlock
+        is not."""
+        key = lid_disable_key(reason)
         self.last_lid_disable = {
-            "reason": reason,
+            "reason": key,
             "requested_by_user": bool(requested_by_user),
             "at": time.time(),
         }
-        LOG.info("event=LID_IGNORE_DISABLED reason=%s requested_by_user=%s", reason, bool(requested_by_user))
+        LOG.info("event=LID_IGNORE_DISABLED reason=%s requested_by_user=%s detail=%s",
+                 key, bool(requested_by_user), reason)
 
     def _disable_lid(self, reason: str, *, requested_by_user: bool = False) -> None:
         if self.ignore_lid_close:

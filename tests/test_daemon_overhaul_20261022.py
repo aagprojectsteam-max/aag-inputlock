@@ -582,7 +582,7 @@ class SafetyJournalFailureTests(unittest.TestCase):
         self.assertFalse(daemon.ignore_lid_close)
         self.assertFalse(daemon.safety.armed)
         self.assertFalse(lid.grabbed)
-        self.assertEqual(daemon.last_lid_disable["reason"], "safety-journal-failed")
+        self.assertEqual(daemon.last_lid_disable["reason"], "supervision-journal-unwritable")
         self.assertFalse(daemon.last_lid_disable["requested_by_user"])
         text = "\n".join(logs.output)
         self.assertEqual(text.count("SAFETY_JOURNAL_WRITE_FAILED"), 1)
@@ -969,12 +969,45 @@ class ProtocolAndLidDisableTests(unittest.TestCase):
         clock = Clock(100.0)
         daemon = armed_daemon(clock)
         daemon._emergency_unlock("emergency-hotkey")
-        self.assertEqual(daemon.last_lid_disable["reason"], "emergency-hotkey")
+        self.assertEqual(daemon.last_lid_disable["reason"], "emergency-unlock")
+        self.assertFalse(daemon.last_lid_disable["requested_by_user"])
         daemon = armed_daemon(clock)
         with mock.patch.object(daemon_module, "request_service"), \
                 mock.patch.object(daemon_module.threading, "Thread"):
             daemon._start_protection("THERMAL_EMERGENCY")
-        self.assertEqual(daemon.last_lid_disable["reason"], "protective-suspend:THERMAL_EMERGENCY")
+        self.assertEqual(daemon.last_lid_disable["reason"], "thermal-emergency")
+        self.assertFalse(daemon.last_lid_disable["requested_by_user"])
+
+    def test_every_daemon_reason_maps_to_a_tray_key(self):
+        """The tray understands these keys, or reasons naming thermal,
+        battery, telemetry, supervision or sleep (coordinator, interface 3)."""
+        known = {"controller-lease-expired", "controller-disconnected", "session-inactive",
+                 "daemon-shutdown", "emergency-unlock", "settings-reset"}
+        words = ("thermal", "battery", "telemetry", "supervision", "sleep")
+        internal = [
+            "controller-disconnected", "session-inactive", "logind-unavailable", "safety-journal-failed",
+            "emergency-hotkey", "gnome-emergency-hotkey", "tty-recovery-hotkey", "ipc-emergency-unlock",
+            "daemon-shutdown", "authorized-session-inactive", "user-session-ended", "hotkey-change",
+            "lock-kinds-change", "allowed-keys-change", "configuration-reload", "invalid-config-reload",
+            "system-suspend", "system-sleep-hook", "CONTROLLER_LOST", "SUPERVISION_LOST", "LID_DEVICE_LOST",
+        ] + ["protective-suspend:" + code for code in (
+            "CONTROLLER_LOST", "SUPERVISION_LOST", "TELEMETRY_LOST", "LID_TELEMETRY_LOST", "LID_DEVICE_LOST",
+            "BATTERY_CRITICAL", "THERMAL_HIGH_RISK", "THERMAL_EMERGENCY", "DAEMON_FAILED")]
+        for reason in internal:
+            key = daemon_module.lid_disable_key(reason)
+            self.assertTrue(key in known or any(word in key for word in words), (reason, key))
+
+    def test_session_and_logind_losses_use_tray_keys(self):
+        clock = Clock(100.0)
+        daemon = armed_daemon(clock)
+        drain(daemon, "session-inactive")
+        self.assertEqual(daemon.last_lid_disable["reason"], "session-inactive")
+        daemon = armed_daemon(clock)
+        with mock.patch.object(daemon_module.time, "monotonic", clock):
+            drain(daemon, "logind-error")
+            clock.now = 116.0
+            daemon._handle_timers()
+        self.assertIn("supervision", daemon.last_lid_disable["reason"])
         self.assertFalse(daemon.last_lid_disable["requested_by_user"])
 
     def test_disable_when_already_off_records_nothing(self):
