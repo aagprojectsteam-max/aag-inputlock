@@ -99,9 +99,11 @@ class TickVersusSampleTests(unittest.TestCase):
 
     def test_two_corroborated_samples_are_not_enough_three_are(self):
         rig = Rig(self)
-        rows = [sensors(108, 106)] * 2 + [sensors(70, 70)] * 5
+        # S-R4: the witness is an independent origin (SEN1 >= its 65C
+        # warning), not a second reading of the same CPU package.
+        rows = [sensors(108, 106, sen1=66)] * 2 + [sensors(70, 70)] * 5
         self.assertEqual(rig.run_sequence(rows)[0], None)
-        reason, _ = rig.run_sequence([sensors(108, 106)] * 3)
+        reason, _ = rig.run_sequence([sensors(108, 106, sen1=66)] * 3)
         self.assertEqual(reason, "THERMAL_EMERGENCY")
         rule = rig.policy.last_decision["thermal_evidence"]["rule"]
         self.assertEqual(rule["rule"], "cpu-corroborated-emergency")
@@ -548,7 +550,7 @@ class ReadinessProbeTests(unittest.TestCase):
             for directive in ("PrivateDevices=yes", "ProtectKernelTunables=yes", "ProtectKernelModules=yes",
                               "ProtectKernelLogs=yes", "ProtectControlGroups=yes", "RestrictNamespaces=yes",
                               "LockPersonality=yes", "SystemCallArchitectures=native",
-                              "NoNewPrivileges=yes", "ReadWritePaths=/var/lib/input-lock",
+                              "NoNewPrivileges=yes", "ReadWritePaths=-/var/lib/input-lock",
                               "StateDirectory=input-lock-protection", "StateDirectoryMode=0755"):
                 self.assertIn(directive, text, name)
             self.assertNotIn("SD_LOGIND_SKIP_INHIBITORS", text)
@@ -611,7 +613,10 @@ class ProtectMainTests(unittest.TestCase):
 
         telemetry = Mock()
         telemetry.read.return_value = SimpleNamespace(lid_closed=True)
+        # S-R6: the journal and receipt are read through _read_bounded_json.
         with (patch.object(Path, "read_text", read_text),
+              patch.object(safety, "_read_bounded_json",
+                           side_effect=lambda p, *a, **k: json.loads(read_text(p))),
               patch.object(safety.time, "time", return_value=100.),
               patch.object(safety.time, "monotonic", return_value=monotonic),
               patch.object(safety, "atomic_json", side_effect=lambda p, v, **k: records.append((p, v))),

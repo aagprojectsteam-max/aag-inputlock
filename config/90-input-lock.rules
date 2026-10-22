@@ -7,6 +7,16 @@ polkit.addRule(function(action, subject) {
     }
 });
 
+// A "delay" sleep lock only: logind waits (at most InhibitDelayMaxSec) until
+// the daemon has extended its watchdog for the sleep, then proceeds. It can
+// never block a suspend; "block" sleep inhibition stays unavailable.
+polkit.addRule(function(action, subject) {
+    if (subject.user === "input-lockd" &&
+        action.id === "org.freedesktop.login1.inhibit-delay-sleep") {
+        return polkit.Result.YES;
+    }
+});
+
 // Only this fixed LockLock adapter may be started; no general unit management.
 polkit.addRule(function(action, subject) {
     if (subject.user === "input-lockd" &&

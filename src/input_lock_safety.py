@@ -15,6 +15,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field, replace
@@ -157,7 +158,20 @@ THERMAL_RULES = (
 )
 MEASURED_HYSTERESIS = {"cpu": 3.0, "chassis": 2.0, "storage": 2.0}
 CPU_CORROBORATED_SAMPLES = 3
-CPU_CORROBORATION_C = 6.0
+# Physical origin groups (S-R4). TCPU, x86_pkg_temp and the coretemp/k10temp
+# package channel (with its per-core readings) are one sensor: the CPU package.
+# Every other sensor (each chassis zone, the NVMe drive) is its own origin.
+CPU_PACKAGE_ORIGIN = "cpu-package"
+INDEPENDENT_WITNESS_KINDS = frozenset({"chassis", "storage"})
+
+
+def sensor_origin(sensor: Sensor) -> str:
+    """The physical sensor behind a reading; same origin never corroborates."""
+    if sensor.kind in {"cpu", "cpu-core"}:
+        return CPU_PACKAGE_ORIGIN
+    return sensor.identity
+
+
 MEDIAN_SAMPLES = 5
 MIN_DWELL_SAMPLES = 3  # Never act on a single (or a pair of) samples.
 SAMPLE_GAP_LIMIT = 10.0  # Evidence older than this gap does not continue a timer.
@@ -636,7 +650,7 @@ class SafetyPolicy:
                 "rule": "cpu-corroborated-emergency", "level": 3,
                 "samples": len(self.corroborated),
                 "elapsed_seconds": round(at - self.corroborated[0][0], 2),
-                "corroboration_c": CPU_CORROBORATION_C,
+                "witness_rule": "independent origin (chassis or NVMe) at or above its warning level",
                 "window": [{"at_offset": round(t - self.corroborated[0][0], 2), **row}
                            for t, row in self.corroborated[-CPU_CORROBORATED_SAMPLES:]],
             }
@@ -654,16 +668,28 @@ class SafetyPolicy:
         return level
 
     def _corroborated_cpu(self, sample: Sample) -> dict | None:
-        """A raw CPU reading at/above emergency, confirmed by another CPU source."""
+        """A raw CPU reading at/above emergency, confirmed by an independent witness.
+
+        TCPU, x86_pkg_temp and the coretemp/k10temp package channel (and its
+        per-core readings) all read the same CPU package sensor, so none of
+        them can confirm another (S-R4). The witness must come from a
+        different physical origin (a chassis zone or the NVMe drive) and be
+        at or above its own warning level. Without such a witness only the
+        single-source rule (emergency + 1 C for 10 s) applies.
+        """
         cpus = [s for s in sample.sensors if s.kind == "cpu" and math.isfinite(s.celsius)]
         for hot in sorted(cpus, key=lambda s: -s.celsius):
             if hot.celsius < hot.emergency:
                 break
-            witness = next((o for o in cpus if o.identity != hot.identity
-                            and o.celsius >= hot.celsius - CPU_CORROBORATION_C), None)
-            if witness is not None:
+            origin = sensor_origin(hot)
+            witnesses = [o for o in sample.sensors
+                         if o.kind in INDEPENDENT_WITNESS_KINDS and math.isfinite(o.celsius)
+                         and sensor_origin(o) != origin and o.celsius >= o.warning]
+            if witnesses:
+                witness = max(witnesses, key=lambda o: o.celsius - o.warning)
                 return {"sensor": hot.identity, "celsius": round(hot.celsius, 2),
-                        "witness": witness.identity, "witness_celsius": round(witness.celsius, 2)}
+                        "witness": witness.identity, "witness_celsius": round(witness.celsius, 2),
+                        "witness_warning_c": round(witness.warning, 2)}
         return None
 
     def decide(self, reason: str, detail: dict | None = None) -> str:
@@ -745,31 +771,106 @@ def storage_limits(critical: float) -> tuple[float, float, float]:
     return min(77, critical - 10), min(80, critical - 7), critical
 
 
-class _LogindSleepProbe:
-    """Read-only PreparingForSleep reader on one cached private connection."""
+def bounded_call(call, timeout: float, what: str):
+    """Run ``call()`` on a helper thread and wait at most ``timeout`` seconds.
 
-    def __init__(self) -> None:
+    libdbus connects (and says Hello) with its default 25-second timeout,
+    which no caller can shorten. A caller that must stay responsive waits
+    here instead; on timeout the helper thread is abandoned (it is a daemon
+    thread and ends when the call finally returns) and TimeoutError is raised.
+    """
+    result: dict = {}
+
+    def target() -> None:
+        try:
+            result["value"] = call()
+        except BaseException as exc:  # Re-raised in the caller's thread.
+            result["error"] = exc
+
+    worker = threading.Thread(target=target, name="input-lock-bounded-call", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(f"{what} did not answer within {timeout:g} s")
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
+# The readiness probe's logind status (bus connect, systemctl --version and
+# three 3-second calls) must finish within this time (S-R2).
+NATIVE_STATUS_TIMEOUT_SECONDS = 15.0
+
+
+class _LogindSleepProbe:
+    """Read-only PreparingForSleep reader on one cached private connection.
+
+    Runs on the telemetry thread, which must never wait for a bus connect
+    (S-R2): the connection is opened on a helper thread, and until it is
+    ready the probe answers None ("unknown"). The Get call itself is bounded
+    to 1 s.
+    """
+
+    def __init__(self, connect=None) -> None:
         self.bus = None
         self.properties = None
+        self._lock = threading.Lock()
+        self._connecting = False
+        self._connect = connect or self._system_bus_properties
+
+    @staticmethod
+    def _system_bus_properties():
+        import dbus
+        bus = dbus.SystemBus(private=True)
+        try:
+            return bus, dbus.Interface(
+                bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1", introspect=False),
+                "org.freedesktop.DBus.Properties")
+        except Exception:
+            bus.close()
+            raise
 
     def close(self) -> None:
-        bus, self.bus, self.properties = self.bus, None, None
+        with self._lock:
+            bus, self.bus, self.properties = self.bus, None, None
         if bus is not None:
             try:
                 bus.close()
             except Exception:
                 pass
 
+    def _start_connect(self) -> None:
+        with self._lock:
+            if self._connecting or self.properties is not None:
+                return
+            self._connecting = True
+
+        def connect() -> None:
+            try:
+                bus, properties = self._connect()
+            except Exception:
+                bus = properties = None
+            with self._lock:
+                self._connecting = False
+                if properties is not None:
+                    self.bus, self.properties = bus, properties
+                    return
+            if bus is not None:
+                try:
+                    bus.close()
+                except Exception:
+                    pass
+
+        threading.Thread(target=connect, name="input-lock-sleep-probe-connect", daemon=True).start()
+
     def __call__(self) -> bool | None:
+        properties = self.properties
+        if properties is None:
+            self._start_connect()
+            return None
         try:
-            import dbus
-            if self.properties is None:
-                self.bus = dbus.SystemBus(private=True)
-                self.properties = dbus.Interface(
-                    self.bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1"),
-                    "org.freedesktop.DBus.Properties")
-            return bool(self.properties.Get("org.freedesktop.login1.Manager",
-                                            "PreparingForSleep", timeout=1))
+            return bool(properties.Get("org.freedesktop.login1.Manager",
+                                       "PreparingForSleep", timeout=1))
         except Exception:
             self.close()
             return None
@@ -1078,7 +1179,8 @@ def protection_report(run=subprocess.run, status=native_status, counter=None) ->
             return {"errors": [LATCH_ERROR], "info": info}
         if latch == "stale":
             info.append(detail)
-        state = status()
+        # Bounded (S-R2): a sluggish bus makes the probe fail, never hang.
+        state = bounded_call(status, NATIVE_STATUS_TIMEOUT_SECONDS, "logind readiness status")
         if not state["supported"] or state["blocked"] or state["preparing"]:
             return {"errors": ["ordinary suspend unavailable, blocked, or already in progress"], "info": info}
         (counter or suspend_success_count)()
@@ -1320,10 +1422,55 @@ def _write_receipt(path: Path, payload: dict) -> None:
         raise failure
 
 
-def _read_receipt(path: Path) -> dict | None:
-    for candidate in (ROOT_RECEIPT, path.with_name(RESULT_NAME)):
+# Largest journal or receipt root will parse (S-R6); real ones are a few KiB.
+MAX_STATE_FILE_BYTES = 1 << 20
+
+
+def _read_bounded_json(path: Path, limit: int = MAX_STATE_FILE_BYTES):
+    """Parse a JSON file that a less privileged process may control (S-R6).
+
+    Root reads the daemon's journal through one O_NOFOLLOW | O_NONBLOCK
+    descriptor: a symbolic link, FIFO, device or other non-regular file, or
+    anything larger than ``limit`` bytes, is refused with ValueError instead
+    of being followed, blocking on, or read without bound. Raises
+    FileNotFoundError when the file is absent.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENXIO}:  # Symlink; FIFO/socket without peer.
+            raise ValueError(f"{path} is not a regular file") from exc
+        raise
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{path} is not a regular file")
+        if info.st_size > limit:
+            raise ValueError(f"{path} is larger than {limit} bytes")
+        chunks, total = [], 0
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise ValueError(f"{path} is larger than {limit} bytes")
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+    return json.loads(b"".join(chunks).decode("utf-8"))
+
+
+def _read_receipt(path: Path, *, trust_daemon_copy: bool = False) -> dict | None:
+    """The protective receipt. Recovery decisions use only the root-owned
+    one; the daemon-writable copy next to ``path`` is never trusted there
+    (S-R6)."""
+    candidates = [ROOT_RECEIPT] + ([path.with_name(RESULT_NAME)] if trust_daemon_copy else [])
+    for candidate in candidates:
         try:
-            value = json.loads(candidate.read_text())
+            value = _read_bounded_json(candidate)
             return value if isinstance(value, dict) else None
         except FileNotFoundError:
             continue
@@ -1373,7 +1520,7 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
                 props = unit_properties(run, "input-lock.service")
                 invocation, daemon_result = props.get("InvocationID"), props.get("Result")
                 try:
-                    state = json.loads(path.read_text())
+                    state = _read_bounded_json(path)
                 except FileNotFoundError:
                     # Fresh install or uninstall: nothing was pending, so
                     # nothing is eligible and nothing is latched.
@@ -1385,7 +1532,7 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
                 if result.returncode or unit_properties(run, "input-lock.service").get("ActiveState") not in {"inactive", "failed"}:
                     raise RuntimeError("cannot confirm InputLock stopped; no sleep dispatched")
         else:
-            state = json.loads(path.read_text())
+            state = _read_bounded_json(path)
         if not isinstance(state, dict):
             raise ValueError("invalid safety journal object")
         boot = boot_id()
@@ -1425,8 +1572,8 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
         if not probe():
             raise RuntimeError("native suspend/fail-safe prerequisites unavailable")
         if not recovery:
-            current = json.loads(path.read_text())
-            if (current.get("generation") != state.get("generation") or
+            current = _read_bounded_json(path)
+            if not isinstance(current, dict) or (current.get("generation") != state.get("generation") or
                     current.get("safety", {}).get("state") != "PROTECTIVE_ACTION_PENDING"):
                 record("cancelled-before-dispatch")
                 return 0
@@ -1486,7 +1633,7 @@ def record_failure(service_result: str, *, latch: Path | None = None, receipt: P
         return record_latch(latch, "recovery unit failed: " + service_result, counter=counter,
                             boot=boot, now=now, extra={"service_result": service_result})
     try:
-        evidence = json.loads(receipt.read_text())
+        evidence = _read_bounded_json(receipt)
     except (OSError, ValueError):
         evidence = None
     try:

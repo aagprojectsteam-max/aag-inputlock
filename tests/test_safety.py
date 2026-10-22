@@ -253,8 +253,10 @@ class DecisionDispatchTests(unittest.TestCase):
         now = [100.]
         policy = SafetyPolicy(lambda: now[0])
         policy.arm(sample())
+        # S-R4: two CPU readings share one package sensor; the witness is
+        # the chassis zone at or above its warning level.
         hot = [Sensor("cpu", "cpu", 102, 85, 95, 100), Sensor("cpu2", "cpu", 101, 85, 95, 100),
-               sample().sensors[1]]
+               replace(sample().sensors[1], celsius=61)]
         reason = None
         for _ in range(4):  # Three consecutive corroborated samples.
             now[0] += 2

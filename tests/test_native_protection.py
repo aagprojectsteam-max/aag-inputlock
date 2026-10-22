@@ -111,7 +111,10 @@ class ProtectionTests(unittest.TestCase):
             if unit == 'systemd-suspend.service':
                 result['ActiveState'] = active
             return result
+        # S-R6: root reads the daemon journal and receipt through one bounded
+        # O_NOFOLLOW descriptor; the fixture serves the same content there.
         with (patch.object(Path, 'read_text', read), patch.object(safety.time, 'time', return_value=100.),
+              patch.object(safety, '_read_bounded_json', side_effect=lambda p, *a, **k: json.loads(read(p))),
               patch.object(safety, 'atomic_json') as records, patch.object(safety.os, 'chmod'),
               patch.object(safety, 'unit_properties', side_effect=props)):
             result = safety.protect_main(run, lambda: ready, telemetry, Path('/fixture/request.json'),
@@ -211,6 +214,7 @@ class ProtectionTests(unittest.TestCase):
     def test_corrupt_journal_still_releases_daemon_without_latching(self):
         run = Mock(return_value=SimpleNamespace(returncode=0))
         with (patch.object(Path, 'read_text', side_effect=ValueError('corrupt journal')),
+              patch.object(safety, '_read_bounded_json', side_effect=ValueError('corrupt journal')),
               patch.object(safety, 'unit_properties', return_value={'ActiveState': 'inactive'}),
               patch.object(safety, 'atomic_json') as record, patch.object(safety.os, 'chmod')):
             result = safety.protect_main(run=run, recovery=True)

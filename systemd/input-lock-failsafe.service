@@ -12,7 +12,9 @@ UMask=0077
 Environment=PYTHONDONTWRITEBYTECODE=1
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/input-lock
+# "-": a missing /var/lib/input-lock (fresh install, uninstall) must not fail
+# the unit with 226/NAMESPACE before the helper can run (S-R8c).
+ReadWritePaths=-/var/lib/input-lock
 StateDirectory=input-lock-protection
 StateDirectoryMode=0755
 ProtectHome=yes
