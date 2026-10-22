@@ -18,6 +18,7 @@ import secrets
 import selectors
 import signal
 import socket
+import stat
 import struct
 import tempfile
 import threading
@@ -1299,8 +1300,37 @@ class InputLockDaemon:
 
     # ------------------------- device handling -------------------------
 
+    @staticmethod
+    def _list_event_devices() -> set[str]:
+        """evdev.list_devices(), tolerating nodes that vanish mid-scan.
+
+        evdev lists /dev/input and then stat()s each entry; a device removed in
+        between (e.g. a Bluetooth mouse disconnecting on lid close) raises
+        FileNotFoundError.  Fall back to a scan that skips such entries.
+        """
+        try:
+            return set(evdev.list_devices())
+        except OSError:
+            pass
+        paths: set[str] = set()
+        try:
+            names = os.listdir("/dev/input")
+        except FileNotFoundError:
+            return paths
+        for name in names:
+            if not name.startswith("event"):
+                continue
+            path = os.path.join("/dev/input", name)
+            try:
+                mode = os.stat(path).st_mode
+            except OSError:
+                continue
+            if stat.S_ISCHR(mode) and os.access(path, os.R_OK | os.W_OK):
+                paths.add(path)
+        return paths
+
     def _rescan_devices(self, *, reclassify: bool = False) -> None:
-        current_paths = set(evdev.list_devices())
+        current_paths = self._list_event_devices()
         known_paths = set(self.devices)
         for path in sorted(known_paths - current_paths):
             self._detach_device(path)
@@ -1408,7 +1438,10 @@ class InputLockDaemon:
                 break
             saw_event = True
         if saw_event:
-            self._rescan_devices()
+            try:
+                self._rescan_devices()
+            except OSError:
+                LOG.warning("Transient error during device rescan; will retry on next udev event", exc_info=True)
 
     def _read_device(self, path: str) -> None:
         record = self.devices.get(path)
