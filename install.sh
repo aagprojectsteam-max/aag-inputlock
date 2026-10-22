@@ -1,181 +1,81 @@
 #!/usr/bin/env bash
+# Input Lock installer. The whole script is parsed before anything runs (see
+# main at the end), so editing this file while it runs cannot change it.
 set -Eeuo pipefail
+umask 022
 
 PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-APP_VERSION=$(tr -d '\r\n' < "$PROJECT_DIR/VERSION")
-[[ -n "$APP_VERSION" ]] || {
-    printf '%s\n' '[input-lock] ERROR: VERSION is empty' >&2
-    exit 1
-}
 TARGET_USER=${SUDO_USER:-}
 SYSTEM_USER_CREATED=0
 CHANGES_STARTED=0
-if [[ -r /etc/input-lock/install-state ]]; then
-    SAVED_CREATED=$(awk -F= '$1=="SYSTEM_USER_CREATED" {print $2}' /etc/input-lock/install-state)
-    [[ "$SAVED_CREATED" != 1 ]] || SYSTEM_USER_CREATED=1
-fi
+INSTALL_COMMITTED=0
+WAS_ACTIVE=0
+NOTIFIER_STOPPED=0
+STAGE=''
+BACKUP_DIR=''
+APP_VERSION=''
+SOCKET_PATH=''
+POST_INSTALL_WARNINGS=0
 
-usage() {
-    cat <<'EOF'
-Usage: sudo ./install.sh [--user LOGIN] [--update]
-
-Installs Input Lock for one local graphical-seat user. The daemon starts in
-the UNLOCKED state. The installer never performs a test lock.
-EOF
-}
-
-log() {
-    printf '%s\n' "[input-lock] $*"
-}
-
-fail() {
-    printf '%s\n' "[input-lock] ERROR: $*" >&2
-    exit 1
-}
-
-# Invoked indirectly by the EXIT trap.
-# shellcheck disable=SC2317,SC2329
-cleanup() {
-    local status=$?
-    if (( status != 0 && CHANGES_STARTED == 1 )); then
-        printf '%s\n' '[input-lock] Installation failed; stopping the daemon so input remains free.' >&2
-        systemctl stop input-lock.service >/dev/null 2>&1 || true
-    fi
-    exit "$status"
-}
-trap cleanup EXIT
-trap 'exit 130' INT TERM
-
-while (($#)); do
-    case "$1" in
-        --user)
-            (($# >= 2)) || fail '--user requires a login name'
-            TARGET_USER=$2
-            shift 2
-            ;;
-        --update)
-            shift
-            ;;
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        *)
-            fail "unknown argument: $1"
-            ;;
-    esac
-done
-
-(( EUID == 0 )) || fail 'run this installer with sudo'
-[[ -n "$TARGET_USER" && "$TARGET_USER" != root ]] || fail 'use --user LOGIN (or run through sudo from the desktop user)'
-id "$TARGET_USER" >/dev/null 2>&1 || fail "user does not exist: $TARGET_USER"
-[[ "$TARGET_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || fail 'unsupported login-name syntax'
-
-TARGET_UID=$(id -u "$TARGET_USER")
-TARGET_HOME=$(getent passwd "$TARGET_USER" | awk -F: '{print $6}')
-[[ -n "$TARGET_HOME" && -d "$TARGET_HOME" ]] || fail "home directory is unavailable for $TARGET_USER"
-TARGET_RUNTIME="/run/user/$TARGET_UID"
-TARGET_BUS="unix:path=$TARGET_RUNTIME/bus"
-
-run_as_target() {
-    runuser -u "$TARGET_USER" -- env \
-        XDG_RUNTIME_DIR="$TARGET_RUNTIME" \
-        DBUS_SESSION_BUS_ADDRESS="$TARGET_BUS" \
-        HOME="$TARGET_HOME" \
-        PYTHONDONTWRITEBYTECODE=1 \
-        "$@"
-}
-
-log "Target desktop user: $TARGET_USER (UID $TARGET_UID)"
-
-if [[ -r /etc/os-release ]]; then
-    # os-release is trusted system data and is used only for this comparison.
-    OS_ID=$(awk -F= '$1=="ID" {gsub(/"/,"",$2); print $2}' /etc/os-release)
-    OS_VERSION=$(awk -F= '$1=="VERSION_ID" {gsub(/"/,"",$2); print $2}' /etc/os-release)
-    if [[ "$OS_ID" != ubuntu || "$OS_VERSION" != 26.04 ]]; then
-        log "WARNING: designed for Ubuntu 26.04; detected ${OS_ID:-unknown} ${OS_VERSION:-unknown}."
-    fi
-fi
-
-for required in \
-    "$PROJECT_DIR/src/input_lock_daemon.py" \
-    "$PROJECT_DIR/src/input_lock_notifier.py" \
-    "$PROJECT_DIR/src/input_lock_lid_policy.py" \
-    "$PROJECT_DIR/src/input_lock_safety.py" \
-    "$PROJECT_DIR/src/aag_sleep_transaction_compat.py" \
-    "$PROJECT_DIR/src/input-lock-power-helper" \
-    "$PROJECT_DIR/src/input-lock-launch" \
-    "$PROJECT_DIR/config/input-lock.conf" \
-    "$PROJECT_DIR/config/90-input-lock.rules" \
-    "$PROJECT_DIR/assets/input-lock.desktop" \
-    "$PROJECT_DIR/gnome-extension/metadata.json" \
-    "$PROJECT_DIR/gnome-extension/extension.js" \
-    "$PROJECT_DIR/systemd/input-lock.service" \
-    "$PROJECT_DIR/systemd/input-lock-protect.service" \
-    "$PROJECT_DIR/systemd/input-lock-failsafe.service" \
-    "$PROJECT_DIR/assets/input-lock-locked.svg" \
-    "$PROJECT_DIR/assets/input-lock-unlocked.svg" \
-    "$PROJECT_DIR/assets/input-lock-locked-lid-ignored.svg" \
-    "$PROJECT_DIR/assets/input-lock-unlocked-lid-ignored.svg" \
-    "$PROJECT_DIR/assets/aag-projects-team.png" \
-    "$PROJECT_DIR/LICENSE"; do
-    [[ -f "$required" ]] || fail "package is incomplete: $required"
-done
-
-# Detect a real GNOME collision before changing the machine. The raw daemon
-# hotkey does not need GNOME, but installing a conflicting fallback is unsafe.
-if [[ -S "$TARGET_RUNTIME/bus" ]] && command -v gsettings >/dev/null 2>&1; then
-    set +e
-    run_as_target python3 "$PROJECT_DIR/src/input_lock_gnome.py" check
-    GNOME_CHECK=$?
-    set -e
-    (( GNOME_CHECK == 0 )) || fail 'GNOME shortcut collision or inaccessible settings; resolve it before installation'
-else
-    log 'WARNING: graphical D-Bus is unavailable; GNOME fallback bindings will be installed on the next update/login.'
-fi
-
-if [[ -f /etc/input-lock/input-lock.conf ]]; then
-    log 'Preserving existing /etc/input-lock/input-lock.conf.'
-    PYTHONPATH="$PROJECT_DIR/src" INPUT_LOCK_CONFIG=/etc/input-lock/input-lock.conf \
-        python3 -c 'from input_lock_common import load_config; load_config()' \
-        || fail 'the existing configuration is invalid; restore or correct it before updating'
-    EXISTING_UID=$(PYTHONPATH="$PROJECT_DIR/src" INPUT_LOCK_CONFIG=/etc/input-lock/input-lock.conf \
-        python3 -c 'from input_lock_common import load_config; print(load_config().authorized_uid)')
-    [[ "$EXISTING_UID" == "$TARGET_UID" ]] \
-        || fail "existing configuration authorizes UID $EXISTING_UID, not target UID $TARGET_UID"
-fi
-
-PACKAGES=(
-    python3
-    python3-evdev
-    python3-pyudev
-    python3-dbus
-    python3-gi
-    gir1.2-gtk-3.0
-    gir1.2-ayatanaappindicator3-0.1
-    libnotify-bin
-    pkexec
-    evtest
-    libinput-tools
+# Files copied from the checkout. Everything is staged into a root-owned
+# directory, checked and compiled there, and installed only from that copy.
+PAYLOAD_FIXED=(
+    VERSION
+    README.md
+    LICENSE
+    src/input_lock_common.py
+    src/input_lock_daemon.py
+    src/input_lock_cli.py
+    src/input_lock_notifier.py
+    src/input_lock_gnome.py
+    src/input_lock_lid_policy.py
+    src/input_lock_safety.py
+    src/input-lock
+    src/input-lock-daemon
+    src/input-lock-notifier
+    src/input-lock-power-helper
+    src/input-lock-launch
+    config/input-lock.conf
+    config/90-input-lock.rules
+    assets/input-lock.desktop
+    assets/input-lock-locked.svg
+    assets/input-lock-unlocked.svg
+    assets/input-lock-locked-lid-ignored.svg
+    assets/input-lock-unlocked-lid-ignored.svg
+    assets/aag-projects-team.png
+    gnome-extension/metadata.json
+    gnome-extension/extension.js
+    systemd/input-lock.service
+    systemd/input-lock-protect.service
+    systemd/input-lock-failsafe.service
+    systemd/input-lock-notifier.service
+    integration/input-lock-system-sleep
 )
-MISSING=()
-for package in "${PACKAGES[@]}"; do
-    dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii ' || MISSING+=("$package")
-done
-if ((${#MISSING[@]})); then
-    log "Installing required Ubuntu packages: ${MISSING[*]}"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING[@]}"
-fi
+# Python modules installed into /usr/lib/input-lock (besides locklock_core/).
+LIB_MODULES=(
+    input_lock_common.py
+    input_lock_daemon.py
+    input_lock_cli.py
+    input_lock_notifier.py
+    input_lock_gnome.py
+    input_lock_lid_policy.py
+    input_lock_safety.py
+)
+# Executables installed into /usr/lib/input-lock.
+LIB_PROGRAMS=(
+    input-lock-daemon
+    input-lock-notifier
+    input-lock-power-helper
+)
+# Extensionless Python programs that must compile before anything changes.
+PYTHON_PROGRAMS=(
+    src/input-lock
+    src/input-lock-daemon
+    src/input-lock-notifier
+    src/input-lock-power-helper
+)
+PAYLOAD=()
 
-getent group input >/dev/null || groupadd --system input
-if ! id input-lockd >/dev/null 2>&1; then
-    log 'Creating restricted input-lockd service account.'
-    useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin input-lockd
-    SYSTEM_USER_CREATED=1
-fi
-usermod --append --groups input input-lockd
-
-BACKUP_DIR="/var/backups/input-lock/$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_ITEMS=(
     /usr/lib/input-lock
     /usr/bin/input-lock
@@ -201,152 +101,613 @@ BACKUP_ITEMS=(
     /etc/UPower/UPower.conf.d/99-zzzz-input-lock-no-auto-sleep.conf
     /etc/UPower/UPower.conf.d/.input-lock-restore-pending.json
 )
-for item in "${BACKUP_ITEMS[@]}"; do
-    if [[ -e "$item" || -L "$item" ]]; then
-        install -d -m 0700 "$BACKUP_DIR"
-        cp -a --parents -- "$item" "$BACKUP_DIR/"
+# Files this installer writes and may therefore restore on failure. Runtime
+# state (/var/lib/...) and UPower restore files belong to the daemon and the
+# power helper; a rollback never rewrites them.
+RESTORE_ITEMS=(
+    /usr/lib/input-lock
+    /usr/bin/input-lock
+    /usr/bin/input-lock-launch
+    /etc/modules-load.d/input-lock.conf
+    /usr/share/doc/input-lock
+    /usr/share/pixmaps/input-lock-about.png
+    /etc/input-lock
+    /usr/share/polkit-1/rules.d/90-input-lock.rules
+    /usr/lib/systemd/system/input-lock.service
+    /usr/lib/systemd/system/input-lock-protect.service
+    /usr/lib/systemd/system/input-lock-failsafe.service
+    /usr/lib/systemd/user/input-lock-notifier.service
+    /usr/lib/systemd/system-sleep/input-lock
+    /usr/share/icons/hicolor/scalable/status/input-lock-locked.svg
+    /usr/share/icons/hicolor/scalable/status/input-lock-unlocked.svg
+    /usr/share/icons/hicolor/scalable/status/input-lock-locked-lid-ignored.svg
+    /usr/share/icons/hicolor/scalable/status/input-lock-unlocked-lid-ignored.svg
+    /usr/share/applications/input-lock.desktop
+    /usr/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team
+)
+
+usage() {
+    cat <<'EOF'
+Usage: sudo ./install.sh [--user LOGIN] [--update]
+
+Installs Input Lock for one local graphical-seat user. The daemon starts in
+the UNLOCKED state. The installer never performs a test lock.
+
+The checkout must not be writable by other users. The payload is copied to a
+root-owned staging directory, compiled and validated there before the running
+service is touched. If a step fails after files were replaced, the previous
+installation is restored automatically from the backup.
+EOF
+}
+
+log() {
+    printf '%s\n' "[input-lock] $*"
+}
+
+warn() {
+    printf '%s\n' "[input-lock] WARNING: $*" >&2
+}
+
+fail() {
+    printf '%s\n' "[input-lock] ERROR: $*" >&2
+    exit 1
+}
+
+post_warning() {
+    POST_INSTALL_WARNINGS=$((POST_INSTALL_WARNINGS + 1))
+    warn "post-install: $*"
+}
+
+# Invoked only from the EXIT trap.
+# shellcheck disable=SC2317,SC2329
+restore_backup() {
+    local item failed=0
+    for item in "${RESTORE_ITEMS[@]}"; do
+        if [[ -n "$BACKUP_DIR" && ( -e "$BACKUP_DIR$item" || -L "$BACKUP_DIR$item" ) ]]; then
+            rm -rf -- "$item" || failed=1
+            cp -a -- "$BACKUP_DIR$item" "$item" || failed=1
+        elif [[ -e "$item" || -L "$item" ]]; then
+            # The item did not exist before this run.
+            rm -rf -- "$item" || failed=1
+        fi
+    done
+    return "$failed"
+}
+
+# Invoked indirectly by the EXIT trap.
+# shellcheck disable=SC2317,SC2329
+cleanup() {
+    local status=$?
+    trap - EXIT
+    set +e
+    if (( status != 0 && CHANGES_STARTED == 1 && INSTALL_COMMITTED == 0 )); then
+        printf '%s\n' '[input-lock] Installation failed; stopping the daemon so input remains free.' >&2
+        systemctl stop input-lock.service >/dev/null 2>&1
+        if [[ -z "$BACKUP_DIR" || ! -e "$BACKUP_DIR/usr/lib/systemd/system/input-lock.service" ]]; then
+            # Fresh installation: do not leave an enablement link behind.
+            systemctl disable input-lock.service >/dev/null 2>&1
+        fi
+        printf '%s\n' '[input-lock] Restoring the previous installation from the backup.' >&2
+        if restore_backup; then
+            printf '%s\n' '[input-lock] Previous files restored.' >&2
+        else
+            printf '%s\n' "[input-lock] ERROR: automatic restore was incomplete; the backup is kept at ${BACKUP_DIR:-<none>}" >&2
+        fi
+        systemctl daemon-reload >/dev/null 2>&1
+        if (( WAS_ACTIVE == 1 )) && [[ -f /usr/lib/systemd/system/input-lock.service ]]; then
+            # The daemon always starts UNLOCKED, so restarting the old version is safe.
+            if systemctl start input-lock.service >/dev/null 2>&1; then
+                printf '%s\n' '[input-lock] The previous input-lock.service was started again (unlocked).' >&2
+            else
+                printf '%s\n' '[input-lock] The previous input-lock.service did not start; input stays free.' >&2
+            fi
+        fi
+        if (( NOTIFIER_STOPPED == 1 )); then
+            run_as_target systemctl --user daemon-reload >/dev/null 2>&1
+            run_as_target systemctl --user start input-lock-notifier.service >/dev/null 2>&1
+        fi
     fi
-done
+    if [[ -n "$STAGE" && -d "$STAGE" ]]; then
+        rm -rf -- "$STAGE"
+    fi
+    exit "$status"
+}
 
-CHANGES_STARTED=1
-/usr/bin/input-lock emergency-unlock >/dev/null 2>&1 || true
-if [[ -S "$TARGET_RUNTIME/bus" ]] && run_as_target systemctl --user cat input-lock-notifier.service >/dev/null 2>&1; then
-    run_as_target systemctl --user stop input-lock-notifier.service
-fi
-if systemctl cat input-lock.service >/dev/null 2>&1; then
-    systemctl stop input-lock.service
-fi
-# Use the new restoration-only implementation even when upgrading old code.
-PYTHONDONTWRITEBYTECODE=1 python3 "$PROJECT_DIR/src/input-lock-power-helper" disable
-if [[ -S "$TARGET_RUNTIME/bus" ]]; then
-    run_as_target python3 "$PROJECT_DIR/src/input_lock_lid_policy.py" disable-user
-else
-    run_as_target dbus-run-session -- python3 "$PROJECT_DIR/src/input_lock_lid_policy.py" disable-user
-fi
+run_as_target() {
+    runuser -u "$TARGET_USER" -- env \
+        XDG_RUNTIME_DIR="$TARGET_RUNTIME" \
+        DBUS_SESSION_BUS_ADDRESS="$TARGET_BUS" \
+        HOME="$TARGET_HOME" \
+        PYTHONDONTWRITEBYTECODE=1 \
+        "$@"
+}
 
-# uinput supplies the filtered virtual keyboard used by user-approved keys.
-modprobe uinput || fail 'cannot load the uinput kernel module'
-[[ -c /dev/uinput ]] || fail '/dev/uinput was not created by the kernel'
-install -d -m 0755 /etc/modules-load.d
-printf '%s\n' uinput > /etc/modules-load.d/input-lock.conf
+# Root-run Python never imports anything from the checkout: -I ignores the
+# environment, the user site and the current directory.
+root_python() {
+    PYTHONDONTWRITEBYTECODE=1 python3 -I -S "$@"
+}
 
-install -d -m 0755 /usr/lib/input-lock /etc/input-lock /usr/share/doc/input-lock
-install -d -m 0755 /usr/share/polkit-1/rules.d
-install -m 0644 "$PROJECT_DIR/config/90-input-lock.rules" /usr/share/polkit-1/rules.d/90-input-lock.rules
-install -m 0644 \
-    "$PROJECT_DIR/src/input_lock_common.py" \
-    "$PROJECT_DIR/src/input_lock_daemon.py" \
-    "$PROJECT_DIR/src/input_lock_cli.py" \
-    "$PROJECT_DIR/src/input_lock_notifier.py" \
-    "$PROJECT_DIR/src/input_lock_gnome.py" \
-    "$PROJECT_DIR/src/input_lock_lid_policy.py" \
-    "$PROJECT_DIR/src/input_lock_safety.py" \
-    "$PROJECT_DIR/src/aag_sleep_transaction_compat.py" \
-    /usr/lib/input-lock/
-install -d -m 0755 /usr/lib/input-lock/locklock_core
-install -m 0644 "$PROJECT_DIR/src/locklock_core/"*.py /usr/lib/input-lock/locklock_core/
-install -m 0755 \
-    "$PROJECT_DIR/src/input-lock-daemon" \
-    "$PROJECT_DIR/src/input-lock-notifier" \
-    "$PROJECT_DIR/src/input-lock-power-helper" \
-    /usr/lib/input-lock/
-install -m 0755 "$PROJECT_DIR/src/input-lock" /usr/bin/input-lock
-install -m 0755 "$PROJECT_DIR/src/input-lock-launch" /usr/bin/input-lock-launch
-install -d -m 0755 /usr/share/applications
-install -m 0644 "$PROJECT_DIR/assets/input-lock.desktop" /usr/share/applications/input-lock.desktop
-install -d -m 0755 /usr/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team
-install -m 0644 \
-    "$PROJECT_DIR/gnome-extension/metadata.json" \
-    "$PROJECT_DIR/gnome-extension/extension.js" \
-    /usr/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team/
-run_as_target install -d -m 0755 \
-    "$TARGET_HOME/.local/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team"
-run_as_target install -m 0644 \
-    "$PROJECT_DIR/gnome-extension/metadata.json" \
-    "$PROJECT_DIR/gnome-extension/extension.js" \
-    "$TARGET_HOME/.local/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team/"
-install -d -m 0755 /usr/share/icons/hicolor/scalable/status
-install -m 0644 \
-    "$PROJECT_DIR/assets/input-lock-locked.svg" \
-    "$PROJECT_DIR/assets/input-lock-unlocked.svg" \
-    "$PROJECT_DIR/assets/input-lock-locked-lid-ignored.svg" \
-    "$PROJECT_DIR/assets/input-lock-unlocked-lid-ignored.svg" \
-    /usr/share/icons/hicolor/scalable/status/
-install -d -m 0755 /usr/share/pixmaps
-install -m 0644 "$PROJECT_DIR/assets/aag-projects-team.png" /usr/share/pixmaps/input-lock-about.png
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache --quiet --force /usr/share/icons/hicolor || true
-fi
+collect_payload() {
+    local path
+    PAYLOAD=("${PAYLOAD_FIXED[@]}")
+    for path in "$PROJECT_DIR"/src/locklock_core/*.py; do
+        [[ -e "$path" ]] || fail "package is incomplete: src/locklock_core"
+        PAYLOAD+=("${path#"$PROJECT_DIR"/}")
+    done
+    while IFS= read -r -d '' path; do
+        PAYLOAD+=("${path#"$PROJECT_DIR"/}")
+    done < <(find "$PROJECT_DIR/docs" \( -type f -o -type l \) -print0 | sort -z)
+}
 
-if [[ ! -f /etc/input-lock/input-lock.conf ]]; then
-    sed \
-        -e "s/@AUTHORIZED_UID@/$TARGET_UID/g" \
-        -e "s/@AUTHORIZED_USER@/$TARGET_USER/g" \
-        "$PROJECT_DIR/config/input-lock.conf" > /etc/input-lock/input-lock.conf
-fi
-chown root:root /etc/input-lock/input-lock.conf
-chmod 0644 /etc/input-lock/input-lock.conf
+# Refuse a checkout that another account could modify: root would otherwise
+# execute and install code that user controls. Group write is accepted only
+# for root's group or for the owner's private group (Ubuntu umask 002).
+verify_source_tree() {
+    root_python - "$PROJECT_DIR" "$TARGET_UID" "${PAYLOAD[@]}" <<'PY' \
+        || fail 'the source tree is not safe to install from as root (see above); fix the ownership/permissions or use a root-owned copy'
+import grp
+import os
+import pwd
+import stat
+import sys
 
-install -m 0644 "$PROJECT_DIR/systemd/input-lock.service" /usr/lib/systemd/system/input-lock.service
-install -m 0644 "$PROJECT_DIR/systemd/input-lock-protect.service" /usr/lib/systemd/system/input-lock-protect.service
-install -m 0644 "$PROJECT_DIR/systemd/input-lock-failsafe.service" /usr/lib/systemd/system/input-lock-failsafe.service
-install -m 0644 "$PROJECT_DIR/systemd/input-lock-notifier.service" /usr/lib/systemd/user/input-lock-notifier.service
-install -m 0755 "$PROJECT_DIR/integration/input-lock-system-sleep" /usr/lib/systemd/system-sleep/input-lock
-# Previous cp -a releases left user-owned documentation descendants. Replace
-# this managed, already-backed-up tree instead of writing through its entries.
-rm -rf -- /usr/share/doc/input-lock
-install -d -m 0755 /usr/share/doc/input-lock
-install -m 0644 "$PROJECT_DIR/README.md" /usr/share/doc/input-lock/README.md
-install -m 0644 "$PROJECT_DIR/LICENSE" /usr/share/doc/input-lock/LICENSE
-cp -R --no-preserve=ownership -- "$PROJECT_DIR/docs/." /usr/share/doc/input-lock/
+root, target_uid, *relative = sys.argv[1:]
+allowed = {0, int(target_uid)}
+if os.environ.get("SUDO_UID", "").isdigit():
+    allowed.add(int(os.environ["SUDO_UID"]))
+problems = []
+primary_members = {}
+for entry in pwd.getpwall():
+    primary_members.setdefault(entry.pw_gid, set()).add(entry.pw_name)
 
-cat > /etc/input-lock/install-state <<EOF
+
+def private_group(st):
+    if st.st_gid == 0:
+        return True
+    try:
+        owner = pwd.getpwuid(st.st_uid)
+        group = grp.getgrgid(st.st_gid)
+    except KeyError:
+        return False
+    members = set(group.gr_mem) | primary_members.get(st.st_gid, set())
+    return owner.pw_gid == st.st_gid and members <= {owner.pw_name}
+
+
+def check(path, kind):
+    try:
+        st = os.lstat(path)
+    except OSError as exc:
+        problems.append(f"{path}: {exc.strerror}")
+        return
+    if stat.S_ISLNK(st.st_mode):
+        problems.append(f"{path}: symbolic links are not accepted in the payload")
+        return
+    if kind == "file" and not stat.S_ISREG(st.st_mode):
+        problems.append(f"{path}: not a regular file")
+    if kind == "dir" and not stat.S_ISDIR(st.st_mode):
+        problems.append(f"{path}: not a directory")
+    if st.st_uid not in allowed:
+        problems.append(f"{path}: owned by UID {st.st_uid}")
+    sticky_root_dir = stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX and st.st_uid == 0
+    if st.st_mode & stat.S_IWOTH and not sticky_root_dir:
+        problems.append(f"{path}: writable by every user")
+    if st.st_mode & stat.S_IWGRP and not sticky_root_dir and not private_group(st):
+        problems.append(f"{path}: writable by shared group GID {st.st_gid}")
+
+
+directories = set()
+current = os.path.abspath(root)
+while True:
+    directories.add(current)
+    parent = os.path.dirname(current)
+    if parent == current:
+        break
+    current = parent
+for item in relative:
+    parent = os.path.dirname(os.path.join(root, item))
+    while len(parent) > len(root):
+        directories.add(parent)
+        parent = os.path.dirname(parent)
+for directory in sorted(directories):
+    check(directory, "dir")
+for item in relative:
+    check(os.path.join(root, item), "file")
+for problem in problems:
+    print("[input-lock] unsafe source: " + problem, file=sys.stderr)
+sys.exit(1 if problems else 0)
+PY
+}
+
+stage_payload() {
+    local item
+    STAGE=$(mktemp -d /run/input-lock-install.XXXXXXXX)
+    chmod 0700 "$STAGE"
+    for item in "${PAYLOAD[@]}"; do
+        install -D -m 0644 -- "$PROJECT_DIR/$item" "$STAGE/$item"
+    done
+}
+
+# Everything that can be checked without touching the system is checked
+# before the running service is stopped.
+validate_stage() {
+    local item
+    local python_files=()
+    for item in "$STAGE"/src/*.py "$STAGE"/src/locklock_core/*.py; do
+        python_files+=("$item")
+    done
+    for item in "${PYTHON_PROGRAMS[@]}"; do
+        python_files+=("$STAGE/$item")
+    done
+    root_python - "$STAGE/.compiled" "${python_files[@]}" <<'PY' \
+        || fail 'the Python payload does not compile; nothing was changed'
+import py_compile
+import sys
+from pathlib import Path
+
+output = Path(sys.argv[1])
+output.mkdir(mode=0o700)
+for index, source in enumerate(sys.argv[2:]):
+    py_compile.compile(source, cfile=str(output / f"{index}.pyc"), doraise=True)
+PY
+    bash -n "$STAGE/src/input-lock-launch" || fail 'src/input-lock-launch has a shell syntax error'
+    sh -n "$STAGE/integration/input-lock-system-sleep" || fail 'the system-sleep hook has a shell syntax error'
+    root_python -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' \
+        "$STAGE/gnome-extension/metadata.json" || fail 'gnome-extension/metadata.json is not valid JSON'
+
+    APP_VERSION=$(tr -d '\r\n' < "$STAGE/VERSION")
+    [[ -n "$APP_VERSION" ]] || fail 'VERSION is empty'
+
+    # The configuration that will be in effect: the preserved one on an
+    # update, or the rendered template on a fresh install.
+    if [[ -f /etc/input-lock/input-lock.conf ]]; then
+        log 'Preserving existing /etc/input-lock/input-lock.conf.'
+        cp -- /etc/input-lock/input-lock.conf "$STAGE/effective.conf"
+    else
+        sed \
+            -e "s/@AUTHORIZED_UID@/$TARGET_UID/g" \
+            -e "s/@AUTHORIZED_USER@/$TARGET_USER/g" \
+            "$STAGE/config/input-lock.conf" > "$STAGE/effective.conf"
+    fi
+    local summary
+    summary=$(root_python -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from input_lock_common import load_config
+config = load_config(sys.argv[2])
+print(config.authorized_uid)
+print(config.socket_path)
+' "$STAGE/src" "$STAGE/effective.conf") \
+        || fail 'the configuration is invalid for this version (see above); correct /etc/input-lock/input-lock.conf before updating'
+    local effective_uid
+    effective_uid=$(sed -n '1p' <<<"$summary")
+    SOCKET_PATH=$(sed -n '2p' <<<"$summary")
+    [[ "$effective_uid" == "$TARGET_UID" ]] \
+        || fail "existing configuration authorizes UID $effective_uid, not target UID $TARGET_UID"
+    [[ "$SOCKET_PATH" == /* ]] || fail 'cannot determine the daemon socket path'
+}
+
+install_packages() {
+    local packages=(
+        python3
+        python3-evdev
+        python3-pyudev
+        python3-dbus
+        python3-gi
+        gir1.2-gtk-3.0
+        gir1.2-ayatanaappindicator3-0.1
+        libnotify-bin
+        pkexec
+        evtest
+        libinput-tools
+    )
+    local missing=() package status
+    for package in "${packages[@]}"; do
+        status=$(dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null || true)
+        [[ "$status" == 'ii '* ]] || missing+=("$package")
+    done
+    if ((${#missing[@]})); then
+        log "Installing required Ubuntu packages: ${missing[*]}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+    fi
+}
+
+backup_existing() {
+    local item
+    BACKUP_DIR="/var/backups/input-lock/$(date -u +%Y%m%dT%H%M%SZ)"
+    for item in "${BACKUP_ITEMS[@]}"; do
+        if [[ -e "$item" || -L "$item" ]]; then
+            install -d -m 0700 "$BACKUP_DIR"
+            cp -a --parents -- "$item" "$BACKUP_DIR/"
+        fi
+    done
+}
+
+install_files() {
+    local item
+    install -d -m 0755 /usr/lib/input-lock /etc/input-lock /usr/share/doc/input-lock
+    install -d -m 0755 /usr/share/polkit-1/rules.d
+    install -m 0644 "$STAGE/config/90-input-lock.rules" /usr/share/polkit-1/rules.d/90-input-lock.rules
+    for item in "${LIB_MODULES[@]}"; do
+        install -m 0644 "$STAGE/src/$item" "/usr/lib/input-lock/$item"
+    done
+    install -d -m 0755 /usr/lib/input-lock/locklock_core
+    install -m 0644 "$STAGE/src/locklock_core/"*.py /usr/lib/input-lock/locklock_core/
+    for item in "${LIB_PROGRAMS[@]}"; do
+        install -m 0755 "$STAGE/src/$item" "/usr/lib/input-lock/$item"
+    done
+    install -m 0755 "$STAGE/src/input-lock" /usr/bin/input-lock
+    install -m 0755 "$STAGE/src/input-lock-launch" /usr/bin/input-lock-launch
+    install -d -m 0755 /usr/share/applications
+    install -m 0644 "$STAGE/assets/input-lock.desktop" /usr/share/applications/input-lock.desktop
+    install -d -m 0755 /usr/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team
+    install -m 0644 \
+        "$STAGE/gnome-extension/metadata.json" \
+        "$STAGE/gnome-extension/extension.js" \
+        /usr/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team/
+    install -d -m 0755 /usr/share/icons/hicolor/scalable/status
+    install -m 0644 \
+        "$STAGE/assets/input-lock-locked.svg" \
+        "$STAGE/assets/input-lock-unlocked.svg" \
+        "$STAGE/assets/input-lock-locked-lid-ignored.svg" \
+        "$STAGE/assets/input-lock-unlocked-lid-ignored.svg" \
+        /usr/share/icons/hicolor/scalable/status/
+    install -d -m 0755 /usr/share/pixmaps
+    install -m 0644 "$STAGE/assets/aag-projects-team.png" /usr/share/pixmaps/input-lock-about.png
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache --quiet --force /usr/share/icons/hicolor || true
+    fi
+
+    if [[ ! -f /etc/input-lock/input-lock.conf ]]; then
+        install -m 0644 "$STAGE/effective.conf" /etc/input-lock/input-lock.conf
+    fi
+    chown root:root /etc/input-lock/input-lock.conf
+    chmod 0644 /etc/input-lock/input-lock.conf
+
+    install -m 0644 "$STAGE/systemd/input-lock.service" /usr/lib/systemd/system/input-lock.service
+    install -m 0644 "$STAGE/systemd/input-lock-protect.service" /usr/lib/systemd/system/input-lock-protect.service
+    install -m 0644 "$STAGE/systemd/input-lock-failsafe.service" /usr/lib/systemd/system/input-lock-failsafe.service
+    install -m 0644 "$STAGE/systemd/input-lock-notifier.service" /usr/lib/systemd/user/input-lock-notifier.service
+    install -m 0755 "$STAGE/integration/input-lock-system-sleep" /usr/lib/systemd/system-sleep/input-lock
+    # Previous cp -a releases left user-owned documentation descendants. Replace
+    # this managed, already-backed-up tree instead of writing through its entries.
+    rm -rf -- /usr/share/doc/input-lock
+    install -d -m 0755 /usr/share/doc/input-lock
+    install -m 0644 "$STAGE/README.md" /usr/share/doc/input-lock/README.md
+    install -m 0644 "$STAGE/LICENSE" /usr/share/doc/input-lock/LICENSE
+    cp -R --no-preserve=ownership,mode -- "$STAGE/docs/." /usr/share/doc/input-lock/
+    chown -R root:root /usr/share/doc/input-lock
+    chmod -R u=rwX,go=rX /usr/share/doc/input-lock
+
+    cat > /etc/input-lock/install-state <<EOF
 TARGET_USER=$TARGET_USER
 TARGET_UID=$TARGET_UID
 SYSTEM_USER_CREATED=$SYSTEM_USER_CREATED
 VERSION=$APP_VERSION
 EOF
-chown root:root /etc/input-lock/install-state
-chmod 0600 /etc/input-lock/install-state
+    chown root:root /etc/input-lock/install-state
+    chmod 0600 /etc/input-lock/install-state
+}
 
-systemctl daemon-reload
-run_as_target python3 -c 'from pathlib import Path; import os; p=Path.home()/".config/input-lock/cursor-settings.json"; p.parent.mkdir(parents=True, exist_ok=True, mode=0o700); fd=None if p.exists() else os.open(p, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600); fd is None or (os.write(fd, b"{\"enabled\": false, \"seconds\": 60}\n"), os.close(fd))'
-systemctl enable --now input-lock.service
+# input-lock.service is Type=notify: "systemctl start" returns once the daemon
+# reports READY=1. Older units (Type=simple) return earlier, so also wait for
+# the control socket before declaring success.
+wait_for_daemon() {
+    local attempt
+    for ((attempt = 0; attempt < 60; attempt++)); do
+        if [[ -S "$SOCKET_PATH" ]] && systemctl is-active --quiet input-lock.service; then
+            return 0
+        fi
+        if systemctl is-failed --quiet input-lock.service; then
+            break
+        fi
+        sleep 0.25
+    done
+    journalctl --no-pager -u input-lock.service -n 50 >&2 || true
+    fail "input-lock.service did not become ready (socket $SOCKET_PATH); see: systemctl status input-lock.service"
+}
 
-if [[ -S "$TARGET_RUNTIME/bus" ]]; then
-    run_as_target systemctl --user daemon-reload
-    run_as_target systemctl --user enable input-lock-notifier.service
-    run_as_target systemctl --user restart input-lock-notifier.service
-    run_as_target python3 /usr/lib/input-lock/input_lock_gnome.py install
+# Remove files that this release does not install (for example editor or
+# manual *.bak-* copies). They are still in the backup directory.
+prune_unmanaged() {
+    local entry name keep
+    local -A managed=([locklock_core]=1)
+    for name in "${LIB_MODULES[@]}" "${LIB_PROGRAMS[@]}"; do
+        managed[$name]=1
+    done
+    for entry in /usr/lib/input-lock/* /usr/lib/input-lock/.[!.]*; do
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        name=${entry##*/}
+        [[ -z "${managed[$name]:-}" ]] || continue
+        log "Removing unmanaged $entry"
+        rm -rf -- "$entry"
+    done
+    for entry in /usr/lib/input-lock/locklock_core/* /usr/lib/input-lock/locklock_core/.[!.]*; do
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        name=${entry##*/}
+        keep="$STAGE/src/locklock_core/$name"
+        [[ "$name" == *.py && -f "$keep" ]] && continue
+        log "Removing unmanaged $entry"
+        rm -rf -- "$entry"
+    done
+}
+
+setup_user_session() {
+    if [[ ! -S "$TARGET_RUNTIME/bus" ]]; then
+        post_warning 'notifier, GNOME shortcuts, and cursor hiding need a later ./update.sh while the user is logged in.'
+        return 0
+    fi
+    run_as_target systemctl --user daemon-reload \
+        || post_warning 'systemctl --user daemon-reload failed'
+    run_as_target systemctl --user enable input-lock-notifier.service \
+        || post_warning 'could not enable input-lock-notifier.service'
+    run_as_target systemctl --user restart input-lock-notifier.service \
+        || post_warning 'could not start the tray (input-lock-notifier.service)'
+    run_as_target python3 /usr/lib/input-lock/input_lock_gnome.py install \
+        || post_warning 'GNOME fallback shortcuts were not installed; the daemon hotkeys still work'
 
     # GNOME Shell 50 on Wayland cannot safely reload extension source in the
     # running process (its ReloadExtension D-Bus method is deprecated). Never
     # disable the live copy during an update: write the new files, mark the UUID
     # enabled, and let the next login replace the running module atomically.
-    run_as_target python3 -c \
-        'from gi.repository import Gio; s=Gio.Settings.new("org.gnome.shell"); u="input-lock-cursor@aag-projects-team"; e=list(s.get_strv("enabled-extensions")); d=[x for x in s.get_strv("disabled-extensions") if x != u]; s.set_strv("enabled-extensions", e if u in e else [*e, u]); s.set_strv("disabled-extensions", d); Gio.Settings.sync()'
-    log 'Cursor hiding extension update will activate at the next login.'
-
-else
-    log 'WARNING: notifier, GNOME shortcuts, and cursor hiding need a later ./update.sh while the user is logged in.'
-fi
-
-sleep 1
-systemctl is-active --quiet input-lock.service || {
-    journalctl --no-pager -u input-lock.service -n 50 >&2 || true
-    fail 'input-lock.service did not become active'
+    if run_as_target python3 -c \
+        'from gi.repository import Gio; s=Gio.Settings.new("org.gnome.shell"); u="input-lock-cursor@aag-projects-team"; e=list(s.get_strv("enabled-extensions")); d=[x for x in s.get_strv("disabled-extensions") if x != u]; s.set_strv("enabled-extensions", e if u in e else [*e, u]); s.set_strv("disabled-extensions", d); Gio.Settings.sync()'; then
+        log 'Cursor hiding extension update will activate at the next login.'
+    else
+        post_warning 'could not mark the cursor-hiding extension as enabled'
+    fi
 }
-/usr/bin/input-lock status
-if [[ -S "$TARGET_RUNTIME/bus" ]]; then
-    run_as_target /usr/bin/input-lock doctor
-else
-    /usr/bin/input-lock doctor
-fi
 
-trap - EXIT
-log 'Installation completed in the UNLOCKED state.'
-log 'Do not run a full lock yet. Follow README section “First safe test” with --timeout 30.'
-if [[ -d "$BACKUP_DIR" ]]; then
-    log "Previous Input Lock files were backed up under $BACKUP_DIR"
-fi
-exit 0
+main() {
+    trap cleanup EXIT
+    trap 'exit 130' INT TERM
+
+    while (($#)); do
+        case "$1" in
+            --user)
+                (($# >= 2)) || fail '--user requires a login name'
+                TARGET_USER=$2
+                shift 2
+                ;;
+            --update)
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                fail "unknown argument: $1"
+                ;;
+        esac
+    done
+
+    (( EUID == 0 )) || fail 'run this installer with sudo'
+    [[ -n "$TARGET_USER" && "$TARGET_USER" != root ]] || fail 'use --user LOGIN (or run through sudo from the desktop user)'
+    [[ "$TARGET_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || fail 'unsupported login-name syntax'
+    id "$TARGET_USER" >/dev/null 2>&1 || fail "user does not exist: $TARGET_USER"
+
+    if [[ -r /etc/input-lock/install-state ]]; then
+        local saved_created
+        saved_created=$(awk -F= '$1=="SYSTEM_USER_CREATED" {print $2}' /etc/input-lock/install-state)
+        [[ "$saved_created" != 1 ]] || SYSTEM_USER_CREATED=1
+    fi
+
+    TARGET_UID=$(id -u "$TARGET_USER")
+    TARGET_HOME=$(getent passwd "$TARGET_USER" | awk -F: '{print $6}')
+    [[ -n "$TARGET_HOME" && -d "$TARGET_HOME" ]] || fail "home directory is unavailable for $TARGET_USER"
+    TARGET_RUNTIME="/run/user/$TARGET_UID"
+    TARGET_BUS="unix:path=$TARGET_RUNTIME/bus"
+
+    log "Target desktop user: $TARGET_USER (UID $TARGET_UID)"
+
+    if [[ -r /etc/os-release ]]; then
+        # os-release is trusted system data and is used only for this comparison.
+        local os_id os_version
+        os_id=$(awk -F= '$1=="ID" {gsub(/"/,"",$2); print $2}' /etc/os-release)
+        os_version=$(awk -F= '$1=="VERSION_ID" {gsub(/"/,"",$2); print $2}' /etc/os-release)
+        if [[ "$os_id" != ubuntu || "$os_version" != 26.04 ]]; then
+            warn "designed for Ubuntu 26.04; detected ${os_id:-unknown} ${os_version:-unknown}."
+        fi
+    fi
+
+    # 1. Verify, stage, compile and validate. Nothing on the system changes yet.
+    collect_payload
+    verify_source_tree
+    stage_payload
+    validate_stage
+    log "Payload $APP_VERSION staged and compiled."
+
+    # Detect a real GNOME collision before changing the machine. The raw daemon
+    # hotkey does not need GNOME, but installing a conflicting fallback is unsafe.
+    # This runs unprivileged, as the desktop user, from the user's own checkout.
+    if [[ -S "$TARGET_RUNTIME/bus" ]] && command -v gsettings >/dev/null 2>&1; then
+        run_as_target python3 "$PROJECT_DIR/src/input_lock_gnome.py" check \
+            || fail 'GNOME shortcut collision or inaccessible settings; resolve it before installation'
+    else
+        warn 'graphical D-Bus is unavailable; GNOME fallback bindings will be installed on the next update/login.'
+    fi
+
+    install_packages
+
+    getent group input >/dev/null || groupadd --system input
+    if ! id input-lockd >/dev/null 2>&1; then
+        log 'Creating restricted input-lockd service account.'
+        useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin input-lockd
+        SYSTEM_USER_CREATED=1
+    fi
+    usermod --append --groups input input-lockd
+
+    backup_existing
+    if systemctl is-active --quiet input-lock.service; then
+        WAS_ACTIVE=1
+    fi
+
+    # 2. From here on a failure restores the backup automatically.
+    CHANGES_STARTED=1
+    /usr/bin/input-lock emergency-unlock >/dev/null 2>&1 || true
+    if [[ -S "$TARGET_RUNTIME/bus" ]] && run_as_target systemctl --user cat input-lock-notifier.service >/dev/null 2>&1; then
+        run_as_target systemctl --user stop input-lock-notifier.service
+        NOTIFIER_STOPPED=1
+    fi
+    if systemctl cat input-lock.service >/dev/null 2>&1; then
+        systemctl stop input-lock.service
+    fi
+    # Use the new restoration-only implementation even when upgrading old code.
+    PYTHONDONTWRITEBYTECODE=1 python3 -E -s "$STAGE/src/input-lock-power-helper" disable
+    if [[ -S "$TARGET_RUNTIME/bus" ]]; then
+        run_as_target python3 "$PROJECT_DIR/src/input_lock_lid_policy.py" disable-user
+    else
+        run_as_target dbus-run-session -- python3 "$PROJECT_DIR/src/input_lock_lid_policy.py" disable-user
+    fi
+
+    # uinput supplies the filtered virtual keyboard used by user-approved keys.
+    modprobe uinput || fail 'cannot load the uinput kernel module'
+    [[ -c /dev/uinput ]] || fail '/dev/uinput was not created by the kernel'
+    install -d -m 0755 /etc/modules-load.d
+    printf '%s\n' uinput > /etc/modules-load.d/input-lock.conf
+
+    install_files
+    run_as_target install -d -m 0755 \
+        "$TARGET_HOME/.local/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team"
+    run_as_target install -m 0644 \
+        "$PROJECT_DIR/gnome-extension/metadata.json" \
+        "$PROJECT_DIR/gnome-extension/extension.js" \
+        "$TARGET_HOME/.local/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team/"
+
+    systemctl daemon-reload
+    run_as_target python3 -c 'from pathlib import Path; import os; p=Path.home()/".config/input-lock/cursor-settings.json"; p.parent.mkdir(parents=True, exist_ok=True, mode=0o700); fd=None if p.exists() else os.open(p, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600); fd is None or (os.write(fd, b"{\"enabled\": false, \"seconds\": 60}\n"), os.close(fd))'
+    systemctl enable input-lock.service
+    systemctl start input-lock.service
+    wait_for_daemon
+
+    # 3. The new daemon runs. Later problems are reported, never rolled back.
+    INSTALL_COMMITTED=1
+    prune_unmanaged
+    setup_user_session
+
+    if ! /usr/bin/input-lock status; then
+        post_warning 'input-lock status failed; see: systemctl status input-lock.service'
+    fi
+    local doctor_status=0
+    if [[ -S "$TARGET_RUNTIME/bus" ]]; then
+        run_as_target /usr/bin/input-lock doctor || doctor_status=$?
+    else
+        /usr/bin/input-lock doctor || doctor_status=$?
+    fi
+    if (( doctor_status != 0 )); then
+        post_warning 'input-lock doctor reported FAIL items above. The new version is installed and running unlocked; fix those items before the first lock test.'
+    fi
+
+    log "Installation of $APP_VERSION completed in the UNLOCKED state."
+    if (( POST_INSTALL_WARNINGS > 0 )); then
+        log "There were $POST_INSTALL_WARNINGS post-install warning(s); review them above."
+    fi
+    log 'Do not run a full lock yet. Follow README section “First safe test” with --timeout 30.'
+    if [[ -d "$BACKUP_DIR" ]]; then
+        log "Previous Input Lock files were backed up under $BACKUP_DIR"
+    fi
+    exit 0
+}
+
+main "$@"

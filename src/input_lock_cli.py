@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import importlib.util
 import json
 import os
@@ -11,22 +12,154 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from input_lock_common import (
     DEFAULT_CONFIG_PATH,
+    DEFAULT_SOCKET_PATH,
+    PROTOCOL_VERSION,
+    ConfigError,
     ProtocolError,
     VERSION,
+    canonical_hotkey,
     load_config,
     response_ok,
     send_request,
 )
 
+SERVICE_NAME = "input-lock.service"
+# How long a command waits for the daemon socket while the unit is starting.
+CONNECT_RETRY_SECONDS = 5.0
+CONNECT_RETRY_INTERVAL = 0.25
+_RETRYABLE_ERRNOS = frozenset({errno.ENOENT, errno.ECONNREFUSED})
+# Internal commands (GNOME bindings, sleep hook, notifier stop) must never
+# depend on parsing the configuration: they fall back to the default socket.
+INTERNAL_COMMANDS = (
+    "gnome-hotkey",
+    "gnome-emergency",
+    "session-ended",
+    "prepare-sleep",
+    "resume-sleep",
+)
 
-def _request(payload: dict[str, object], timeout: float = 5.0) -> dict[str, object]:
-    config = load_config()
-    return response_ok(send_request(payload, socket_path=config.socket_path, timeout=timeout))
+_protocol_warned = False
+
+
+def _unit_state() -> str:
+    """Return ``systemctl is-active`` for the daemon unit ("unknown" on error)."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", SERVICE_NAME],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
+def _socket_path(*, fallback: bool) -> Path:
+    """The configured socket; with ``fallback`` a config error uses the default."""
+    if not fallback:
+        return load_config().socket_path
+    try:
+        return load_config().socket_path
+    except Exception as exc:
+        print(
+            f"input-lock: configuration cannot be parsed ({exc}); "
+            f"using the default socket {DEFAULT_SOCKET_PATH}",
+            file=sys.stderr,
+        )
+        return DEFAULT_SOCKET_PATH
+
+
+def _retryable(exc: BaseException) -> bool:
+    cause = exc.__cause__ if isinstance(exc, ProtocolError) else exc
+    return isinstance(cause, OSError) and cause.errno in _RETRYABLE_ERRNOS
+
+
+def _send_with_retry(
+    payload: dict[str, object],
+    socket_path: Path,
+    timeout: float,
+    retry_seconds: float,
+    *,
+    unit_state: Callable[[], str] | None = None,
+    sleep: Callable[[float], None] | None = None,
+    clock: Callable[[], float] | None = None,
+) -> dict[str, object]:
+    """Send a request, retrying a missing/refusing socket while the unit starts.
+
+    The daemon creates its socket shortly after systemd starts it, so right
+    after ``systemctl restart`` (or during an install) the first connection may
+    see ENOENT or ECONNREFUSED. Retry only while the unit is activating or
+    active; otherwise fail at once with a message naming the socket and unit.
+    """
+
+    unit_state = unit_state or _unit_state
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    deadline = clock() + max(retry_seconds, 0.0)
+    while True:
+        try:
+            return send_request(payload, socket_path=socket_path, timeout=timeout)
+        except ProtocolError as exc:
+            if not _retryable(exc):
+                raise
+            state = unit_state()
+            if state in {"active", "activating", "reloading"} and clock() < deadline:
+                sleep(CONNECT_RETRY_INTERVAL)
+                continue
+            raise ProtocolError(
+                f"cannot connect to the Input Lock daemon at {socket_path} "
+                f"({exc}; {SERVICE_NAME} is {state}). "
+                f"Check: systemctl status {SERVICE_NAME}"
+            ) from exc
+
+
+def _check_protocol(response: dict[str, object]) -> None:
+    """Warn once per process when the daemon speaks another protocol version."""
+    global _protocol_warned
+    if _protocol_warned:
+        return
+    state = response.get("state")
+    if "protocol" in response:
+        reported = response.get("protocol")
+    elif isinstance(state, dict):
+        reported = state.get("protocol")
+    else:
+        return  # Responses without a state snapshot carry no version.
+    if reported == PROTOCOL_VERSION:
+        return
+    _protocol_warned = True
+    if reported is None:
+        detail = "does not report a protocol version (it is probably older than this CLI)"
+    else:
+        detail = f"reports protocol {reported!r}"
+    print(
+        f"input-lock: warning: the running daemon {detail}; this CLI uses protocol "
+        f"{PROTOCOL_VERSION}. Restart {SERVICE_NAME} after an update.",
+        file=sys.stderr,
+    )
+
+
+def _request(
+    payload: dict[str, object],
+    timeout: float = 5.0,
+    *,
+    config_fallback: bool = False,
+    retry_seconds: float = CONNECT_RETRY_SECONDS,
+    check_protocol: bool = True,
+) -> dict[str, object]:
+    socket_path = _socket_path(fallback=config_fallback)
+    response = _send_with_retry(payload, socket_path, timeout, retry_seconds)
+    if check_protocol:
+        _check_protocol(response)
+    return response_ok(response)
 
 
 def _state_from(response: dict[str, object]) -> dict[str, object]:
@@ -45,7 +178,20 @@ RECOVERY_HINT = ("review 'journalctl -u input-lock-failsafe.service', then run: 
 
 
 def lid_readiness(state: dict[str, object]) -> tuple[bool, str]:
-    """Why lid-ignore can or cannot be armed right now, from daemon state."""
+    """Why lid-ignore can or cannot be armed right now, from daemon state.
+
+    A daemon that reports its own verdict (``lid_ready`` plus an optional
+    ``lid_ready_reason``) is authoritative; older daemons are interpreted
+    from the safety sample.
+    """
+    daemon_ready = state.get("lid_ready")
+    if isinstance(daemon_ready, bool):
+        if daemon_ready:
+            return True, "ready"
+        reason = str(state.get("lid_ready_reason") or "the daemon reports lid-ignore is not ready")
+        if "previous emergency suspend failed" in reason and RECOVERY_HINT not in reason:
+            reason += "; " + RECOVERY_HINT
+        return False, reason
     safety = state.get("safety", {})
     sample = safety.get("sample") if isinstance(safety, dict) else None
     if not isinstance(sample, dict):
@@ -105,6 +251,10 @@ def print_status(state: dict[str, object]) -> None:
         print(f"Safety reason:    {safety.get('reason', 'unknown')}")
     ready, why = lid_readiness(state)
     print("Lid-ignore ready: " + ("yes" if ready else "no: " + why))
+    last_disable = state.get("last_lid_disable")
+    if isinstance(last_disable, dict) and last_disable.get("reason"):
+        who = "by user" if last_disable.get("requested_by_user") is True else "automatic"
+        print(f"Last lid-ignore off: {last_disable.get('reason')} ({who})")
     print(f"Lid switches:     {state.get('lid_switch_devices', '?')}")
     print(f"Auto-unlock:      {state.get('auto_unlock', '?')}")
     print(f"Daemon:           {state.get('daemon', 'unknown')}")
@@ -170,6 +320,75 @@ def _gsettings_get(schema_path: str, key: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+_GNOME_MODIFIERS = {
+    "control": "CTRL",
+    "ctrl": "CTRL",
+    "primary": "CTRL",
+    "alt": "ALT",
+    "shift": "SHIFT",
+    "super": "SUPER",
+    "meta": "SUPER",
+}
+
+
+def gnome_binding_matches(binding: str, hotkey: str) -> bool:
+    """True when a GNOME accelerator such as ``<Control><Alt><Shift>F12`` is ``hotkey``."""
+    found = _binding_hotkey(binding)
+    if found is None:
+        return False
+    try:
+        return found == canonical_hotkey(hotkey)
+    except ConfigError:
+        return False
+
+
+def _binding_hotkey(binding: str) -> str | None:
+    """Canonical hotkey text of a GNOME accelerator, or None if unsupported."""
+    text = binding.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        text = text[1:-1]
+    modifiers: list[str] = []
+    while text.startswith("<"):
+        end = text.find(">")
+        if end < 0:
+            return None
+        name = _GNOME_MODIFIERS.get(text[1:end].lower())
+        if name is None:
+            return None
+        modifiers.append(name)
+        text = text[end + 1:]
+    try:
+        return canonical_hotkey("+".join([*modifiers, text])) if text else None
+    except ConfigError:
+        return None
+
+
+def expected_emergency_hotkey(configured: str) -> str:
+    """The emergency hotkey the GNOME fallback binding should carry.
+
+    Newer input_lock_gnome modules expose ``emergency_binding()``, which
+    builds the binding from EMERGENCY_HOTKEY (F12 fallback); prefer it so
+    doctor and the installer agree. Otherwise use the configured value.
+    """
+    try:
+        import input_lock_gnome
+    except Exception:
+        return configured
+    builder = getattr(input_lock_gnome, "emergency_binding", None)
+    if not callable(builder):
+        return configured
+    for args in ((), (configured,)):
+        try:
+            binding = builder(*args)
+        except TypeError:
+            continue
+        except Exception:
+            return configured
+        if isinstance(binding, str):
+            return _binding_hotkey(binding) or configured
+    return configured
+
+
 def run_doctor() -> int:
     checks: list[tuple[str, str, str]] = []
 
@@ -196,9 +415,13 @@ def run_doctor() -> int:
     try:
         config = load_config(DEFAULT_CONFIG_PATH)
         add("PASS", "Configuration", str(DEFAULT_CONFIG_PATH))
+        add("PASS", "Emergency hotkey", config.emergency_hotkey)
     except Exception as exc:
         config = None
         add("FAIL", "Configuration", str(exc))
+        if "EMERGENCY_HOTKEY" in str(exc):
+            add("FAIL", "Emergency hotkey",
+                "invalid or equal to HOTKEY; the emergency unlock shortcut may not work")
 
     required_modules = ("evdev", "pyudev", "dbus", "gi")
     missing = [name for name in required_modules if importlib.util.find_spec(name) is None]
@@ -225,8 +448,18 @@ def run_doctor() -> int:
 
     daemon_state: dict[str, object] | None = None
     try:
-        daemon_state = _state_from(_request({"cmd": "status"}, timeout=2.0))
-        add("PASS", "Daemon protocol", f"version {daemon_state.get('version', '?')}")
+        daemon_state = _state_from(
+            _request({"cmd": "status"}, timeout=2.0, check_protocol=False)
+        )
+        protocol = daemon_state.get("protocol")
+        if protocol == PROTOCOL_VERSION:
+            add("PASS", "Daemon protocol",
+                f"version {daemon_state.get('version', '?')}, protocol {protocol}")
+        else:
+            add("WARNING", "Daemon protocol",
+                f"daemon version {daemon_state.get('version', '?')} reports protocol "
+                f"{protocol if protocol is not None else 'none'}; this CLI uses "
+                f"{PROTOCOL_VERSION}. Restart {SERVICE_NAME}.")
         if daemon_state.get("incomplete_devices"):
             add("WARNING", "Lock completeness", "one or more devices are not grabbed")
         else:
@@ -277,6 +510,20 @@ def run_doctor() -> int:
             add("WARNING", "GNOME shortcuts", "one or both fallback bindings are absent")
         else:
             add("PASS", "GNOME shortcuts", "primary and emergency fallback bindings installed")
+        if config is not None and emergency_path in paths:
+            binding = _gsettings_get(
+                "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:" + emergency_path,
+                "binding",
+            )
+            expected = expected_emergency_hotkey(config.emergency_hotkey)
+            if binding is None or not gnome_binding_matches(binding, expected):
+                add("WARNING", "GNOME emergency binding",
+                    f"{binding or 'unreadable'} does not match EMERGENCY_HOTKEY="
+                    f"{config.emergency_hotkey}; re-run "
+                    "'python3 /usr/lib/input-lock/input_lock_gnome.py install' "
+                    "(or ./update.sh) while logged in")
+            else:
+                add("PASS", "GNOME emergency binding", f"matches {expected}")
 
     if daemon_state is not None and config is not None:
         try:
@@ -322,7 +569,10 @@ def run_doctor() -> int:
 
 def emergency_unlock() -> int:
     try:
-        response = _request({"cmd": "emergency-unlock"}, timeout=2.0)
+        # Never depend on a parseable configuration for the emergency path.
+        response = _request(
+            {"cmd": "emergency-unlock"}, timeout=2.0, config_fallback=True, retry_seconds=2.0
+        )
         print_status(_state_from(response))
         return 0
     except Exception as exc:
@@ -380,11 +630,13 @@ def build_parser() -> argparse.ArgumentParser:
     logs = subparsers.add_parser("logs", help="show recent daemon journal")
     logs.add_argument("-n", "--lines", type=int, default=200)
     subparsers.add_parser("reload", help="validate and reload configuration")
-    # Internal fixed commands used by GNOME and the notifier service.
-    subparsers.add_parser("gnome-hotkey", help=argparse.SUPPRESS)
-    subparsers.add_parser("gnome-emergency", help=argparse.SUPPRESS)
-    subparsers.add_parser("session-ended", help=argparse.SUPPRESS)
-    subparsers.add_parser("prepare-sleep", help=argparse.SUPPRESS)
+    # Internal fixed commands used by GNOME, the sleep hook and the notifier
+    # service. Without help= argparse leaves them out of the command list, and
+    # the explicit metavar keeps them out of the usage line.
+    public = [name for name in subparsers.choices]
+    subparsers.metavar = "{" + ",".join(public) + "}"
+    for name in INTERNAL_COMMANDS:
+        subparsers.add_parser(name)
     return parser
 
 
@@ -412,14 +664,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "emergency-unlock":
             return emergency_unlock()
         if args.command == "set-hotkey":
+            hotkey = canonical_hotkey(args.hotkey)
             old_state = _state_from(_request({"cmd": "status"}))
             old_hotkey = str(old_state.get("primary_hotkey", "CTRL+ALT+Z"))
             from input_lock_gnome import set_primary
 
-            if set_primary(args.hotkey) != 0:
+            if set_primary(hotkey) != 0:
                 raise ProtocolError("the shortcut conflicts with another GNOME binding")
             try:
-                response = _request({"cmd": "set-hotkey", "hotkey": args.hotkey})
+                response = _request({"cmd": "set-hotkey", "hotkey": hotkey})
             except Exception:
                 try:
                     set_primary(old_hotkey)
@@ -447,13 +700,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             response = _request({"cmd": "reload"})
             print(response.get("message", "reload scheduled"))
             return 0
-        if args.command in {
-            "gnome-hotkey",
-            "gnome-emergency",
-            "session-ended",
-            "prepare-sleep",
-        }:
-            _request({"cmd": args.command}, timeout=2.0)
+        if args.command in INTERNAL_COMMANDS:
+            # Called by GNOME, the sleep hook and the notifier unit: fall back
+            # to the default socket on a config error and keep retries short.
+            _request(
+                {"cmd": args.command},
+                timeout=2.0,
+                config_fallback=True,
+                retry_seconds=1.0,
+                check_protocol=False,
+            )
             return 0
     except Exception as exc:
         print(f"input-lock: {exc}", file=sys.stderr)

@@ -1,5 +1,19 @@
 #!/usr/bin/python3
-"""Narrow, guarded upgrade for the inspected beta.4 installation; no power tests.
+"""RETIRED (2.0.0-beta.5): do not run. Kept only as a historical record.
+
+Why it is retired (review finding S4, 2026-10-22):
+- Its reviewed baselines match none of the current installations, so its
+  preflight refuses every real system anyway.
+- It installs only seven files and omits five payload files that the current
+  daemon, CLI and tray need, so a "successful" run would leave a mixed install.
+- It imports input_lock_safety as root straight from the (user-writable)
+  checkout without verifying it.
+Use ``sudo ./install.sh`` or ``sudo ./update.sh`` instead: they stage the
+payload into a root-owned directory, compile it before stopping the daemon,
+restore the backup automatically on failure and prune stale files.
+
+Original description: narrow, guarded upgrade for the inspected beta.4
+installation; no power tests.
 
 Default: read-only preflight. --install requires normal interactive sudo.
 Unknown installed versions or local unit overrides require a fresh review.
@@ -16,7 +30,7 @@ import sys
 import time
 import uuid
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 FILES = {
     'src/input_lock_lid_policy.py': '/usr/lib/input-lock/input_lock_lid_policy.py',
     'src/input_lock_safety.py': '/usr/lib/input-lock/input_lock_safety.py',
@@ -158,7 +172,7 @@ def open_unlocked():
 
 def verify_sources(manifest):
     hashes = json.loads(manifest.read_text())
-    require(set(hashes) == set(FILES) | {'tools/install_native_lid.py'}, 'unexpected source pin manifest')
+    require(set(hashes) == set(FILES) | {'tools/legacy/install_native_lid.py'}, 'unexpected source pin manifest')
     for source, expected in hashes.items():
         require(digest(ROOT / source) == expected, 'source pin mismatch: ' + source)
     return hashes
@@ -417,7 +431,7 @@ def main():
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as exc:
-        raise SystemExit('BLOCKED: ' + str(exc))
+    # Retired: refuse unconditionally (see the module docstring). The functions
+    # above stay importable for the historical regression tests only.
+    raise SystemExit('RETIRED: tools/legacy/install_native_lid.py must not be run; '
+                     'use sudo ./install.sh or sudo ./update.sh')

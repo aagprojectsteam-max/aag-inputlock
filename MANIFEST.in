@@ -1,6 +1,5 @@
 include VERSION README.md install.sh update.sh uninstall.sh
 include src/input-lock src/input-lock-daemon src/input-lock-notifier src/input-lock-power-helper src/input-lock-launch
-include src/aag_sleep_transaction_compat.py
 recursive-include assets *.svg *.png *.desktop
 recursive-include config *.conf *.rules
 recursive-include systemd *.service

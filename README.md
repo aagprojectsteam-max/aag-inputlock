@@ -1,9 +1,23 @@
-# AAG LockLock 2.0.0-beta.4 — Ubuntu ו־Windows
+# AAG LockLock 2.0.0-beta.5 — Ubuntu ו־Windows
 
 
 Version 2.0.0-beta.4 source update: Linux lid-ignore now uses independent logind inhibition and InputLock-owned ordinary suspend protection. It requires native protection readiness; retired AAG services and AAG Power APIs are not prerequisites. See [independent lid protection and deployment limits](docs/independent-lid-protection.md). Historical deployment records describe earlier code; this source change is not a claim of physical acceptance.
 
-Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUALIFICATION.md).
+Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUALIFICATION.md). 2.0.0-beta.5 has not been physically requalified.
+
+## What changed in 2.0.0-beta.5 (Linux)
+
+- **Thermal policy.** Decisions use only new telemetry samples (about every 2 s) and per-sensor medians of 5 samples; a single spike never acts. CPU: warning at a median ≥95 °C for 30 s, protective suspend at a median ≥104 °C for 60 s, emergency at ≥107 °C for 3 consecutive samples confirmed by a second CPU source (or ≥108 °C for 10 s). Chassis 65/70/73 °C and NVMe 77/80 °C have their own dwell times. Telemetry is lost only when a whole sensor category is missing for ≥30 s. Firmware/kernel 110 °C protection is untouched. Details: [thermal policy](docs/independent-lid-protection.md#thermal-policy-200-beta5).
+- **Sleep.** `input-lock.service` is `Type=notify` (the daemon sends `READY=1`). During a suspend the daemon pauses its controller deadlines and extends its watchdog to 300 s; the sleep hook calls `input-lock prepare-sleep` before and `input-lock resume-sleep` after.
+- **Lid-ignore loss is visible.** Every disable is logged with its reason; `input-lock status` shows `Last lid-ignore off:`. When you did not request it, the tray shows a critical, persistent notification with a "Re-enable…" action (confirmation dialog, open lid required). It never re-arms itself. A manual Power Mode change keeps lid-ignore and restores the power-saver hold with a notification. Stopping the tray (`input-lock-notifier`) ends lid-ignore by design.
+- **Hotkeys are validated.** `HOTKEY` and `EMERGENCY_HOTKEY` need at least two of CTRL/ALT/SHIFT/SUPER plus one key A–Z, 0–9 or F1–F12, and must differ; otherwise the configuration is invalid and `input-lock doctor` reports FAIL. The GNOME emergency shortcut follows `EMERGENCY_HOTKEY`; after changing it run `python3 /usr/lib/input-lock/input_lock_gnome.py install` (doctor warns while they differ). `input-lock set-hotkey` fails with a clear error when the GNOME bindings are not installed.
+- **Emergency path.** After a physical emergency unlock, IPC lock requests are refused for 60 s. The internal commands and `input-lock emergency-unlock` fall back to the default socket when the configuration cannot be parsed.
+- **CLI.** The CLI waits up to 5 s for the daemon socket while the service starts, then names the socket and `systemctl status input-lock.service`. It warns once when the running daemon speaks another protocol version (current: 3).
+- **Failure latch.** After a failed emergency suspend, arming stays blocked until `sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure` (the latch is archived).
+- **Installer.** It refuses a checkout other accounts can modify, compiles and validates a root-owned staged copy before stopping anything, restores the backup automatically on failure, reports doctor problems as post-install warnings, and prunes stale files from `/usr/lib/input-lock`. `tools/install_native_lid.py` is retired.
+- **Uninstaller.** See section 11 below.
+- **Cursor hiding** is driven by GNOME idle watches; any input counts as activity.
+- **Removed:** the `lid_power_policy_*` settings, the `set-lid-power-policy` / `set-lid-policy-health` commands and the unused AAG compatibility module. A refused tray-controller claim now returns an error with a reason.
 
 **License:** MIT — see [LICENSE](LICENSE).
 
@@ -224,7 +238,9 @@ find . -maxdepth 3 -type f -print
    input-lock doctor
    ```
 
-המתקין מגבה גרסה קיימת, שומר קובץ הגדרות קיים בעדכון, אינו מבצע נעילת ניסיון, ועוצר את השירות אם ההתקנה נכשלת לאחר שהחלו שינויים.
+המתקין מגבה גרסה קיימת, שומר קובץ הגדרות קיים בעדכון ואינו מבצע נעילת ניסיון.
+
+Since 2.0.0-beta.5 the installer refuses a checkout that other accounts can modify, compiles and validates a root-owned staged copy before it stops anything, and restores the backup automatically (restarting the previous service if it was running) when a step fails after files were replaced. Once the new daemon is running, problems such as doctor FAIL items are printed as `post-install:` warnings; the daemon is not stopped.
 
 ## חלק 7 — הגדרת הקיצור
 
@@ -242,6 +258,8 @@ input-lock set-hotkey 'CTRL+ALT+X'
 Ctrl+Alt+Z             → /usr/bin/input-lock gnome-hotkey
 Ctrl+Alt+Shift+F12     → /usr/bin/input-lock gnome-emergency
 ```
+
+The emergency binding is generated from `EMERGENCY_HOTKEY` (Ctrl+Alt+Shift+F12 by default). After changing `EMERGENCY_HOTKEY`, run `python3 /usr/lib/input-lock/input_lock_gnome.py install` again; `input-lock doctor` warns while the installed binding differs. `input-lock set-hotkey` fails with a clear error when the GNOME bindings are not installed.
 
 הם שכבת fallback בלבד. בזמן נעילה GNOME אינו מקבל את אירועי המקלדת, ולכן ה־daemon מזהה את אותם צירופים ישירות. מנגנון debounce מאחד את אירוע ה־daemon ואת קריאת GNOME כדי למנוע Toggle כפול.
 
@@ -444,13 +462,22 @@ sudo ./update.sh
 
 העדכון משחרר את כל ההתקנים, שומר את קובץ ההגדרות הקיים, מגבה קבצים מותקנים ומפעיל מחדש במצב משוחרר.
 
+The update uses the same checks as the installer (see section 6): an unsafe checkout is refused before anything changes, and a failure restores the backup automatically. Files in `/usr/lib/input-lock` that the release does not install are removed after a successful update (they remain in the backup under `/var/backups/input-lock/`).
+
 הסרה מלאה:
 
 ```bash
 sudo ./uninstall.sh
 ```
 
-ההסרה משחררת לפני הכול את הקלט, מסירה את שירות המערכת ושירות המשתמש, את שני קיצורי GNOME, קוד, תיעוד, sleep hook, runtime/cache/backup ואת חשבון השירות אם נוצר על־ידי המתקין. היא אינה מסירה את חבילת Python/Ubuntu המשותפת ואינה מוחקת קיצורי GNOME אחרים.
+The uninstaller:
+
+- releases all input first, then stops `input-lock.service`, `input-lock-protect.service` and `input-lock-failsafe.service` and confirms they stopped before deleting their files (if one is still running it aborts and keeps every file; run it again later);
+- restores the normal lid and power policy, disables the units (a re-run does not abort when they are already gone) and stops and disables the tray service;
+- removes both GNOME fallback shortcuts, the cursor extension (also from `enabled-extensions`), code, documentation, units, the sleep hook, `/etc/input-lock`, `/run/input-lock` and the `input-lockd` account if the installer created it;
+- archives `/var/lib/input-lock` and `/var/lib/input-lock-protection` (including any failure latch) to a root-only folder `/var/backups/input-lock/uninstall-<timestamp>` and removes them, so a later reinstall does not start with a stale latch.
+
+It intentionally keeps, and tells you about: the installer backups under `/var/backups/input-lock` (delete with `sudo rm -rf /var/backups/input-lock`) and your personal preferences in `~/.config/input-lock` (delete with `rm -rf ~/.config/input-lock`). It does not remove shared Python/Ubuntu packages or other GNOME shortcuts.
 
 ## חלק 12 — בדיקת קבלה סופית
 

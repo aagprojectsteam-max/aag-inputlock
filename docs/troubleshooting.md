@@ -208,6 +208,75 @@ input-lock doctor
 
 Rollback: restore the dated copy under `/var/backups/input-lock/` or rerun the package's `update.sh`.
 
+## `cannot connect to the Input Lock daemon at …`
+
+The CLI retried for up to 5 seconds while `input-lock.service` was activating or active, or the unit is not running at all. The message names the socket path and the unit state.
+
+```bash
+systemctl status input-lock.service --no-pager
+journalctl -u input-lock.service -b --no-pager -n 100
+```
+
+Repair: start the service (`sudo systemctl start input-lock.service`). With `Type=notify`, `systemctl start` returns once the daemon is ready. If it fails, read the journal; the daemon names an invalid configuration explicitly.
+
+## `configuration cannot be parsed …; using the default socket`
+
+Printed by the internal commands (GNOME shortcuts, the sleep hook, the tray's stop hook) and by `input-lock emergency-unlock`. They still reach the daemon on `/run/input-lock/control.sock`, so the emergency path keeps working, but the configuration needs repair:
+
+```bash
+sudoedit /etc/input-lock/input-lock.conf
+input-lock doctor
+sudo systemctl reload input-lock.service
+```
+
+## Invalid `HOTKEY` or `EMERGENCY_HOTKEY`
+
+Since 2.0.0-beta.5 both shortcuts must have at least two of CTRL, ALT, SHIFT, SUPER plus exactly one key A–Z, 0–9 or F1–F12, and they must differ. Values such as `CTRL+ALT+SHIFT+F21`, `A+B` or `SHIFT+A` make the configuration invalid; `input-lock doctor` reports FAIL and names the setting. Correct the value, then reinstall the GNOME fallback binding so it follows `EMERGENCY_HOTKEY`:
+
+```bash
+sudoedit /etc/input-lock/input-lock.conf
+sudo systemctl reload input-lock.service
+python3 /usr/lib/input-lock/input_lock_gnome.py install
+input-lock doctor
+```
+
+## Warning: the running daemon reports another protocol
+
+The CLI and the running daemon come from different releases, usually because the daemon was not restarted after an update. Restart it while input is released:
+
+```bash
+sudo systemctl restart input-lock.service
+input-lock doctor
+```
+
+## Installer refused the source tree, or restored the backup
+
+`unsafe source: …` means another account could modify the checkout (other-writable files, a shared writable group, a foreign owner or a symbolic link). Fix the permissions (for example `chmod -R go-w <checkout>`) or install from a copy you own.
+
+If the installer prints `Restoring the previous installation from the backup`, a step failed after it started replacing files. The previous files were restored from `/var/backups/input-lock/<timestamp>` and the previous service was started again if it had been running. Read the error above that line, fix it, and run `sudo ./update.sh` again.
+
+`post-install:` warnings are printed after the new daemon is running. The installation succeeded; resolve the named item (often a doctor FAIL item, or a GNOME session that was not available) before the first lock test.
+
+## Lid-ignore turned itself off
+
+```bash
+input-lock status
+journalctl -u input-lock.service -b --no-pager | grep LID_IGNORE_DISABLED
+```
+
+`Last lid-ignore off:` and the journal show the reason and whether you requested it. An automatic disable also produced a critical notification with a "Re-enable…" action. Lid-ignore is never re-armed automatically; re-enable it with the lid open after checking the reason.
+
+## Arming refused: previous emergency suspend failed
+
+Arming stays blocked until an administrator reviews and acknowledges the latch:
+
+```bash
+journalctl -u input-lock-failsafe.service -b --no-pager
+sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure
+```
+
+The latch is archived, not deleted.
+
 ## GNOME binding is not created or collides
 
 Diagnosis:
@@ -355,7 +424,7 @@ input-lock logs -n 100
 
 Expected: at least one node named `Lid Switch` with class `lid-switch`. If none exists, the menu item stays disabled and the daemon safely refuses `input-lock lid-ignore on`. Do not substitute an arbitrary power-button or tablet-mode node.
 
-When enabled, status must report an active lid inhibitor, a connected controller and a supervised safety state with fresh telemetry. `input-lock doctor` checks the installed AAG adapter and dependencies. There is no tray policy-repair writer. If monitoring is unavailable, reopen the lid and inspect the journals. Return to normal OS behavior with:
+When enabled, status must report an active lid inhibitor, a connected controller and a supervised safety state with fresh telemetry. `input-lock doctor` checks the installed InputLock units, dependencies, the daemon protocol version and the GNOME emergency binding. There is no tray policy-repair writer. If monitoring is unavailable, reopen the lid and inspect the journals. Return to normal OS behavior with:
 
 ```bash
 input-lock lid-ignore off

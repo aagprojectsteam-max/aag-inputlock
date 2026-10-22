@@ -5,10 +5,14 @@
 ```bash
 python3 tools/run_tests.py shared
 python3 tools/run_tests.py linux
+python3 tools/run_tests.py            # all groups
+PYTHONPATH=src:tests python3 -m unittest discover -s tests -p 'test_*.py'
 bash tests/test_config.sh
 python3 -m build
 python3 tools/check_artifacts.py dist --linux
 ```
+
+`tools/run_tests.py` lists the shared and Windows-native groups explicitly and discovers every other `tests/test_*.py` module into the Linux group, so a new test file can never be skipped silently; `all` runs every discovered module and matches the plain `unittest discover` command. Each test module adds `src` to `sys.path` itself. Tests must never open real GTK windows, dialogs or notifications, start or stop services, or touch power state: inject or mock them.
 
 The first group requires only the Python standard library. The Linux group additionally requires the distro evdev/pyudev/GI/GTK modules. Tests write only temporary fixtures and use a temporary local socket. Native device, session, battery and power operations are injected, never executed. The safety suite covers deadlines, temperature dwell/hysteresis, missing sensors/dependencies, AC/battery, owner loss, stale requests, abnormal startup, durable journals and independent ordinary suspend/recovery (all power calls mocked).
 
@@ -25,13 +29,13 @@ Native automated tests open only temporary named pipes and read a module handle.
 
 ## Production deployment verification
 
-The beta.4 reference deployment completed on 2026-09-21. The checklist below
+The beta.4 reference deployment completed on 2026-09-21; 2.0.0-beta.5 has not been physically requalified. The checklist below
 is the required procedure for future deployments or requalification; the current
 reference result is recorded in
 [BETA4-QUALIFICATION.md](BETA4-QUALIFICATION.md).
 
 1. Authenticate for a complete root-readable installed-code/configuration/unit/recovery-state backup before replacement.
-2. Run the reviewed installer/updater. It must finish unlocked, with effective lid-ignore off. Do not run `input-lock-protect.service` directly.
+2. Run `sudo ./update.sh`. It must finish unlocked, with effective lid-ignore off. Post-install warnings must be resolved; `tools/legacy/install_native_lid.py` is retired and must not be used. Do not run `input-lock-protect.service` directly.
 3. Compare source/installed hashes and inspect unit ownership/hardening. Check `input-lock status --json`, `input-lock doctor`, both LockLock journals and `systemd-inhibit --list`.
 4. Verify no owned legacy `CriticalPowerAction=Ignore` drop-in remains, GNOME recovery completed, and live UPower critical action is non-Ignore. **Separately qualify the pre-existing OS critical action against the AAG platform acceptance record**; the observed HybridSleep baseline is not accepted by the inspected plain-hibernate report.
 5. Confirm the daemon sees CPU and both chassis sensors, AC/battery, current UPower/logind observations and the effective InputLock protection/recovery units and native suspend capability. Unsupported prerequisites must prevent arming.
