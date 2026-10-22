@@ -22,7 +22,7 @@ msgstr ""
 #: src/input_lock_cli.py:80
 #, python-brace-format
 msgid "input-lock: configuration cannot be parsed ({error}); using the default socket {path}"
-msgstr "input-lock: לא ניתן לקרוא את קובץ ההגדרות ({error}); נעשה שימוש בשקע ברירת המחדל ‎{path}"
+msgstr "input-lock: לא ניתן לקרוא את קובץ ההגדרות ({error}); נעשה שימוש בשקע ברירת המחדל {path}"
 
 #: src/input_lock_cli.py:125
 #, python-brace-format
@@ -617,7 +617,7 @@ msgstr "נעשה שימוש בקיצור החירום המוגדר כברירת 
 #: src/input_lock_gnome.py:174
 #, python-brace-format
 msgid "Collision: {binding} is already assigned at {path}"
-msgstr "התנגשות: הקיצור {binding} כבר מוקצה ב־‎{path}"
+msgstr "התנגשות: הקיצור {binding} כבר מוקצה ב־{path}"
 
 #: src/input_lock_gnome.py:184 src/input_lock_gnome.py:216
 msgid "the primary shortcut must differ from the emergency shortcut"
@@ -653,7 +653,7 @@ msgstr "קיצורי הגיבוי של ⁨GNOME⁩ הוסרו."
 #: src/input_lock_gnome.py:251
 #, python-brace-format
 msgid "{path}: missing"
-msgstr "חסר: ‎{path}"
+msgstr "חסר: {path}"
 
 #: src/input_lock_gnome.py:266
 msgid "set-primary requires HOTKEY"
@@ -667,7 +667,7 @@ msgstr "פעולת קיצורי ⁨GNOME⁩ נכשלה: {error}"
 #: src/input_lock_i18n.py:158
 #, python-brace-format
 msgid "The settings file {path} cannot be read ({error}), so it was left unchanged. Fix or remove it, then save again."
-msgstr "לא ניתן לקרוא את קובץ ההגדרות ‎{path} ({error}), ולכן הוא נשאר ללא שינוי. יש לתקן או למחוק אותו ולשמור שוב."
+msgstr "לא ניתן לקרוא את קובץ ההגדרות {path} ({error}), ולכן הוא נשאר ללא שינוי. יש לתקן או למחוק אותו ולשמור שוב."
 
 #: src/input_lock_messages.py:25
 msgid "the computer reached a dangerous temperature"
@@ -1084,7 +1084,7 @@ msgstr "הנעילה נדחתה כי מקש או כפתור נשארו לחוצ�
 #: src/input_lock_messages.py:258
 #, python-brace-format
 msgid "cannot verify released-key state for {path}: {error}"
-msgstr "לא ניתן לוודא שכל המקשים שוחררו ב־‎{path}: {error}"
+msgstr "לא ניתן לוודא שכל המקשים שוחררו ב־{path}: {error}"
 
 #: src/input_lock_messages.py:260
 #, python-brace-format
