@@ -8,7 +8,10 @@ StartLimitIntervalSec=60s
 StartLimitBurst=3
 
 [Service]
-Type=simple
+# The daemon sends READY=1 once its socket exists and the first state file is
+# written, so "systemctl start/restart" returns only when the CLI can connect.
+Type=notify
+NotifyAccess=main
 User=input-lockd
 Group=input-lockd
 SupplementaryGroups=input
@@ -19,6 +22,9 @@ ExecStart=/usr/lib/input-lock/input-lock-daemon
 ExecStopPost=+/usr/lib/input-lock/input-lock-power-helper disable
 LimitNOFILE=512
 ExecReload=/bin/kill -HUP $MAINPID
+# Between PrepareForSleep(true) and resume the daemon raises its own watchdog
+# to 300 s with sd_notify WATCHDOG_USEC (the kernel freezer may stop it for 20 s
+# per failed suspend attempt) and restores 20 s afterwards.
 WatchdogSec=20s
 Restart=no
 RestartSec=2s
