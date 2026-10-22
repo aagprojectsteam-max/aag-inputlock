@@ -18,7 +18,16 @@ PRIMARY_PATH: Final = "/org/gnome/settings-daemon/plugins/media-keys/custom-keyb
 EMERGENCY_PATH: Final = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock-emergency/"
 OWN_PATHS: Final = (PRIMARY_PATH, EMERGENCY_PATH)
 PRIMARY_BINDING: Final = "<Control><Alt>z"
+# Fallback only: the real emergency binding is generated from the configured
+# EMERGENCY_HOTKEY (see emergency_binding()).
 EMERGENCY_BINDING: Final = "<Control><Alt><Shift>F12"
+_MODIFIER_ALIASES: Final = {
+    "control": "<Control>", "ctrl": "<Control>", "primary": "<Control>",
+    "alt": "<Alt>", "mod1": "<Alt>", "meta": "<Alt>",
+    "shift": "<Shift>",
+    "super": "<Super>", "mod4": "<Super>", "hyper": "<Hyper>",
+}
+_MODIFIER_ORDER: Final = ("<Control>", "<Alt>", "<Shift>", "<Super>", "<Hyper>")
 
 
 def run(*arguments: str) -> str:
@@ -84,6 +93,42 @@ def hotkey_to_binding(hotkey: str) -> str:
     return "".join(modifiers[name] for name in order if name in selected_modifiers) + key
 
 
+def canonical_binding(binding: str) -> str:
+    """Canonicalise a GTK accelerator for comparison.
+
+    <Primary> and <Control>/<Ctrl> are the same key, modifier case and order do
+    not matter, and a letter key is case-insensitive.
+    """
+    modifiers: set[str] = set()
+    rest = binding.strip()
+    while rest.startswith("<"):
+        end = rest.find(">")
+        if end < 0:
+            break
+        name = rest[1:end].strip().lower()
+        modifiers.add(_MODIFIER_ALIASES.get(name, f"<{name}>"))
+        rest = rest[end + 1:].strip()
+    key = rest
+    if len(key) == 1:
+        key = key.lower()
+    elif re.fullmatch(r"[fF](?:[1-9]|1[0-2])", key):
+        key = key.upper()
+    ordered = [name for name in _MODIFIER_ORDER if name in modifiers]
+    ordered += sorted(modifiers - set(_MODIFIER_ORDER))
+    return "".join(ordered) + key
+
+
+def emergency_binding() -> str:
+    """GNOME binding for the configured EMERGENCY_HOTKEY (F12 fallback)."""
+    try:
+        from input_lock_common import load_config
+
+        return hotkey_to_binding(load_config().emergency_hotkey)
+    except Exception as exc:
+        print(f"Using the default emergency shortcut {EMERGENCY_BINDING}: {exc}", file=sys.stderr)
+        return EMERGENCY_BINDING
+
+
 def daemon_primary_hotkey() -> str:
     result = subprocess.run(
         ["/usr/bin/input-lock", "status", "--json"],
@@ -99,7 +144,10 @@ def daemon_primary_hotkey() -> str:
     return str(value) if isinstance(value, str) else "CTRL+ALT+Z"
 
 
-def find_collisions(primary_binding: str = PRIMARY_BINDING) -> list[tuple[str, str]]:
+def find_collisions(primary_binding: str = PRIMARY_BINDING,
+                    emergency: str | None = None) -> list[tuple[str, str]]:
+    emergency = emergency or emergency_binding()
+    ours = {canonical_binding(primary_binding), canonical_binding(emergency)}
     collisions: list[tuple[str, str]] = []
     for path in paths():
         if path in OWN_PATHS:
@@ -108,13 +156,13 @@ def find_collisions(primary_binding: str = PRIMARY_BINDING) -> list[tuple[str, s
             binding = binding_for(path)
         except Exception:
             continue
-        if binding in {primary_binding, EMERGENCY_BINDING}:
+        if binding and canonical_binding(binding) in ours:
             collisions.append((path, binding))
     return collisions
 
 
-def check(primary_binding: str = PRIMARY_BINDING) -> int:
-    collisions = find_collisions(primary_binding)
+def check(primary_binding: str = PRIMARY_BINDING, emergency: str | None = None) -> int:
+    collisions = find_collisions(primary_binding, emergency)
     if collisions:
         for path, binding in collisions:
             print(f"Collision: {binding} is already assigned at {path}", file=sys.stderr)
@@ -124,7 +172,10 @@ def check(primary_binding: str = PRIMARY_BINDING) -> int:
 
 def install() -> int:
     primary_binding = hotkey_to_binding(daemon_primary_hotkey())
-    if check(primary_binding) != 0:
+    emergency = emergency_binding()
+    if canonical_binding(primary_binding) == canonical_binding(emergency):
+        raise ValueError("the primary shortcut must differ from the emergency shortcut")
+    if check(primary_binding, emergency) != 0:
         return 2
     current = paths()
     updated = current + [path for path in OWN_PATHS if path not in current]
@@ -140,7 +191,7 @@ def install() -> int:
             EMERGENCY_PATH,
             "Input Lock — emergency unlock",
             "/usr/bin/input-lock gnome-emergency",
-            EMERGENCY_BINDING,
+            emergency,
         ),
     )
     for path, name, command, binding in values:
@@ -153,9 +204,15 @@ def install() -> int:
 
 def set_primary(hotkey: str) -> int:
     binding = hotkey_to_binding(hotkey)
-    if binding == EMERGENCY_BINDING:
+    emergency = emergency_binding()
+    if canonical_binding(binding) == canonical_binding(emergency):
         raise ValueError("the primary shortcut must differ from the emergency shortcut")
-    if check(binding) != 0:
+    if PRIMARY_PATH not in paths():
+        # Writing the relocatable schema alone would have no visible effect.
+        raise RuntimeError(
+            "the Input Lock GNOME shortcuts are not installed; run "
+            "'input_lock_gnome.py install' (or reinstall Input Lock) first")
+    if check(binding, emergency) != 0:
         return 2
     run("set", schema(PRIMARY_PATH), "binding", quote(binding))
     print(f"GNOME primary shortcut set to {binding}.")

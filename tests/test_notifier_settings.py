@@ -26,6 +26,9 @@ class DisconnectTests(unittest.TestCase):
         for name in ('status_item', 'safety_item', 'toggle_item', 'lid_item', 'indicator', 'shortcut_item', 'config'):
             setattr(tray, name, mock.Mock())
         tray._show_error = mock.Mock(return_value=False)
+        # A disconnect while lid-ignore is on now raises a critical
+        # notification (A8); never pop real desktop notifications in tests.
+        tray._notify = mock.Mock()
         return tray
 
     def test_disconnect_disables_both_and_restore_cannot_reenable_stale_state(self):
@@ -237,8 +240,12 @@ class CoolingArmAdmissionTests(unittest.TestCase):
         tray._show_error = mock.Mock(return_value=False)
         return tray
 
+    # U4: the cooling hold and the enable request now run in order on the
+    # lease worker (synchronously here, because lease_worker is None).
     def test_arm_preacquires_cooling_before_starting_daemon_request(self):
         tray = self.fake()
+        tray.config = mock.Mock()
+        tray.lid_item = mock.Mock()
         item = mock.Mock()
         item.get_active.return_value = True
         actions = []
@@ -246,24 +253,30 @@ class CoolingArmAdmissionTests(unittest.TestCase):
         dialog = mock.Mock()
         dialog.run.return_value = notifier_module.Gtk.ResponseType.YES
         with (mock.patch.object(notifier_module.Gtk, "MessageDialog", return_value=dialog),
-              mock.patch.object(notifier_module.threading, "Thread") as thread):
-            thread.return_value.start.side_effect = lambda: actions.append("daemon-request")
+              mock.patch.object(notifier_module, "send_request",
+                                side_effect=lambda *a, **k: actions.append("daemon-request") or {"ok": True}),
+              mock.patch.object(notifier_module.GLib, "timeout_add_seconds")):
             tray._on_lid_toggled(item)
         self.assertEqual(actions, ["power-saver", "daemon-request"])
         tray._show_error.assert_not_called()
+        self.assertFalse(tray.enable_in_flight)
 
     def test_cooling_failure_refuses_arm_before_root_lid_inhibitor(self):
         tray = self.fake()
+        tray.config = mock.Mock()
+        tray.lid_item = mock.Mock()
+        tray.connected = True
+        tray.current_state = {"lid_generation": 19, "ignore_lid_close": False, "lid_switch_devices": 1}
         tray.power_guard.acquire.side_effect = RuntimeError("power daemon absent")
         item = mock.Mock()
         item.get_active.return_value = True
         dialog = mock.Mock()
         dialog.run.return_value = notifier_module.Gtk.ResponseType.YES
         with (mock.patch.object(notifier_module.Gtk, "MessageDialog", return_value=dialog),
-              mock.patch.object(notifier_module.threading, "Thread") as thread):
+              mock.patch.object(notifier_module, "send_request") as send):
             tray._on_lid_toggled(item)
-        thread.assert_not_called()
-        item.set_active.assert_called_with(False)
+        send.assert_not_called()
+        tray.lid_item.set_active.assert_called_with(False)
         tray._show_error.assert_called_once()
         self.assertIn("power-saver", tray._show_error.call_args.args[1])
 
@@ -296,12 +309,14 @@ class PowerSaverGuardTests(unittest.TestCase):
         self.assertEqual(proxy.call_sync.call_count, 2)
 
     def test_ineffective_profile_fails_closed_and_drops_system_bus(self):
+        # A7: one reconnect + fresh hold is tried before failing closed.
         proxy = self.fake()
-        guard = notifier_module.PowerSaverGuard(proxy_factory=lambda: proxy)
+        guard = notifier_module.PowerSaverGuard(proxy_factory=lambda: proxy, sleep=lambda _s: None)
         with mock.patch.object(guard, "_active_profile", return_value="balanced"):
-            with self.assertRaisesRegex(RuntimeError, "did not become effective"):
+            with self.assertRaisesRegex(RuntimeError, "did not become effective.*balanced"):
                 guard.acquire()
-        proxy.get_connection.return_value.close_sync.assert_called_once_with(None)
+        self.assertEqual(proxy.get_connection.return_value.close_sync.call_args_list,
+                         [mock.call(None), mock.call(None)])
         self.assertIsNone(guard.cookie)
         self.assertIsNone(guard.proxy)
 
