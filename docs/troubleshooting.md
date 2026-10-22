@@ -264,9 +264,9 @@ input-lock status
 journalctl -u input-lock.service -b --no-pager | grep LID_IGNORE_DISABLED
 ```
 
-`Last lid-ignore off:` and the journal show the reason and whether you requested it. An automatic disable also produced a critical notification with a "Re-enable…" action; the tray's own Unlock/Quit action only shows an informational note. Lid-ignore is never re-armed automatically; re-enable it with the lid open after checking the reason.
+`Last lid-ignore off:` and the journal show the reason and whether you requested it. A disable you did not cause also produced a critical notification with a "Re-enable…" action. A side effect of your own action (the emergency shortcut, the TTY recovery chord, the tray's Unlock/Quit) only shows an informational note, and turning it off yourself or changing settings shows nothing. If the tray first said that the connection to the service was lost, it shows one corrected notice with the real reason after it reconnects. Lid-ignore is never re-armed automatically; re-enable it with the lid open after checking the reason.
 
-Typical reasons: `controller-disconnected` (the tray stopped or did not check in, also after a long resume), `session-inactive` (logout, user switch), `supervision-logind-unavailable` (logind failed for about 15 s), `emergency-unlock`, `settings-reset`, `thermal-*`, `battery-critical`, `telemetry-lost`, `supervision-journal-unwritable` (`/var/lib/input-lock` full or read-only). A manual Power Mode change does **not** turn it off: the tray restores the power-saver hold and notifies you; only a hold that is still ineffective after one retry ends lid-ignore.
+Typical reasons: `controller-lease-expired` (the tray did not check in in time, for example around a long suspend or resume), `controller-disconnected` (the tray's connection closed: it was stopped, restarted or crashed), `session-inactive` (logout, user switch), `supervision-logind-unavailable` (logind failed for about 15 s), `emergency-unlock`, `settings-reset`, `thermal-*`, `battery-critical`, `telemetry-lost`, `supervision-journal-unwritable` (`/var/lib/input-lock` full or read-only). A manual Power Mode change does **not** turn it off: the tray restores the power-saver hold and notifies you; only a hold that is still ineffective after one retry ends lid-ignore.
 
 ## A protective suspend was deferred
 
