@@ -28,6 +28,19 @@ class PolicyTests(unittest.TestCase):
         self.now += after
         return self.policy.update(sample(self.now, lid_closed=True, **changes))
 
+    def feed(self, seconds, **changes):
+        """A new closed-lid sample every 2 s, delivered on two 1 s daemon ticks."""
+        end = self.now + seconds
+        changes = {"lid_closed": True, **changes}
+        while self.now + 2 <= end:
+            current = sample(self.now + 1, **changes)
+            for _tick in range(2):
+                self.now += 1
+                reason = self.policy.update(current)
+                if reason:
+                    return reason
+        return None
+
     def test_closed_lid_has_no_time_limit_over_days_and_weeks(self):
         self.assertIsNone(self.update())
         self.assertEqual(self.policy.state, "LID_CLOSED_MONITORED")
@@ -69,7 +82,7 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("AC_CONNECTED", self.policy.events)
 
     def test_low_battery_warns_but_only_critical_battery_requests_suspend(self):
-        self.assertIsNone(self.update(battery=18, ac=False, discharging=True))
+        self.assertIsNone(self.update(2, battery=18, ac=False, discharging=True))
         self.assertEqual(self.policy.state, "LID_CLOSED_WARNING")
         self.assertEqual(self.policy.reason, "BATTERY_WARNING")
         self.assertIsNone(self.update(7200, battery=18, ac=False, discharging=True))
@@ -79,34 +92,54 @@ class PolicyTests(unittest.TestCase):
         self.assertIsNone(self.policy.deadline)
 
     def test_battery_critical_requires_sustained_samples(self):
-        self.assertIsNone(self.update(battery=5))
-        self.assertEqual(self.update(2, battery=5), "BATTERY_CRITICAL")
+        # A11: only a draining battery is critical.
+        self.assertIsNone(self.update(2, battery=5, ac=False, discharging=True))
+        self.assertEqual(self.update(2, battery=5, ac=False, discharging=True), "BATTERY_CRITICAL")
 
     def test_upower_critical_warning_protects_even_with_high_percentage(self):
-        self.update(warning_level=4)
+        self.update(2, warning_level=4)
         self.assertEqual(self.update(2, warning_level=4), "BATTERY_CRITICAL")
 
-    def test_each_missing_dependency_has_bounded_grace(self):
-        for changes in ({"sensors": []}, {"dependencies_ok": False}, {"stack_ready": False},
-                        {"ac": None}, {"battery": None}, {"lid_closed": None}):
+    def test_whole_missing_category_is_lost_after_thirty_seconds(self):
+        for changes in ({"sensors": []}, {"sensors": [sample().sensors[1]]},
+                        {"sensors": [sample().sensors[0]]}, {"battery": None, "ac": None}):
             with self.subTest(changes=changes):
-                now = [100.]
-                policy = SafetyPolicy(lambda: now[0])
-                policy.arm(sample())
-                policy.update(sample(lid_closed=True, **{k:v for k,v in changes.items() if k != 'lid_closed'}) if 'lid_closed' not in changes else sample(lid_closed=None))
-                now[0] += 15
-                self.assertEqual(policy.update(replace(sample(now[0], lid_closed=True), **changes)), "TELEMETRY_LOST")
+                self.setUp()
+                self.update()
+                self.assertIsNone(self.feed(26, **changes))
+                self.assertEqual(self.feed(10, **changes), "TELEMETRY_LOST")
+                self.assertEqual(self.policy.last_decision["reason"], "TELEMETRY_LOST")
 
-    def test_sensor_disappearance_is_not_masked_by_another_cpu(self):
+    def test_probe_dependency_and_partial_power_gaps_only_warn(self):
+        for changes in ({"dependencies_ok": False}, {"stack_ready": False},
+                        {"protection_errors": ["ordinary suspend unavailable, blocked, or already in progress"]},
+                        {"ac": None}, {"battery": None}, {"discharging": None},
+                        {"errors": ["unreadable:coretemp:temp7"]}):
+            with self.subTest(changes=changes):
+                self.setUp()
+                self.update()
+                self.assertIsNone(self.feed(120, **changes))
+                self.assertTrue(self.policy.armed)
+                self.assertEqual(self.policy.state, "LID_CLOSED_WARNING")
+
+    def test_unknown_lid_is_supervised_as_closed_without_loss(self):
+        self.update()
+        self.assertIsNone(self.feed(120, lid_closed=None))
+        self.assertTrue(self.policy.armed)
+        self.assertIsNotNone(self.policy.closed_since)
+        self.assertEqual(self.policy.state, "LID_CLOSED_WARNING")
+
+    def test_sensor_disappearance_is_not_loss_while_its_category_remains(self):
         self.policy.required_sensors.add("another-cpu")
         self.update()
-        self.assertEqual(self.update(15), "TELEMETRY_LOST")
+        self.assertIsNone(self.feed(120))
+        self.assertTrue(self.policy.armed)
 
-    def test_sustained_high_temperature_still_forces_protection_after_six_seconds(self):
+    def test_sustained_high_temperature_forces_protection_after_sixty_seconds(self):
         hot = [Sensor("cpu", "cpu", 96, 85, 95, 100), sample().sensors[1]]
         self.assertIsNone(self.update(sensors=hot))
-        self.assertIsNone(self.update(5, sensors=hot))
-        self.assertEqual(self.update(1, sensors=hot), "THERMAL_HIGH_RISK")
+        self.assertIsNone(self.feed(60, sensors=hot))
+        self.assertEqual(self.feed(10, sensors=hot), "THERMAL_HIGH_RISK")
         self.assertFalse(self.policy.armed)
         self.assertEqual(self.policy.last_decision["reason"], "THERMAL_HIGH_RISK")
         self.assertIsNone(self.policy.last_decision["time_limit_seconds"])
@@ -116,10 +149,13 @@ class PolicyTests(unittest.TestCase):
         other = Sensor("hwmon:coretemp", "cpu", 62, 85, 95, 100)
         chassis = Sensor("thermal:SEN2", "chassis", 44.05, 60, 68, 73)
         self.assertIsNone(self.update(sensors=[cpu, other, chassis]))
-        self.assertEqual(self.update(2, sensors=[cpu, other, chassis]), "THERMAL_EMERGENCY")
+        self.assertEqual(self.feed(14, sensors=[cpu, other, chassis]), "THERMAL_EMERGENCY")
         evidence = self.policy.last_decision["thermal_evidence"]
         self.assertEqual(evidence["thermal_level"], 3)
-        self.assertEqual(evidence["candidate_seconds"], 2.0)
+        self.assertGreaterEqual(evidence["candidate_seconds"], 10.0)
+        self.assertEqual(evidence["rule"]["rule"], "cpu-single-source-extreme")
+        self.assertEqual(evidence["rule"]["basis"], "raw")
+        self.assertGreaterEqual(len(evidence["rule"]["window"]), 3)
         self.assertEqual(len(evidence["sensors"]), 3)
         witness = evidence["sensors"][0]
         self.assertEqual(witness["identity"], "thermal:TCPU")
@@ -140,8 +176,8 @@ class PolicyTests(unittest.TestCase):
         self.assertIsNone(self.update())
         self.assertIsNone(self.update(21 * 86400))
         self.assertTrue(self.policy.armed)
-        self.assertIsNone(self.update(1, dependencies_ok=False))
-        self.assertEqual(self.update(15, dependencies_ok=False), "TELEMETRY_LOST")
+        self.assertIsNone(self.feed(20, sensors=[]))
+        self.assertEqual(self.feed(20, sensors=[]), "TELEMETRY_LOST")
         self.assertFalse(self.policy.armed)
         self.assertGreater(self.policy.last_decision["closed_seconds"], 21 * 86400)
 
@@ -163,17 +199,17 @@ class PolicyTests(unittest.TestCase):
     def test_thermal_emergency_intervenes_before_hardware_cutoff_on_ac(self):
         hot = [Sensor("cpu", "cpu", 101, 85, 95, 100), sample().sensors[1]]
         self.update(sensors=hot)
-        self.assertEqual(self.update(2, sensors=hot), "THERMAL_EMERGENCY")
+        self.assertIsNone(self.feed(8, sensors=hot))
+        self.assertEqual(self.feed(6, sensors=hot), "THERMAL_EMERGENCY")
 
     def test_warning_hysteresis_and_cooldown(self):
         warm = [Sensor("cpu", "cpu", 86, 85, 95, 100), sample().sensors[1]]
         self.update(sensors=warm)
-        self.update(10, sensors=warm)
+        self.feed(40, sensors=warm)
         self.assertEqual(self.policy.thermal_level, 1)
-        self.update(1, sensors=[replace(warm[0], celsius=83), warm[1]])
+        self.feed(20, sensors=[replace(warm[0], celsius=83), warm[1]])
         self.assertEqual(self.policy.thermal_level, 1)
-        self.update(1)
-        self.update(15)
+        self.feed(10)
         self.assertEqual(self.policy.thermal_level, 0)
 
     def test_telemetry_recovery_retains_closed_lid_continuity(self):
@@ -199,9 +235,10 @@ class PolicyTests(unittest.TestCase):
     def test_explicit_rearm_after_thermal_protection_starts_a_fresh_episode(self):
         hot = [Sensor("cpu", "cpu", 102, 85, 95, 100), sample().sensors[1]]
         self.update(sensors=hot)
-        self.assertEqual(self.update(2, sensors=hot), "THERMAL_EMERGENCY")
+        self.assertEqual(self.feed(14, sensors=hot), "THERMAL_EMERGENCY")
         self.assertFalse(self.policy.armed)
         self.assertEqual(self.policy.last_decision["time_limit_seconds"], None)
+        self.feed(12)  # Sustained heat must have cleared before a re-arm.
         self.policy.arm(sample(self.now))  # Fresh observed open lid.
         self.update(1)
         self.assertTrue(self.policy.armed)
@@ -216,10 +253,12 @@ class DecisionDispatchTests(unittest.TestCase):
         now = [100.]
         policy = SafetyPolicy(lambda: now[0])
         policy.arm(sample())
-        hot = [Sensor("cpu", "cpu", 102, 85, 95, 100), sample().sensors[1]]
-        policy.update(sample(now[0], lid_closed=True, sensors=hot))
-        now[0] += 2
-        reason = policy.update(sample(now[0], lid_closed=True, sensors=hot))
+        hot = [Sensor("cpu", "cpu", 102, 85, 95, 100), Sensor("cpu2", "cpu", 101, 85, 95, 100),
+               sample().sensors[1]]
+        reason = None
+        for _ in range(4):  # Three consecutive corroborated samples.
+            now[0] += 2
+            reason = policy.update(sample(now[0], lid_closed=True, sensors=hot)) or reason
         self.assertEqual(reason, "THERMAL_EMERGENCY")
         original = policy.last_decision.copy()
         daemon = InputLockDaemon.__new__(InputLockDaemon)
@@ -254,7 +293,7 @@ class TelemetryTests(unittest.TestCase):
             second = t.read()
             self.assertEqual({s.identity for s in first.sensors}, {s.identity for s in second.sensors})
             chassis = next(s for s in second.sensors if s.kind == "chassis")
-            self.assertAlmostEqual(chassis.high, 68.05)
+            self.assertAlmostEqual(chassis.high, 70)  # Review section F: 65/70/73C at an 80C trip.
             self.assertFalse(second.healthy(second.at))
 
     def test_atomic_journal_retains_previous_on_replace_failure(self):
@@ -287,7 +326,7 @@ class SuspendObservationTests(unittest.TestCase):
         run = Mock(return_value=SimpleNamespace(returncode=0,stdout='ActiveState=inactive\nResult=success\nInactiveExitTimestampMonotonic=1\n'))
         with self.assertRaises(TimeoutError):
             observe_suspend(run,100.,0,counter=lambda:1,clock=lambda:now[0],sleep=lambda seconds:now.__setitem__(0,now[0]+seconds))
-        self.assertEqual(run.call_count,120)
+        self.assertEqual(run.call_count,240)
 
 
 class ThermalMeasurementTests(unittest.TestCase):

@@ -24,7 +24,8 @@ def properties(unit):
     return dict(LoadState='loaded', ActiveState='inactive', ExecStart=commands[unit], InvocationID='invocation',
                 OnFailure=safety.FAILSAFE_UNIT if unit in {'input-lock.service', safety.PROTECT_UNIT} else '',
                 Restart='no', WatchdogUSec='20s', TimeoutStopUSec='5s', KillMode='control-group',
-                User='', Type='oneshot', TimeoutStartUSec='2min 45s',
+                User='', Type='notify' if unit == 'input-lock.service' else 'oneshot',
+                TimeoutStartUSec='5min 30s',
                 ExecStopPost='/usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py record-failure'
                 if unit == safety.FAILSAFE_UNIT else '')
 
@@ -136,12 +137,25 @@ class ProtectionTests(unittest.TestCase):
 
     def test_inhibitor_and_native_pending_transition_never_bypassed(self):
         for kwargs in ({'ready': False}, {'native_changes': {'inputlock_holds_lid': True}},
-                       {'native_changes': {'blocked': True}}, {'native_changes': {'preparing': True}},
-                       {'active': 'activating'}):
+                       {'native_changes': {'blocked': True}}):
             result, calls, records, _ = self.request(**kwargs)
             self.assertEqual(result, 1)
             self.assertEqual(calls, [])
             self.assertEqual(records[-1].args[1]['result'], 'recovery-required')
+            self.assertFalse(any(c.args[0].name == 'failure.json' for c in records))
+
+    def test_os_sleep_already_in_progress_is_deferred_not_failed(self):
+        # A9/A10: never a duplicate request, never a failsafe chain or latch.
+        for recovery in (False, True):
+            for kwargs in ({'native_changes': {'preparing': True}}, {'active': 'activating'}):
+                if recovery:
+                    kwargs = dict(kwargs, state_changes={'effective': True, 'restrictions_released': False})
+                result, calls, records, _ = self.request(recovery=recovery, **kwargs)
+                self.assertEqual(result, 0)
+                self.assertEqual([c for c in calls if c[0] == 'logind'], [])
+                self.assertEqual(records[-1].args[1]['result'], 'deferred-os-sleep-in-progress')
+                self.assertEqual(records[-1].args[1]['transition_status'], 'DEFERRED')
+                self.assertFalse(any(c.args[0].name == 'failure.json' for c in records))
 
     def test_failure_and_timeout_request_systemd_recovery_without_recursive_dispatch(self):
         for kwargs in ({'dispatch': 1}, {'dispatch': subprocess.TimeoutExpired('fixture', 10)},
@@ -169,11 +183,20 @@ class ProtectionTests(unittest.TestCase):
             self.assertFalse(any(c.args[0].name == 'failure.json' for c in records))
 
     def test_final_failure_latches_and_never_hibernates_or_forces(self):
-        result, calls, records, _ = self.request(recovery=True, dispatch=1)
+        result, calls, records, _ = self.request(recovery=True, observe_error=TimeoutError('unconfirmed'))
         self.assertEqual(result, 1)
         self.assertTrue(any(call.args[0].name == 'failure.json' for call in records))
         self.assertEqual(records[-1].args[1]['result'], 'protection-failed')
+        self.assertTrue(records[-1].args[1]['dispatch_accepted'])
         self.assertEqual(len(calls), 2)
+
+    def test_refused_request_is_not_latched(self):
+        # A9: latch only when InputLock's own request was accepted.
+        result, calls, records, _ = self.request(recovery=True, dispatch=1)
+        self.assertEqual(result, 1)
+        self.assertFalse(any(call.args[0].name == 'failure.json' for call in records))
+        self.assertEqual(records[-1].args[1]['result'], 'protection-failed')
+        self.assertFalse(records[-1].args[1]['dispatch_accepted'])
 
     def test_failed_stop_never_requests_suspend(self):
         result, calls, *_ = self.request(recovery=True, stop=1)
@@ -185,7 +208,7 @@ class ProtectionTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(calls, [['/usr/bin/systemctl', 'stop', 'input-lock.service']])
 
-    def test_corrupt_journal_still_releases_daemon_and_latches(self):
+    def test_corrupt_journal_still_releases_daemon_without_latching(self):
         run = Mock(return_value=SimpleNamespace(returncode=0))
         with (patch.object(Path, 'read_text', side_effect=ValueError('corrupt journal')),
               patch.object(safety, 'unit_properties', return_value={'ActiveState': 'inactive'}),
@@ -193,7 +216,7 @@ class ProtectionTests(unittest.TestCase):
             result = safety.protect_main(run=run, recovery=True)
         self.assertEqual(result, 1)
         run.assert_called_once_with(['/usr/bin/systemctl', 'stop', 'input-lock.service'], timeout=10, check=False)
-        self.assertTrue(any(call.args[0] == safety.FAILURE_LATCH for call in record.call_args_list))
+        self.assertFalse(any(call.args[0] == safety.FAILURE_LATCH for call in record.call_args_list))
 
 
 class LogindInhibitorSemanticsTests(unittest.TestCase):

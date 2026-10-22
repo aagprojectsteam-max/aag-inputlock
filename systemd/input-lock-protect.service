@@ -5,7 +5,8 @@ OnFailure=input-lock-failsafe.service
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py protect
-TimeoutStartSec=165s
+# observe_suspend() budget (240 s) + at least 60 s for the steps before it.
+TimeoutStartSec=330s
 UMask=0077
 Environment=PYTHONDONTWRITEBYTECODE=1
 NoNewPrivileges=yes
@@ -15,4 +16,21 @@ StateDirectory=input-lock-protection
 StateDirectoryMode=0755
 ProtectHome=yes
 PrivateTmp=yes
+# Reads /sys (thermal, power_supply, suspend_stats) and /proc (lid, boot_id)
+# read-only; talks to logind and systemd only over AF_UNIX D-Bus/systemctl.
+# Root needs DAC override to write into input-lockd's 0700 state directory;
+# CAP_SYS_BOOT keeps logind's privileged-caller path for SuspendWithFlags.
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SYS_BOOT
 RestrictAddressFamilies=AF_UNIX
