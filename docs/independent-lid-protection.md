@@ -38,14 +38,14 @@ Evaluation happens only when a **new** telemetry sample arrives (about every
 2 seconds), never on every daemon tick, and uses the per-sensor median of the
 last 5 samples. Timers count time spent **at or above** a level, so a reading
 that flaps across a threshold still accumulates. CPU decisions use TCPU,
-`x86_pkg_temp` and coretemp `temp1` (package); per-core readings are kept for
-corroboration and logging only.
+`x86_pkg_temp` and coretemp `temp1` (package); per-core readings are kept as
+evidence and for logging only.
 
 | Level | CPU | Chassis SEN1/SEN2 | NVMe |
 |---|---|---|---|
 | Warning (notify only) | median ≥95 °C for 30 s | ≥65 °C for 60 s | ≥77 °C for 20 s |
 | Protective suspend | median ≥104 °C for 60 s (≤2 samples below 101 °C tolerated) | ≥70 °C for 60 s | ≥80 °C for 20 s |
-| Emergency | ≥107 °C raw for 3 consecutive samples, confirmed by a second CPU source within 6 °C; or one source ≥108 °C for 10 s | ≥73 °C for 10 s | — |
+| Emergency | ≥107 °C raw for 3 consecutive samples, confirmed by an independent witness (a chassis zone or the NVMe drive at or above its own warning level); or one source ≥108 °C for 10 s | ≥73 °C for 10 s | — |
 
 How the table is implemented (`THERMAL_RULES` in `input_lock_safety.py`):
 
@@ -64,6 +64,21 @@ How the table is implemented (`THERMAL_RULES` in `input_lock_safety.py`):
   uses the per-sensor median (chassis emergency too, per sensor).
 - CPU sources are the `TCPU` and `x86_pkg_temp` thermal zones and the
   coretemp/k10temp package channel (`Package id`/`Tctl`, else `temp1`).
+- Sensors are grouped by physical origin. `TCPU`, `x86_pkg_temp` and the
+  coretemp package channel (with its per-core readings) all read the same CPU
+  package sensor, so one of them never confirms another. The 107 °C rule needs
+  a witness from a different origin: `SEN1`, `SEN2` or the NVMe drive at or
+  above its own warning level (65 °C chassis, 77 °C NVMe) in each of the 3
+  samples. Without such a witness, or on hardware without chassis/NVMe
+  sensors, only the "≥108 °C for 10 s" rule leads to an emergency.
+- Flapping heat with low dips is a known, accepted limit (lead decision
+  2026-10-22). A reading that alternates between a low and a high value on
+  every sample, for example 100/108 °C or 99/109 °C (mean 104 °C), takes no
+  protective action: the 5-sample median alternates as well, every dip below
+  101 °C counts against the 2 tolerated samples, and the raw 108 °C rule needs
+  10 s without a dip. The status shows the warning level, and the firmware and
+  kernel 110 °C trips still protect the hardware. Sustained or slowly varying
+  heat (for example 103/106 °C) acts after 60 s as in the table.
 
 No action is ever taken on a single sample. Critical battery means ≤10 % while
 discharging (`discharging` true or AC absent), or a UPower critical warning
@@ -86,32 +101,79 @@ logind's `PrepareForSleep` signal, and either source opens or closes the same
 window. A kernel freeze that stalls for 20 seconds therefore no longer kills
 the daemon or drops lid-ignore.
 
+Who can open it, and how the daemon sees the signal in time:
+
+- `prepare-sleep` and `resume-sleep` are accepted **only from root**: the
+  system-sleep hook runs as root under `systemd-sleep`. The same commands from
+  the user's own processes are refused with
+  `prepare-sleep is accepted only from root (the system-sleep hook)`, so no
+  same-user process can pause supervision or stretch the watchdog.
+- The daemon holds a logind `sleep` inhibitor in mode **delay** (never
+  `block`; polkit allows `input-lockd` exactly
+  `org.freedesktop.login1.inhibit-delay-sleep`). Its `PrepareForSleep(true)`
+  handler extends the watchdog first and only then releases the lock, so
+  logind waits (at most `InhibitDelayMaxSec`, 5 s by default) until the
+  extension is in place. The lock is taken again after resume.
+- The logind monitor dispatches signals on its own private connection; the
+  periodic session and UPower queries run on a separate thread and
+  connection, so a signal is never queued behind them. Every monitor restart
+  opens fresh connections, and a bus disconnect (for example a dbus-broker
+  restart) stops the monitor so that the daemon restarts it.
+
 Inside the window:
 
-- the safety policy is told about it (`note_sleep_window`), takes no
-  protective action and `input-lock status` prints `OS sleep: in progress`
-  (`os_sleep_in_progress` in the safety snapshot, `system_sleep_in_progress` in
-  the state);
+- the safety policy is told about it (`note_sleep_window`) and still receives
+  every sample, so evidence keeps accumulating; it takes no protective action
+  while it knows a sleep is being prepared (for at most 300 s of its own), and
+  `input-lock status` prints `OS sleep: in progress` (`os_sleep_in_progress`
+  in the safety snapshot, `system_sleep_in_progress` in the state);
 - a protection reason that arises (for example a lost tray controller) is
   deferred. At the end of the grace period it is acted on only if its cause
   still holds (controller still gone, session still lost, lid switch still
-  missing); thermal and telemetry causes are re-evaluated by the safety policy
-  from fresh samples;
-- a window without a resume signal closes after 600 s (the policy itself
-  ignores logind's `preparing` for at most 300 s).
+  missing or unreadable); thermal and telemetry causes are re-evaluated by the
+  safety policy from fresh samples. A decision the policy itself already made
+  is acted on as soon as the window closes;
+- the window closes early on evidence that the machine is awake again: a
+  change of `/sys/power/suspend_stats/success` or `fail`, or logind reporting
+  `PreparingForSleep=false` in two consecutive samples;
+- a window without a resume signal or such evidence closes after 120 s of
+  awake time (the monotonic clock does not run while suspended).
+
+With an armed lid-ignore, a closed lid, a TCPU at 106 °C and a forged
+`prepare-sleep` that never resumes, protection now acts after about 62 s
+(user request refused) or, for a real root-opened window without any resume
+evidence, at the 120 s window limit, with the heat seen during the window
+already counted.
 
 ## When lid-ignore turns itself off
 
 Every disable is logged as `event=LID_IGNORE_DISABLED reason=…
-requested_by_user=…` and published as `last_lid_disable` in the daemon
-state. When the user did not request it, the tray shows a **critical,
-persistent** notification that names the reason and offers "Re-enable…",
-which goes through the normal confirmation dialog and requires an open lid.
-The `reason` is a short key such as `controller-disconnected`,
-`session-inactive`, `emergency-unlock`, `settings-reset`, `thermal-emergency`
-or `telemetry-lost`; the journal line also carries the internal detail. The
-tray's own Unlock/Quit action (an emergency unlock, which also ends
-lid-ignore) shows an informational note instead of the critical one.
+requested_by_user=… user_initiated=…` and published as
+`last_lid_disable` (`reason`, `requested_by_user`, `user_initiated`, `at`)
+in the daemon state.
+
+- `requested_by_user` is true only for "set-lid-ignore false" (the tray's
+  switch or `input-lock lid-ignore off`).
+- `user_initiated` is also true for the user's own actions that end
+  lid-ignore as a side effect: the physical emergency hotkey, the GNOME
+  emergency binding, the TTY recovery chord, an `emergency-unlock` request
+  (also the installer's), and settings changes requested over IPC by the
+  tray or CLI (hotkey, lock kinds, allowed keys, reload). A `systemctl
+  reload` (SIGHUP) is not user-initiated.
+- When `user_initiated` is false, the tray shows a **critical, persistent**
+  notification that names the reason and offers "Re-enable…", which goes
+  through the normal confirmation dialog and requires an open lid. A
+  user-initiated end gets an informational note instead.
+
+The `reason` is a short key such as `controller-disconnected` (the tray's
+connection closed or broke), `controller-lease-expired` (the tray stopped
+sending heartbeats), `session-inactive`, `emergency-unlock`,
+`settings-reset`, `thermal-emergency` or `telemetry-lost`; the journal line
+also carries the internal detail. Before the daemon closes the tray's
+controller connection for any reason, it sends the final state event (with
+`last_lid_disable`) on it, best effort and without waiting, so the tray can
+name the real cause instead of "service unavailable".
+
 Lid-ignore is never re-armed automatically. Stopping the tray
 (`input-lock-notifier.service`) also ends lid-ignore; this is by design.
 
@@ -266,9 +328,13 @@ There is no AAG readiness exemption that simply sets this field true.
   `/var/lib/input-lock-protection/safety-action-result.json` in the root-owned
   directory (`StateDirectory=input-lock-protection`, mode 0755). A copy is
   still written to `/var/lib/input-lock/safety-action-result.json`; the daemon
-  reads the root-owned one first and falls back to the copy. Both are written
-  with `fchmod` on the temporary file before the rename, never through a
-  symbolic link. The tray shows a failure state when the daemon is available
+  reads the root-owned one first and falls back to the copy. Root never
+  trusts that daemon-writable copy: recovery and `record-failure` read only
+  the root-owned receipt. Both are written with `fchmod` on the temporary file
+  before the rename, never through a symbolic link. Root reads the daemon's
+  journal (`safety.json`) and the receipt through one
+  `O_NOFOLLOW | O_NONBLOCK` descriptor, and only if it is a regular file of at
+  most 1 MiB. The tray shows a failure state when the daemon is available
   to receive it.
 - **Narrow latching.** `/var/lib/input-lock-protection/failure.json` is written
   only when InputLock's **own** suspend request was accepted by logind and the
@@ -337,12 +403,17 @@ need acknowledging to arm again; acknowledging it only archives it.
   `SystemCallArchitectures=native`, `RestrictAddressFamilies=AF_UNIX`. They
   deliberately have no `CapabilityBoundingSet=`: a narrow bounding set cannot
   be verified without a real protective suspend, and a wrong one would
-  silently break this last-resort path.
+  silently break this last-resort path. `ReadWritePaths=-/var/lib/input-lock`
+  carries the `-` prefix, so a missing daemon state directory (fresh install,
+  uninstall) does not fail the unit with `226/NAMESPACE`; the readiness probe
+  does not inspect `ReadWritePaths`.
 - The readiness probe compares these contracts by range, not by text:
   `input-lock.service` watchdog 20–300 s, `Restart=no`, failsafe as
   `OnFailure`, `KillMode=control-group`, `TimeoutStopSec` ≤ 30 s, `Type`
   `simple` or `notify`; each helper's `TimeoutStartSec` between 300 s (budget
-  + 60 s) and 30 min. Drop-ins are reported as information.
+  + 60 s) and 30 min. Drop-ins are reported as information. The probe runs on
+  its own daemon thread every 30 s, its logind query is bounded to 15 s, and
+  telemetry sampling never waits for it; its result gates arming only.
 
 ## Upgrade and rollback
 
