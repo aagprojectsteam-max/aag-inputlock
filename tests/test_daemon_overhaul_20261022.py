@@ -168,6 +168,7 @@ class WatchdogSleepWindowTests(unittest.TestCase):
     def test_sleep_hook_ipc_pre_and_post(self):
         daemon = base_daemon()
         daemon._send_and_close = mock.Mock()
+        daemon.clients[9] = daemon_module.ClientState(mock.Mock(), 0, pid=1)  # root sleep hook (S-R1)
         daemon._handle_request(9, {"cmd": "prepare-sleep"})
         self.assertTrue(daemon._send_and_close.call_args.args[1]["ok"])
         self.assertEqual(self.fake.messages(), ["WATCHDOG=1", "WATCHDOG_USEC=300000000"])
@@ -228,7 +229,8 @@ class SleepWindowLeaseTests(unittest.TestCase):
             daemon._handle_timers()
         self.assertNotIn(3, daemon.clients)
         self.assertFalse(daemon.ignore_lid_close)
-        self.assertEqual(daemon.last_lid_disable["reason"], "controller-disconnected")
+        # U-R1: a missed heartbeat lease has its own key.
+        self.assertEqual(daemon.last_lid_disable["reason"], "controller-lease-expired")
 
     def test_heartbeat_after_resume_keeps_lid_ignore(self):
         clock = Clock(100.0)
@@ -302,19 +304,26 @@ class SleepInProgressProtectionTests(unittest.TestCase):
         self.assertTrue(daemon.ignore_lid_close)
         self.assertIsNone(daemon.deferred_protection)
 
-    def test_safety_policy_is_not_consulted_in_the_window(self):
+    def test_safety_policy_keeps_gathering_evidence_in_the_window(self):
+        # S-R1 (review 2): the policy is updated in the window; any decision
+        # is deferred by _start_protection until the window closes.
         clock = Clock(100.0)
         daemon = self.closed_lid(clock)
-        daemon.safety.update = mock.Mock(return_value="THERMAL_EMERGENCY")
-        daemon._start_protection = mock.Mock()
-        with mock.patch.object(daemon_module.time, "monotonic", clock):
+        daemon.safety.update = mock.Mock(return_value=None)
+        with mock.patch.object(daemon_module.time, "monotonic", clock), \
+                mock.patch.object(daemon_module, "request_service") as request:
             drain(daemon, "prepare-sleep")
             daemon._safety_tick()
             daemon._handle_lid_switch_event(True)
-            daemon.safety.update.assert_not_called()
-            drain(daemon, "resume-sleep")
+            self.assertEqual(daemon.safety.update.call_count, 2)
+            daemon.safety.update.return_value = "THERMAL_EMERGENCY"
             daemon._safety_tick()
-        daemon.safety.update.assert_called_once()
+            request.assert_not_called()
+            self.assertTrue(daemon.ignore_lid_close)
+            self.assertEqual(daemon.deferred_protection, "THERMAL_EMERGENCY")
+            drain(daemon, "resume-sleep")
+            daemon._start_protection = mock.Mock()
+            daemon._safety_tick()
         daemon._start_protection.assert_called_once_with("THERMAL_EMERGENCY")
 
 

@@ -2,7 +2,8 @@
 # Safety belt for distributions where the login1 D-Bus signal is delayed.
 # The daemon itself validates UNLOCK_ON_SUSPEND before changing state.
 # "pre" opens the daemon's sleep window (watchdog extended, controller and
-# lid-lease deadlines paused); "post" closes it again.
+# lid-lease deadlines paused); "post" closes it again. systemd-sleep runs this
+# hook as root, and the daemon accepts these two commands only from root.
 
 case "${1:-}" in
     pre)

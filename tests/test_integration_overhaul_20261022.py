@@ -234,6 +234,7 @@ class SafetySleepWindowHookTests(unittest.TestCase):
     def test_sleep_hook_ipc_paths_use_the_same_hook(self):
         daemon = base_daemon(Clock(50.0))
         daemon._send_and_close = mock.Mock()
+        daemon.clients[9] = daemon_module.ClientState(mock.Mock(), 0, pid=1)  # root sleep hook (S-R1)
         daemon.safety.note_sleep_window = mock.Mock(wraps=daemon.safety.note_sleep_window)
         daemon._handle_request(9, {"cmd": "prepare-sleep"})
         self.assertTrue(daemon._send_and_close.call_args.args[1]["state"]["safety"]["os_sleep_in_progress"])
@@ -499,6 +500,7 @@ class SleepResumeChainTests(unittest.TestCase):
         self.assertEqual(branches, {"pre": "prepare-sleep", "post": "resume-sleep"})
         daemon = base_daemon()
         daemon._send_and_close = mock.Mock()
+        daemon.clients[9] = daemon_module.ClientState(mock.Mock(), 0, pid=1)  # root sleep hook (S-R1)
         for command in branches.values():
             self.assertIn(command, cli.INTERNAL_COMMANDS)
             with mock.patch.object(cli, "_request", return_value={"ok": True}) as request:
