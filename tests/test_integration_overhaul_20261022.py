@@ -503,7 +503,9 @@ class SleepResumeChainTests(unittest.TestCase):
         daemon.clients[9] = daemon_module.ClientState(mock.Mock(), 0, pid=1)  # root sleep hook (S-R1)
         for command in branches.values():
             self.assertIn(command, cli.INTERNAL_COMMANDS)
-            with mock.patch.object(cli, "_request", return_value={"ok": True}) as request:
+            # The hook runs as root; the CLI refuses these for anyone else.
+            with (mock.patch.object(cli, "_request", return_value={"ok": True}) as request,
+                  mock.patch.object(cli.os, "geteuid", return_value=0)):
                 self.assertEqual(cli.main([command]), 0)
             self.assertEqual(request.call_args.args[0], {"cmd": command})
             self.assertTrue(request.call_args.kwargs["config_fallback"])

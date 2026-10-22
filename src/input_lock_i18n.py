@@ -18,10 +18,13 @@ protocol strings are never translated.
 
 from __future__ import annotations
 
+import contextlib
 import gettext
 import json
+import logging
 import os
 import sys
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
@@ -36,10 +39,14 @@ SETTING_KEY: Final = "ui_language"
 INSTALLED_LIBDIR: Final = Path("/usr/lib/input-lock")
 INSTALLED_LOCALEDIR: Final = Path("/usr/share/locale")
 SETTINGS_RELATIVE: Final = Path(".config/input-lock/cursor-settings.json")
-# Unicode first-strong isolate / pop directional isolate. Translations put
-# them around Latin commands, shortcuts and paths inside right-to-left text.
+# Unicode first-strong isolate / pop directional isolate. Hebrew translations
+# put them around Latin words and values inside right-to-left text, but NEVER
+# around commands, paths or shortcuts: those are copied into a shell or a
+# settings field, and the invisible isolates would be copied with them
+# (review U-R2). Commands stand on a line of their own instead.
 FSI: Final = "⁨"
 PDI: Final = "⁩"
+LOG = logging.getLogger("input-lock-i18n")
 
 _translations: gettext.NullTranslations = gettext.NullTranslations()
 _language = "en"
@@ -64,8 +71,28 @@ def N_(message: str) -> str:
     return message
 
 
+def safe_format(message: str, /, **values: object) -> str:
+    """``_(message).format(**values)`` that never raises (review U-R9).
+
+    A broken translation (missing catalogue entry, wrong placeholder) falls
+    back to the English msgid; if even that cannot be formatted, the msgid is
+    returned unformatted. Use it with ``N_("...")`` so the text is extracted.
+    """
+    try:
+        return _(message).format(**values)
+    except Exception:  # noqa: BLE001 - display text must never break a caller
+        LOG.debug("Translation of %r failed; using English", message, exc_info=True)
+    try:
+        return message.format(**values)
+    except Exception:  # noqa: BLE001
+        return message
+
+
 def isolate(text: object) -> str:
-    """Wrap a Latin fragment so it keeps its own direction inside RTL text."""
+    """Wrap a Latin fragment so it keeps its own direction inside RTL text.
+
+    Never use it for commands, paths or shortcuts (see FSI above).
+    """
     return f"{FSI}{text}{PDI}"
 
 
@@ -100,20 +127,64 @@ def read_ui_language(path: Path | None = None) -> str:
     return value if isinstance(value, str) and value in LANGUAGES else "auto"
 
 
+class SettingsFileError(ValueError):
+    """The existing settings file cannot be merged; it was left unchanged."""
+
+
+def _settings_for_update(target: Path) -> dict[str, object]:
+    """The current settings object, ``{}`` only when the file does not exist.
+
+    Any other problem (unreadable, not JSON, not an object) raises
+    SettingsFileError: merging into ``{}`` would silently drop the user's
+    other keys (review U-R7).
+    """
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise SettingsFileError(_problem_text(target, exc)) from exc
+    try:
+        payload = json.loads(text)
+    except ValueError as exc:
+        raise SettingsFileError(_problem_text(target, exc)) from exc
+    if not isinstance(payload, dict):
+        raise SettingsFileError(_problem_text(target, "not a JSON object"))
+    return payload
+
+
+def _problem_text(target: Path, error: object) -> str:
+    LOG.warning("Settings file %s cannot be merged (%s); it was left unchanged", target, error)
+    return safe_format(N_("The settings file {path} cannot be read ({error}), so it was left "
+                          "unchanged. Fix or remove it, then save again."),
+                       path=target, error=error)
+
+
 def update_user_settings(path: Path | None = None, **values: object) -> None:
     """Merge ``values`` into the settings file, keeping every other key.
 
-    Written atomically with mode 0600, like the tray's cursor settings, so the
-    GNOME extension that watches the directory never sees a partial file.
+    Refuses (SettingsFileError, file untouched) when an existing file cannot
+    be parsed. Written atomically with mode 0600 through a unique temporary
+    file in the same directory, so the GNOME extension that watches the
+    directory never sees a partial file and two writers never share a name.
     """
     target = path or settings_path()
-    payload = read_user_settings(target)
+    payload = _settings_for_update(target)
     payload.update(values)
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    temporary = target.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, target)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix="." + target.name + ".", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(json.dumps(payload, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
 
 
 def write_ui_language(value: str, path: Path | None = None) -> None:

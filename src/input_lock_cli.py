@@ -46,6 +46,10 @@ INTERNAL_COMMANDS = (
     "prepare-sleep",
     "resume-sleep",
 )
+# Sent only by the system-sleep hook, which runs as root; the daemon refuses
+# them from every other peer (review S-R1), so a user who types them gets a
+# clear explanation instead of a protocol error.
+ROOT_ONLY_COMMANDS = ("prepare-sleep", "resume-sleep")
 
 _protocol_warned = False
 
@@ -268,8 +272,16 @@ def print_status(state: dict[str, object]) -> None:
     last_disable = state.get("last_lid_disable")
     if isinstance(last_disable, dict) and last_disable.get("reason"):
         by_user = last_disable.get("requested_by_user") is True
+        # user_initiated: another user action (emergency shortcut, settings
+        # change) turned it off as a side effect (review U-R5).
+        if by_user:
+            who = _("by user")
+        elif last_disable.get("user_initiated") is True:
+            who = _("side effect of a user action")
+        else:
+            who = _("automatic")
         print(_("Last lid-ignore off: {reason} ({who})").format(
-            reason=last_disable.get("reason"), who=_("by user") if by_user else _("automatic")))
+            reason=last_disable.get("reason"), who=who))
         if not by_user:
             print("  " + describe_lid_disable(str(last_disable.get("reason")), state))
     print(_("Lid switches:     {value}").format(value=state.get("lid_switch_devices", "?")))
@@ -775,6 +787,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             response = _request({"cmd": "reload"})
             print(daemon_text(response.get("message", "reload scheduled")))
             return 0
+        if args.command in ROOT_ONLY_COMMANDS and os.geteuid() != 0:
+            raise ProtocolError(_(
+                "{name} is used only by the system sleep hook, which runs as root; "
+                "it cannot be run by hand").format(name=args.command))
         if args.command in INTERNAL_COMMANDS:
             # Called by GNOME, the sleep hook and the notifier unit: fall back
             # to the default socket on a config error and keep retries short.

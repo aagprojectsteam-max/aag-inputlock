@@ -35,7 +35,7 @@ from input_lock_common import (  # noqa: E402
     send_request,
 )
 import input_lock_i18n as i18n  # noqa: E402
-from input_lock_i18n import N_, _, ngettext  # noqa: E402
+from input_lock_i18n import N_, _, ngettext, safe_format  # noqa: E402
 # The reason tables and describe_lid_disable() live in input_lock_messages so
 # the CLI can share them; they are re-exported here for existing callers.
 from input_lock_messages import (  # noqa: E402,F401
@@ -95,6 +95,12 @@ REENABLE_HINT: Final = N_(
     "It will not turn itself back on. To turn it on again, open the lid and choose "
     "“Re-enable…” or use the Input Lock tray menu."
 )
+# Informational notice for a loss the user caused with another action, such
+# as the emergency shortcut (review U-R5): the body names that action.
+LID_OFF_INFO_HINT: Final = N_("Turn it on again from the Input Lock tray menu if you still need it.")
+# One corrected notice after "connection lost" turned out to have a real
+# cause reported by the daemon on reconnect (review U-R1).
+LID_CORRECTION_TEXT: Final = N_("Correction to the previous notice: {cause}")
 POWER_RESTORED_TITLE: Final = N_("Power mode restored")
 TRAY_UNLOCK_LID_NOTE: Final = N_(
     "Unlocking input from the tray also turns Ignore Lid Close off. "
@@ -514,6 +520,11 @@ class TrayNotifier:
     own_disable_reason: str | None = None
     down_since: float | None = None
     tray_unlock_until: float | None = None
+    # U-R1: last_lid_disable.at seen while connected, and whether a
+    # "daemon-unavailable" loss was reported that a reconnect may correct.
+    last_disable_at: float | None = None
+    unavailable_reported = False
+    unavailable_since_at: float | None = None
 
     def __init__(self) -> None:
         self.config = load_config()
@@ -765,8 +776,19 @@ class TrayNotifier:
         self.state_stale = False
         self.current_state = state
         lid_lost_notified = False
-        if prior_lid and state.get("ignore_lid_close") is not True:
-            lid_lost_notified = self._on_lid_ignore_lost(state, reason)
+        # Wording and notifications must never abort the state handling
+        # below (menu, leases): any failure is logged (review U-R9).
+        try:
+            if self.unavailable_reported:
+                self._correct_unavailable_cause(state)
+            if prior_lid and state.get("ignore_lid_close") is not True:
+                lid_lost_notified = self._on_lid_ignore_lost(state, reason)
+        except Exception:  # noqa: BLE001
+            LOG.exception("Could not report an Ignore Lid Close change")
+        finally:
+            at = self._disable_at(state)
+            if at is not None:
+                self.last_disable_at = at
         self._reconcile_idle_guard(state)
         locked_value = state.get("locked_kinds", [])
         if not isinstance(locked_value, list):
@@ -785,18 +807,60 @@ class TrayNotifier:
             "LID_CLOSED_WARNING", "PROTECTIVE_ACTION_PENDING",
             "PROTECTIVE_ACTION_FAILED", "PROTECTIVE_ACTION_EXECUTED",
         } and not (lid_lost_notified and safety_state == "PROTECTIVE_ACTION_PENDING"):
-            message = _("Safety warning: check heat, battery or missing telemetry. Open the lid if needed.")
+            message = safe_format(N_(
+                "Safety warning: check heat, battery or missing telemetry. Open the lid if needed."))
             if safety_state == "PROTECTIVE_ACTION_PENDING":
                 decision = safety.get("last_decision")
                 cause = (decision.get("reason") if isinstance(decision, dict)
-                         else _("unknown safety reason"))
-                message = _("Safety protection requested ({cause}). Lid-ignore released.").format(cause=cause)
+                         else safe_format(N_("unknown safety reason")))
+                message = safe_format(N_("Safety protection requested ({cause}). Lid-ignore released."),
+                                      cause=cause)
             elif safety_state == "PROTECTIVE_ACTION_EXECUTED":
-                message = _("A protective suspend was confirmed. Re-enable lid-ignore only with lid open.")
+                message = safe_format(N_(
+                    "A protective suspend was confirmed. Re-enable lid-ignore only with lid open."))
             elif safety_state == "PROTECTIVE_ACTION_FAILED":
-                message = _("Open the lid. Automatic safety protection failed; see InputLock diagnostics.")
-            self._notify(_("Lid safety"), message, locked=bool(locked))
+                message = safe_format(N_(
+                    "Open the lid. Automatic safety protection failed; see InputLock diagnostics."))
+            self._notify(safe_format(N_("Lid safety")), message, locked=bool(locked))
         return False
+
+    @staticmethod
+    def _disable_at(state: dict[str, object]) -> float | None:
+        """``last_lid_disable.at`` (daemon wall clock) or None."""
+        info = state.get("last_lid_disable")
+        at = info.get("at") if isinstance(info, dict) else None
+        if isinstance(at, bool) or not isinstance(at, (int, float)):
+            return None
+        return float(at)
+
+    def _correct_unavailable_cause(self, state: dict[str, object]) -> None:
+        """U-R1: after "connection lost", name the cause the daemon recorded.
+
+        The daemon flushes its final state before it drops the controller,
+        but that event can still be lost. On the first message after the
+        reconnect, a ``last_lid_disable.at`` newer than the last one seen
+        before the outage means the daemon itself turned Ignore Lid Close off
+        and knows why: show one corrected notice.
+        """
+        self.unavailable_reported = False
+        since = self.unavailable_since_at
+        self.unavailable_since_at = None
+        at = self._disable_at(state)
+        if at is None or (since is not None and at <= since):
+            return  # e.g. a restarted daemon: "connection lost" stands
+        reason, requested = self._lid_disable_info(state, "")
+        user_initiated = self._lid_user_initiated(state)
+        LOG.warning("Ignore Lid Close loss reported as daemon-unavailable was caused by: %s", reason)
+        cause = describe_lid_disable(reason, state)
+        body = safe_format(LID_CORRECTION_TEXT, cause=cause)
+        if requested or user_initiated:
+            self._notify(safe_format(LID_LOST_TITLE), body + "\n" + safe_format(LID_OFF_INFO_HINT),
+                         locked=bool(state.get("locked_kinds")))
+        else:
+            # Same severity as the notice it corrects. Re-enabling still
+            # needs the confirmation dialog and an open lid.
+            self._notify(safe_format(LID_LOST_TITLE), body + "\n" + safe_format(REENABLE_HINT),
+                         locked=bool(state.get("locked_kinds")), critical=True, reenable=True)
 
     # ------------------------------------------------------------------
     # Ignore Lid Close loss (A8, A4) and idle grace (U3)
@@ -816,15 +880,31 @@ class TrayNotifier:
             requested = reason in USER_DISABLE_REASONS
         return reason, requested
 
+    @staticmethod
+    def _lid_user_initiated(state: dict[str, object]) -> bool | None:
+        """``last_lid_disable.user_initiated``; None from an older daemon."""
+        info = state.get("last_lid_disable")
+        value = info.get("user_initiated") if isinstance(info, dict) else None
+        return value if isinstance(value, bool) else None
+
     def _on_lid_ignore_lost(self, state: dict[str, object], event_reason: str) -> bool:
         """Handle Ignore Lid Close going True->False; return True if notified.
 
-        Never re-arms. An unrequested loss gets a critical, persistent
-        notification naming the cause, with a "Re-enable…" action that goes
-        through the normal confirmation dialog (and needs an open lid).
+        Never re-arms. The notice depends on who caused the loss (U-R5):
+
+        * ``requested_by_user``: the user turned it off; no notice.
+        * ``user_initiated`` (another user action such as the emergency
+          shortcut or a settings change): a short informational notice that
+          names the action.
+        * neither: a critical, persistent notification naming the cause,
+          with a "Re-enable…" action that goes through the normal
+          confirmation dialog (and needs an open lid).
+
+        An older daemon without ``user_initiated`` keeps the earlier mapping.
         """
         self.cooling_verified = False
         reason, requested = self._lid_disable_info(state, event_reason)
+        user_initiated = self._lid_user_initiated(state)
         own = self.own_disable_reason
         self.own_disable_reason = None
         if own is not None:
@@ -833,9 +913,6 @@ class TrayNotifier:
             # as an ordinary "off".
             LOG.warning("Ignore Lid Close turned off by the tray's own fail-safe (%s)", own)
             return True
-        if requested:
-            LOG.info("Ignore Lid Close turned off on request (reason=%s)", reason)
-            return False
         until = self.tray_unlock_until
         # The daemon publishes the normalised key "emergency-unlock" for its
         # "ipc-emergency-unlock" reason (interface 3); older daemons the raw one.
@@ -843,17 +920,34 @@ class TrayNotifier:
                 and time.monotonic() <= until):
             self.tray_unlock_until = None
             LOG.info("Ignore Lid Close turned off by the tray's Unlock/Quit action")
-            self._notify(_(LID_LOST_TITLE), _(TRAY_UNLOCK_LID_NOTE),
+            self._notify(safe_format(LID_LOST_TITLE), safe_format(TRAY_UNLOCK_LID_NOTE),
                          locked=bool(state.get("locked_kinds")))
             return True
+        if requested:
+            LOG.info("Ignore Lid Close turned off on request (reason=%s)", reason)
+            return False
+        if user_initiated:
+            LOG.info("Ignore Lid Close turned off by another user action (reason=%s)", reason)
+            self._notify(safe_format(LID_LOST_TITLE),
+                         describe_lid_disable(reason, state) + "\n" + safe_format(LID_OFF_INFO_HINT),
+                         locked=bool(state.get("locked_kinds")))
+            # The action may have come over SSH or a script, which does not
+            # reset GNOME's idle timer: keep the U3 grace.
+            self._start_idle_grace(state)
+            return True
         LOG.warning("Ignore Lid Close was turned off without a user request: reason=%s", reason)
-        self._notify_lid_lost(describe_lid_disable(reason, state), state)
+        self._notify_lid_lost(reason, state)
         self._start_idle_grace(state)
         return True
 
-    def _notify_lid_lost(self, text: str, state: dict[str, object]) -> None:
+    def _notify_lid_lost(self, reason: str, state: dict[str, object], detail: str = "") -> None:
+        """Critical, persistent loss notice; formatting never raises (U-R9)."""
         try:
-            self._notify(_(LID_LOST_TITLE), text + "\n" + _(REENABLE_HINT),
+            text = describe_lid_disable(reason, state, detail=detail)
+        except Exception:  # noqa: BLE001 - describe_lid_disable is safe; belt and braces
+            text = LID_DISABLE_REASON_TEXT.get(reason, reason)
+        try:
+            self._notify(safe_format(LID_LOST_TITLE), text + "\n" + safe_format(REENABLE_HINT),
                          locked=bool(state.get("locked_kinds")), critical=True, reenable=True)
         except Exception as exc:
             LOG.warning("Lid-ignore loss notification failed: %s", exc)
@@ -1043,12 +1137,12 @@ class TrayNotifier:
         label = _(SAFETY_STATE_NAMES.get(safety.get("state"), N_("unavailable")))
         if self.current_state.get("ignore_lid_close"):
             # U2: claim active cooling only once the hold has been verified.
-            label = (_("{state} (continuous; power-saver cooling active)") if self.cooling_verified
-                     else _("{state} (continuous; power-saver cooling not confirmed)")).format(state=label)
-        return _("Lid safety: {state} | Temperature: {thermal} | Protection: {protection}").format(
-            state=label,
-            thermal=thermal_text(safety.get("thermal", "UNKNOWN")),
-            protection=protection_text(safety.get("thermal_protection", "UNKNOWN")))
+            label = safe_format(N_("{state} (continuous; power-saver cooling active)") if self.cooling_verified
+                                else N_("{state} (continuous; power-saver cooling not confirmed)"), state=label)
+        return safe_format(N_("Lid safety: {state} | Temperature: {thermal} | Protection: {protection}"),
+                           state=label,
+                           thermal=thermal_text(safety.get("thermal", "UNKNOWN")),
+                           protection=protection_text(safety.get("thermal_protection", "UNKNOWN")))
 
     def _refresh_safety_label(self) -> None:
         item = getattr(self, "safety_item", None)
@@ -1092,7 +1186,7 @@ class TrayNotifier:
             )
         self.indicator.set_icon_full(icon, description)
         self.shortcut_item.set_label(
-            _("Shortcut: {shortcut}").format(shortcut=self._display_hotkey(hotkey)))
+            safe_format(N_("Shortcut: {shortcut}"), shortcut=self._display_hotkey(hotkey)))
         self.updating_lid_item = True
         try:
             self.lid_item.set_active(ignore_lid)
@@ -1123,8 +1217,12 @@ class TrayNotifier:
             self.own_disable_reason = None
             if own is None:
                 LOG.warning("Ignore Lid Close lost: daemon connection lost")
-                self._notify_lid_lost(describe_lid_disable("daemon-unavailable"), self.current_state)
+                self._notify_lid_lost("daemon-unavailable", self.current_state)
                 self._start_idle_grace(self.current_state)
+                # U-R1: the daemon may have dropped us for a reason it
+                # records; correct the cause on the next subscription.
+                self.unavailable_reported = True
+                self.unavailable_since_at = self.last_disable_at
         if self.idle_guard is not None and not self.enable_in_flight:
             keep_idle = self.grace_until is not None
             self._run_lease(self._release_leases_job, not keep_idle, True)
@@ -1891,6 +1989,13 @@ class TrayNotifier:
                 GLib.timeout_add_seconds(3, self._reconcile_after_enable)
             self._restore_lid_item()
             return False
+        # U-R6: the idle grace timer may have expired while this request was
+        # in flight (it does not release then); reconcile now so neither the
+        # cooling hold nor the idle inhibitor outlives the failed enable.
+        try:
+            self._reconcile_idle_guard(self.current_state)
+        except Exception:  # noqa: BLE001 - never hide the error dialog below
+            LOG.exception("Could not reconcile leases after a failed enable")
         self._restore_lid_item()
         if error is not None:
             self._action_error(_("Lid Setting Failed"), error)
@@ -2159,9 +2264,9 @@ class TrayNotifier:
             key = "touchscreen-locked"
         else:
             key = "all-locked"
-        title, body = (_(text) for text in TITLES[key])
+        title, body = (safe_format(text) for text in TITLES[key])
         if locked:
-            body = _("Press {shortcut} to unlock.").format(shortcut=self._display_hotkey(hotkey))
+            body = safe_format(N_("Press {shortcut} to unlock."), shortcut=self._display_hotkey(hotkey))
         self._notify(title, body, locked=bool(locked))
 
     def _notify(self, title: str, body: str, *, locked: bool,

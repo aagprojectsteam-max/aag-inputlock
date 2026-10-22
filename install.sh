@@ -10,7 +10,14 @@ SYSTEM_USER_CREATED=0
 CHANGES_STARTED=0
 INSTALL_COMMITTED=0
 WAS_ACTIVE=0
+# The tray unit existed and was stopped for the update; NOTIFIER_WAS_ACTIVE
+# records whether it was running then, so a rollback restores exactly that
+# state (review U-R8). A successful install always starts the tray.
 NOTIFIER_STOPPED=0
+NOTIFIER_WAS_ACTIVE=0
+# 1 when an earlier Input Lock installation exists (an update): the installer
+# then never changes whether the cursor-hiding extension is enabled (U-R4).
+PREVIOUS_INSTALL=0
 STAGE=''
 BACKUP_DIR=''
 APP_VERSION=''
@@ -218,7 +225,11 @@ cleanup() {
         fi
         if (( NOTIFIER_STOPPED == 1 )); then
             run_as_target systemctl --user daemon-reload >/dev/null 2>&1
-            run_as_target systemctl --user start input-lock-notifier.service >/dev/null 2>&1
+            # Restore the previous state only: a tray that was not running
+            # before stays stopped (review U-R8).
+            if (( NOTIFIER_WAS_ACTIVE == 1 )); then
+                run_as_target systemctl --user start input-lock-notifier.service >/dev/null 2>&1
+            fi
         fi
     fi
     if [[ -n "$STAGE" && -d "$STAGE" ]]; then
@@ -592,6 +603,8 @@ setup_user_session() {
         || post_warning 'systemctl --user daemon-reload failed'
     run_as_target systemctl --user enable input-lock-notifier.service \
         || post_warning 'could not enable input-lock-notifier.service'
+    # Always (re)start the tray after a successful install, even if it was
+    # stopped before: without it Ignore Lid Close cannot be used (U-R8).
     run_as_target systemctl --user restart input-lock-notifier.service \
         || post_warning 'could not start the tray (input-lock-notifier.service)'
     run_as_target python3 /usr/lib/input-lock/input_lock_gnome.py install \
@@ -599,13 +612,49 @@ setup_user_session() {
 
     # GNOME Shell 50 on Wayland cannot safely reload extension source in the
     # running process (its ReloadExtension D-Bus method is deprecated). Never
-    # disable the live copy during an update: write the new files, mark the UUID
-    # enabled, and let the next login replace the running module atomically.
-    if run_as_target python3 -c \
-        'from gi.repository import Gio; s=Gio.Settings.new("org.gnome.shell"); u="input-lock-cursor@aag-projects-team"; e=list(s.get_strv("enabled-extensions")); d=[x for x in s.get_strv("disabled-extensions") if x != u]; s.set_strv("enabled-extensions", e if u in e else [*e, u]); s.set_strv("disabled-extensions", d); Gio.Settings.sync()'; then
-        log 'Cursor hiding extension update will activate at the next login.'
+    # disable the live copy during an update: write the new files and let the
+    # next login replace the running module atomically.
+    #
+    # Respect the user's choice (review U-R4): an extension listed in
+    # disabled-extensions is never moved out of it, and an update never
+    # enables it. Only a fresh installation, with the UUID in neither list,
+    # adds it to enabled-extensions.
+    local extension_state
+    if extension_state=$(run_as_target python3 -I - "$PREVIOUS_INSTALL" <<'PY'
+import sys
+
+from gi.repository import Gio
+
+uuid = "input-lock-cursor@aag-projects-team"
+fresh_install = sys.argv[1] != "1"
+settings = Gio.Settings.new("org.gnome.shell")
+enabled = list(settings.get_strv("enabled-extensions"))
+disabled = list(settings.get_strv("disabled-extensions"))
+if uuid in disabled:
+    print("disabled-by-user")
+elif uuid in enabled:
+    print("enabled")
+elif fresh_install:
+    settings.set_strv("enabled-extensions", [*enabled, uuid])
+    Gio.Settings.sync()
+    print("enabled-now")
+else:
+    print("not-enabled")
+PY
+    ); then
+        case "$extension_state" in
+            enabled|enabled-now)
+                log 'Cursor hiding extension update will activate at the next login.'
+                ;;
+            disabled-by-user)
+                log 'The cursor-hiding extension stays disabled, as chosen; it can be enabled from the tray Settings.'
+                ;;
+            *)
+                log 'The cursor-hiding extension is not enabled; it can be enabled from the tray Settings.'
+                ;;
+        esac
     else
-        post_warning 'could not mark the cursor-hiding extension as enabled'
+        post_warning 'could not read the cursor-hiding extension state'
     fi
 }
 
@@ -642,6 +691,9 @@ main() {
         local saved_created
         saved_created=$(awk -F= '$1=="SYSTEM_USER_CREATED" {print $2}' /etc/input-lock/install-state)
         [[ "$saved_created" != 1 ]] || SYSTEM_USER_CREATED=1
+    fi
+    if [[ -e /etc/input-lock/install-state || -e /usr/lib/input-lock ]]; then
+        PREVIOUS_INSTALL=1
     fi
 
     TARGET_UID=$(id -u "$TARGET_USER")
@@ -698,6 +750,9 @@ main() {
     CHANGES_STARTED=1
     /usr/bin/input-lock emergency-unlock >/dev/null 2>&1 || true
     if [[ -S "$TARGET_RUNTIME/bus" ]] && run_as_target systemctl --user cat input-lock-notifier.service >/dev/null 2>&1; then
+        if run_as_target systemctl --user is-active --quiet input-lock-notifier.service; then
+            NOTIFIER_WAS_ACTIVE=1
+        fi
         run_as_target systemctl --user stop input-lock-notifier.service
         NOTIFIER_STOPPED=1
     fi

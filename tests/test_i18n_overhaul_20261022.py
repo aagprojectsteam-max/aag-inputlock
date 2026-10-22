@@ -33,7 +33,25 @@ import po_compile  # noqa: E402
 import po_extract  # noqa: E402
 
 FSI, PDI = "⁨", "⁩"
+BIDI_CONTROLS = "‎‏⁦⁧⁨⁩"
 BRACE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+# Review U-R2: commands, paths and shortcuts are copied into a shell or a
+# settings field, so they are never inside isolates. Fields that can hold one
+# (an error or reason text can end with a command line) are never isolated.
+UNISOLATED_FIELDS = ("command", "path", "paths", "shortcut", "binding", "hotkey", "unit", "text",
+                     "key", "error", "errors", "reason", "detail")
+UNISOLATED_VALUE_MSGIDS = {"Primary hotkey:   {value}", "Emergency hotkey: {value}", "  Stable path: {value}"}
+COPYABLE = re.compile(
+    r"\{(?:" + "|".join(UNISOLATED_FIELDS) + r")\}"
+    r"|[\w-]+\.service\b|\b\w+\.py\b|\./update\.sh|\bsystemctl\b|\bjournalctl\b|\bsudo\b|\bpython3\b"
+    r"|\binput-lock\b|\bgnome-shell\b|\bgnome-extensions\b|\bgsettings\b|\bnotify-send\b"
+    r"|(?<![\w.])/[\w./-]+|--[a-z][a-z-]*|\b[A-Z_]*HOTKEY\b|\bset-primary\b|\bF\d{1,2}\b"
+    r"|\bA[-–]Z\b|\b0[-–]9\b|\bCopilot\b")
+# A command to run stands on a line of its own: no Hebrew and no bidi
+# control characters on that line, so RTL cannot reorder or pollute it.
+COMMAND_LINE = re.compile(r"\{command\}|\bsystemctl |\bjournalctl |\bsudo |\bpython3 |\./update\.sh"
+                          r"|input_lock_gnome\.py install|input-lock doctor")
+HEBREW = re.compile("[֐-׿]")
 PERCENT = re.compile(r"%(?:\([A-Za-z_]+\))?[sdif]")
 POT = REPO / "po" / "input-lock.pot"
 HE_PO = REPO / "po" / "he.po"
@@ -92,10 +110,12 @@ class CatalogueTests(unittest.TestCase):
                 self.assertEqual(entry.msgid_plural, template[key].msgid_plural)
                 if entry.msgid_plural is not None:
                     self.assertEqual(sorted(entry.msgstr), [0, 1])
-                # Hebrew text, or at least isolates around a Latin prefix
-                # (for example "input-lock: {error}"): never a copy of the English.
+                # Hebrew text, isolated Latin, or nothing but a command name
+                # and placeholders (for example "input-lock: {error}").
                 for text in entry.msgstr.values():
-                    self.assertTrue(re.search("[֐-׿]", text) or FSI in text, text)
+                    bare = BRACE.sub("", COPYABLE.sub("", text))
+                    self.assertTrue(re.search("[֐-׿]", text) or FSI in text
+                                    or not re.search(r"[A-Za-z]", bare), text)
 
     def test_header_declares_hebrew_and_its_plural_rule(self):
         header = next(entry for entry in po_compile.parse_po(HE_PO.read_text(encoding="utf-8"))
@@ -109,45 +129,80 @@ class CatalogueTests(unittest.TestCase):
             source = entry.msgid + (entry.msgid_plural or "")
             for index, text in entry.msgstr.items():
                 with self.subTest(key=key, form=index):
-                    self.assertEqual(set(BRACE.findall(text)), set(BRACE.findall(source)))
+                    if entry.msgid_plural is not None and index == 0:
+                        # The singular form may say "one second" in words
+                        # instead of using the count (review U-R9 b).
+                        self.assertLessEqual(set(BRACE.findall(text)), set(BRACE.findall(source)))
+                    else:
+                        self.assertEqual(set(BRACE.findall(text)), set(BRACE.findall(source)))
                     self.assertEqual(sorted(PERCENT.findall(text)), sorted(PERCENT.findall(entry.msgid)))
                     # The text must format with exactly the msgid's fields.
                     text.format(**{name: "x" for name in BRACE.findall(source)})
 
-    def test_isolates_are_balanced_and_latin_text_is_isolated(self):
+    @staticmethod
+    def _isolate_spans(text: str) -> tuple[list[str], str]:
+        """(contents of the outermost isolates, text outside them)."""
+        depth, spans, outside, current = 0, [], [], []
+        for char in text:
+            if char == FSI:
+                depth += 1
+                if depth == 1:
+                    current = []
+                    continue
+            elif char == PDI:
+                depth -= 1
+                if depth < 0:
+                    raise AssertionError(f"unbalanced PDI in {text!r}")
+                if depth == 0:
+                    spans.append("".join(current))
+                    continue
+            (current if depth else outside).append(char)
+        if depth:
+            raise AssertionError(f"unbalanced FSI in {text!r}")
+        return spans, "".join(outside)
+
+    def test_isolates_are_balanced_and_never_wrap_commands_paths_or_shortcuts(self):
         for key, entry in catalogue(HE_PO).items():
             for index, text in entry.msgstr.items():
                 with self.subTest(key=key, form=index):
-                    depth = 0
-                    outside = []
-                    for char in text:
-                        if char == FSI:
-                            depth += 1
-                        elif char == PDI:
-                            depth -= 1
-                            self.assertGreaterEqual(depth, 0)
-                        elif depth == 0:
-                            outside.append(char)
-                    self.assertEqual(depth, 0)
-                    # Commands, shortcuts, paths and placeholders that hold
-                    # Latin text sit inside isolates; outside them only
-                    # Hebrew, digits, punctuation and Hebrew-valued fields.
-                    bare = BRACE.sub("", "".join(outside))
+                    spans, outside = self._isolate_spans(text)
+                    for span in spans:
+                        self.assertIsNone(COPYABLE.search(span), span)
+                        if entry.msgid in UNISOLATED_VALUE_MSGIDS:
+                            self.assertNotIn("{value}", span)
+                    # Other Latin words and values stay isolated: outside the
+                    # isolates only Hebrew, digits, punctuation, Hebrew-valued
+                    # fields, command lines and copyable items remain.
+                    lines = [line for line in outside.split("\n") if not COMMAND_LINE.search(line)]
+                    bare = BRACE.sub("", COPYABLE.sub("", "\n".join(lines)))
                     self.assertIsNone(re.search(r"[A-Za-z]", bare), bare)
+
+    def test_commands_stand_on_their_own_line(self):
+        for key, entry in catalogue(HE_PO).items():
+            for index, text in entry.msgstr.items():
+                for line in text.split("\n"):
+                    if COMMAND_LINE.search(line):
+                        with self.subTest(key=key, form=index, line=line):
+                            self.assertIsNone(HEBREW.search(line))
+                            self.assertFalse(set(line) & set(BIDI_CONTROLS))
 
     def test_shortcut_names_and_commands_stay_latin(self):
         hebrew = catalogue(HE_PO)
         for key, needle in {
-            (None, "Recovery: {command}"): "{command}",
-            (None, "TTY recovery: {shortcut}"): "{shortcut}",
+            (None, "Recovery: {command}"): "\n{command}",
+            (None, "TTY recovery: {shortcut}"): " {shortcut}",
             (None, "InputLock background service unavailable. Open the lid and check "
                    "input-lock.service with systemctl status input-lock.service. After the service "
                    "is repaired, the tray will reconnect automatically."):
-                FSI + "systemctl status input-lock.service" + PDI,
+                "\nsystemctl status input-lock.service\n",
             (None, "Press a shortcut with at least two modifiers.\nSupported keys: A–Z, 0–9, and F1–F12."):
-                FSI + "F1–F12" + PDI,
+                " A–Z, 0–9 ו־F1–F12.",
+            (None, "review 'journalctl -u input-lock-failsafe.service', then run: "
+                   "sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure"):
+                "\nsudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure",
         }.items():
             self.assertIn(needle, hebrew[key].msgstr[0])
+        self.assertTrue(hebrew[(None, "Recovery: {command}")].msgstr[0].endswith("\n{command}"))
 
     def test_status_labels_keep_their_identity_with_the_ignore_lid_close_label(self):
         hebrew = catalogue(HE_PO)
@@ -381,9 +436,13 @@ class DaemonTextTests(unittest.TestCase):
             nested = messages.daemon_text(self.SAMPLES[0])
             self.assertTrue(nested.startswith("התעלמות מסגירת מכסה אינה זמינה: שינה רגילה"), nested)
             joined = messages.daemon_text(self.SAMPLES[10])
-            self.assertEqual(joined.count("; "), 2, joined)
-            self.assertIn(FSI + "input-lock doctor" + PDI, joined)
-            self.assertIn(FSI + "journalctl -u input-lock-failsafe.service" + PDI, joined)
+            # U-R2: each command on its own line, without isolates; the
+            # segment after a command starts on a new line instead of "; ".
+            lines = joined.split("\n")
+            for command in ("input-lock doctor", "journalctl -u input-lock-failsafe.service",
+                            "sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure"):
+                self.assertIn(command, lines)
+            self.assertNotIn("input-lock doctor;", joined)
             self.assertIn(FSI + "acpitz/temp1" + PDI, messages.daemon_text(self.SAMPLES[1]))
             shortcut = messages.daemon_text(self.SAMPLES[8])
             self.assertIn("שני מקשי צירוף", shortcut)
@@ -405,7 +464,7 @@ class DaemonTextTests(unittest.TestCase):
             self.assertIn("טמפרטורה מסוכנת", text)
             text = messages.describe_lid_disable("something-new", detail="x=1")
             self.assertIn("something-new", text)
-            self.assertTrue(text.endswith(FSI + "x=1" + PDI))
+            self.assertTrue(text.endswith("פרטים: x=1"), text)
 
 
 # ---------------------------------------------------------------------------
@@ -437,9 +496,10 @@ class CliLanguageTests(unittest.TestCase):
             text = self.status()
         self.assertTrue(text.startswith("מצב נעילת הקלט\n"))
         self.assertIn(FSI + "נעול" + PDI, text)
-        self.assertIn(FSI + "CTRL+ALT+Z" + PDI, text)
+        # U-R2: a shortcut and a reason key are copyable; never isolated.
+        self.assertIn("קיצור ראשי:          CTRL+ALT+Z\n", text)
         self.assertIn("טמפרטורה נמדדת:", text)
-        self.assertIn(FSI + "emergency-unlock" + PDI, text)
+        self.assertIn(": emergency-unlock (אוטומטי)\n", text)
 
     def test_main_sets_up_the_language_before_building_the_parser(self):
         import input_lock_cli as cli
@@ -461,7 +521,7 @@ class CliLanguageTests(unittest.TestCase):
                     contextlib.redirect_stderr(stderr):
                 self.assertEqual(cli.main(["lid-ignore", "on"]), 1)
             self.assertEqual(stderr.getvalue(),
-                             f"{FSI}input-lock{PDI}: נתוני הבטיחות מהחיישנים עדיין אינם מוכנים\n")
+                             "input-lock: נתוני הבטיחות מהחיישנים עדיין אינם מוכנים\n")
 
 
 class TrayLanguageTests(unittest.TestCase):

@@ -458,7 +458,9 @@ class EnableInFlightTests(unittest.TestCase):
         with mock.patch.object(notifier, "send_request", side_effect=ValueError("stale lid request")):
             tray._enable_job(5)
         tray.power_guard.acquire.assert_called_once_with()
-        tray.power_guard.release.assert_called_once_with()
+        # Released in the job and again by the U-R6 reconcile (idempotent).
+        tray.power_guard.release.assert_called_with()
+        tray.idle_guard.release.assert_called_once_with()
         self.assertFalse(tray.enable_in_flight)
         tray._show_error.assert_called_once()
         self.assertEqual(tray._show_error.call_args.args[1], "stale lid request")

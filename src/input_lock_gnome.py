@@ -24,11 +24,13 @@ PRIMARY_BINDING: Final = "<Control><Alt>z"
 # Fallback only: the real emergency binding is generated from the configured
 # EMERGENCY_HOTKEY (see emergency_binding()).
 EMERGENCY_BINDING: Final = "<Control><Alt><Shift>F12"
+# <Meta> is the Super/Windows key, as in input_lock_cli._GNOME_MODIFIERS and
+# hotkey_to_binding() (META -> SUPER); review U-R9(d).
 _MODIFIER_ALIASES: Final = {
     "control": "<Control>", "ctrl": "<Control>", "primary": "<Control>",
-    "alt": "<Alt>", "mod1": "<Alt>", "meta": "<Alt>",
+    "alt": "<Alt>", "mod1": "<Alt>",
     "shift": "<Shift>",
-    "super": "<Super>", "mod4": "<Super>", "hyper": "<Hyper>",
+    "super": "<Super>", "meta": "<Super>", "mod4": "<Super>", "hyper": "<Hyper>",
 }
 _MODIFIER_ORDER: Final = ("<Control>", "<Alt>", "<Shift>", "<Super>", "<Hyper>")
 

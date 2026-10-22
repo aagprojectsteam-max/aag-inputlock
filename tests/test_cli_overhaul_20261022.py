@@ -209,7 +209,9 @@ class ConfigFallbackTests(unittest.TestCase):
     def test_internal_commands_use_the_default_socket(self) -> None:
         for command in ("gnome-emergency", "gnome-hotkey", "session-ended",
                         "prepare-sleep", "resume-sleep"):
-            with self.subTest(command=command):
+            # The sleep commands are sent only by the root-run sleep hook
+            # (review S-R1); simulate that caller.
+            with self.subTest(command=command), mock.patch.object(cli.os, "geteuid", return_value=0):
                 code, sent, stderr = self.run_main([command], {"ok": True})
                 self.assertEqual(code, 0)
                 self.assertEqual(sent, [({"cmd": command}, DEFAULT_SOCKET_PATH, 1.0)])
@@ -259,7 +261,8 @@ class ProtocolWarningTests(unittest.TestCase):
         self.assertEqual(self.request_twice({"ok": True, "devices": []}), "")
 
     def test_resume_sleep_is_a_hidden_command(self) -> None:
-        with mock.patch.object(cli, "_request", return_value={"ok": True}) as request:
+        with (mock.patch.object(cli, "_request", return_value={"ok": True}) as request,
+              mock.patch.object(cli.os, "geteuid", return_value=0)):  # the root sleep hook
             self.assertEqual(cli.main(["resume-sleep"]), 0)
         self.assertEqual(request.call_args.args[0], {"cmd": "resume-sleep"})
         self.assertNotIn("resume-sleep", cli.build_parser().format_help())
