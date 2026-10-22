@@ -29,7 +29,8 @@ from typing import Callable, Final
 
 import evdev
 import pyudev
-from input_lock_safety import (BREADCRUMB, SafetyPolicy, Sample, Sensor, Telemetry, atomic_json, protection_errors, request_service)
+from input_lock_safety import (BREADCRUMB, DEFERRED_OS_SLEEP, RESULT_NAME, ROOT_RECEIPT, SafetyPolicy, Sample, Sensor,
+                               Telemetry, atomic_json, protection_errors, request_service)
 from evdev import ecodes
 from locklock_core.allowed_keys import ALLOWED_KEY_CATALOG, validate_allowed_keys
 
@@ -742,16 +743,43 @@ class InputLockDaemon:
                 telemetry_failed = True
             self.safety_stop.wait(2)
 
+    def _read_protective_receipt(self) -> dict | None:
+        """This boot's receipt for the pending protective generation, or None.
+
+        The helper writes the authoritative receipt into the root-owned
+        /var/lib/input-lock-protection first and a copy next to the daemon
+        journal (the pre-overhaul location). Read the root-owned one first and
+        fall back to the copy, e.g. when the root write failed or an older
+        helper is still installed. Raises ValueError when a present receipt
+        is unreadable and no usable one was found.
+        """
+        unreadable = None
+        for path in (ROOT_RECEIPT, BREADCRUMB.with_name(RESULT_NAME)):
+            try:
+                receipt = json.loads(path.read_text())
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as exc:
+                unreadable = exc
+                continue
+            if not isinstance(receipt, dict):
+                unreadable = ValueError("invalid protective receipt")
+                continue
+            if (receipt.get("boot_id") == self.boot_id
+                    and receipt.get("generation") == self.protective_result.get("generation")):
+                return receipt
+        if unreadable is not None:
+            raise ValueError(f"invalid protective receipt: {unreadable}")
+        return None
+
     def _safety_tick(self) -> None:
         now = time.monotonic()
         self.next_safety_tick = now + 1
         if self.protective_result is not None:
             try:
-                receipt = json.loads(BREADCRUMB.with_name("safety-action-result.json").read_text())
-                if not isinstance(receipt, dict):
-                    raise ValueError("invalid protective receipt")
+                receipt = self._read_protective_receipt()
                 self.safety_receipt_error = False
-                if receipt.get("boot_id") == self.boot_id and receipt.get("generation") == self.protective_result.get("generation") and receipt.get("result") != self.protective_result.get("result"):
+                if receipt is not None and receipt.get("result") != self.protective_result.get("result"):
                     self.protective_result.update(receipt)
                     if receipt["result"] == "suspend-transition-confirmed" and receipt.get("transition_confirmed") is True and not self.ignore_lid_close:
                         self.safety.transition("PROTECTIVE_ACTION_EXECUTED", "PROTECTIVE_ACTION_SUCCEEDED")
@@ -759,10 +787,21 @@ class InputLockDaemon:
                         self.safety.transition("PROTECTIVE_ACTION_FAILED", "OPEN_LID_OPERATOR_RECOVERY_REQUIRED")
                     elif receipt["result"].startswith("cancelled") and not self.ignore_lid_close:
                         self.safety.release()
+                    elif ((receipt["result"] == DEFERRED_OS_SLEEP or receipt.get("transition_status") == "DEFERRED")
+                          and not self.ignore_lid_close):
+                        # The helper found the OS sleep path busy (or it just
+                        # failed) and requested nothing. Like a cancellation,
+                        # this ends the protective decision: lid-ignore is
+                        # already off, so logind's own lid policy owns the
+                        # closed lid. Supervision resumes normally once any
+                        # sleep window and its grace end; lid-ignore is never
+                        # re-armed automatically.
+                        LOG.warning("event=PROTECTIVE_ACTION_DEFERRED reason=%s detail=%s",
+                                    self.protective_result.get("reason"), receipt.get("detail", ""))
+                        self.deferred_protection = None
+                        self.safety.release("PROTECTIVE_ACTION_DEFERRED")
                     self._write_safety(force=True)
-            except FileNotFoundError:
-                pass
-            except (OSError, ValueError, TypeError):
+            except (OSError, ValueError, TypeError, KeyError):
                 if not self.safety_receipt_error:
                     LOG.warning("event=PROTECTIVE_RESULT_UNAVAILABLE")
                 self.safety_receipt_error = True
@@ -927,9 +966,25 @@ class InputLockDaemon:
             self.sleep_window_since = time.monotonic()
             LOG.info("event=SLEEP_WINDOW_OPENED source=%s watchdog_usec=%d", source, WATCHDOG_SLEEP_USEC)
         self.sleep_grace_until = None
+        self._note_safety_sleep_window(True)
+
+    def _note_safety_sleep_window(self, active: bool) -> None:
+        """Tell the safety policy that an OS sleep is (no longer) in progress.
+
+        SafetyPolicy.note_sleep_window() is idempotent and bounded in time on
+        its side; it only marks the window, so supervision takes no action
+        while it is open and the status reports os_sleep_in_progress. The
+        daemon additionally skips SafetyPolicy.update() in its own window; the
+        policy's tick-gap rule then restarts its loss clocks on the first
+        update after the window.
+        """
+        note = getattr(self.safety, "note_sleep_window", None)
+        if callable(note):
+            note(active)
 
     def _leave_sleep_window(self, source: str) -> None:
         """PrepareForSleep(false), the 'post' hook, or the window time limit."""
+        self._note_safety_sleep_window(False)
         if self.sleep_window_since is None:
             return
         now = time.monotonic()

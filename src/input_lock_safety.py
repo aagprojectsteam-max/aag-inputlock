@@ -412,7 +412,18 @@ class SafetyPolicy:
         Optional: Telemetry also reports logind's PreparingForSleep in every
         sample. Either source opens the window; it is bounded in time.
         """
-        self.sleep_window_since = (self.sleep_window_since or self.clock()) if active else None
+        if not active:
+            self.sleep_window_since = None
+        elif self.sleep_window_since is None:
+            self.sleep_window_since = self.clock()
+
+    def os_sleep_reported(self) -> bool:
+        """Status view: an OS sleep is in progress (seen in samples or via the
+        daemon hook), within the same SLEEP_WINDOW_MAX_SECONDS bound."""
+        if self.os_sleep_since is not None and not self.os_sleep_expired:
+            return True
+        return (self.sleep_window_since is not None
+                and self.clock() - self.sleep_window_since <= SLEEP_WINDOW_MAX_SECONDS)
 
     def _in_sleep_window(self, sample: Sample, now: float) -> bool:
         preparing = sample.preparing is True or self.sleep_window_since is not None
@@ -714,7 +725,7 @@ class SafetyPolicy:
                 "protection_armed": self.armed,
                 "thermal_protection": "ARMED" if self.armed else "DISARMED",
                 "thermal_intervention": THERMAL_STATES[self.thermal_level] if self.armed else "DISARMED",
-                "os_sleep_in_progress": self.os_sleep_since is not None and not self.os_sleep_expired,
+                "os_sleep_in_progress": self.os_sleep_reported(),
                 "missing_categories": sorted(self.category_missing),
                 "sample": asdict(self.sample) if self.sample else None}
 
