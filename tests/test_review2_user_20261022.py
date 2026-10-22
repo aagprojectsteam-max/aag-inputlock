@@ -445,8 +445,10 @@ class CopyableOutputTests(unittest.TestCase):
                                      unit_state=lambda: "inactive")
         text = str(caught.exception)
         self.assert_own_line(text, "systemctl status input-lock.service")
-        self.assertIn("‎/run/input-lock/control.sock", text)
-        self.assertNotIn("⁨/run", text)
+        # P3-1: the socket path stands on a line of its own, without any
+        # bidi control character, so it can be selected and copied cleanly.
+        self.assert_own_line(text, "/run/input-lock/control.sock")
+        self.assertIsNone(re.search("[‎‏⁦-⁩]/run", text))
 
     def test_readiness_list_puts_each_command_on_its_own_line(self):
         reason = ("previous emergency suspend failed; operator recovery required (see 'input-lock doctor'); "

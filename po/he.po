@@ -28,7 +28,9 @@ msgstr "input-lock: לא ניתן לקרוא את קובץ ההגדרות ({erro
 #, python-brace-format
 msgid "cannot connect to the Input Lock daemon at {path} ({error}; {unit} is {state}). Check: systemctl status {unit}"
 msgstr ""
-"אין חיבור לשירות הרקע של נעילת הקלט בכתובת ‎{path} ({error}; מצב {unit}: ⁨{state}⁩). לבדיקה:\n"
+"אין חיבור לשירות הרקע של נעילת הקלט בכתובת:\n"
+"{path}\n"
+"שגיאה: {error}; מצב {unit}: ⁨{state}⁩. לבדיקה:\n"
 "systemctl status {unit}"
 
 #: src/input_lock_cli.py:148
