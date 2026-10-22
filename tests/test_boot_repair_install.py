@@ -8,10 +8,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, mock_open, patch
 
-import input_lock_safety as safety
-import input_lock_lid_policy as policy
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-SPEC = importlib.util.spec_from_file_location('boot_installer', Path(__file__).resolve().parents[1] / 'tools/install_native_lid.py')
+import input_lock_safety as safety  # noqa: E402
+import input_lock_lid_policy as policy  # noqa: E402
+
+# The installer is retired to tools/legacy/ (S4); these tests keep its history honest.
+SPEC = importlib.util.spec_from_file_location('boot_installer', Path(__file__).resolve().parents[1] / 'tools/legacy/install_native_lid.py')
 installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
 
@@ -99,7 +102,7 @@ class RecoveryPreflightTests(unittest.TestCase):
                 self.preflight(props=props)
 
     def test_source_pins_require_exact_set_and_content(self):
-        hashes = dict.fromkeys(set(installer.FILES) | {'tools/install_native_lid.py'}, 'pin')
+        hashes = dict.fromkeys(set(installer.FILES) | {'tools/legacy/install_native_lid.py'}, 'pin')
         with patch.object(Path, 'read_text', return_value=json.dumps(hashes)), patch.object(installer, 'digest', return_value='pin'):
             self.assertEqual(installer.verify_sources(Path('/fixture/pins')), hashes)
         with patch.object(Path, 'read_text', return_value=json.dumps(hashes)), patch.object(installer, 'digest', return_value='changed'):

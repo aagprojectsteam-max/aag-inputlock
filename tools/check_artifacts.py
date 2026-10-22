@@ -19,7 +19,6 @@ with zipfile.ZipFile(wheels[0]) as archive:
     names = set(archive.namelist())
     for name in ('input_lock_cli.py','input_lock_daemon.py','input_lock_notifier.py',
                  'input_lock_common.py','input_lock_gnome.py','input_lock_lid_policy.py','input_lock_safety.py',
-                 'aag_sleep_transaction_compat.py',
                  'locklock_windows/dispatch.py','locklock_windows/ipc.py','locklock_core/__init__.py'):
         assert name in names, f'missing wheel module {name}'
 with tarfile.open(sources[0]) as archive:
@@ -27,11 +26,11 @@ with tarfile.open(sources[0]) as archive:
     for name in ('VERSION','install.sh','uninstall.sh','config/input-lock.conf',
                  'systemd/input-lock.service','systemd/input-lock-protect.service',
                  'src/input-lock-daemon','src/input-lock-power-helper','gnome-extension/extension.js',
-                 'windows/common.ps1','windows/install.ps1','tools/run_tests.py'):
+                 'windows/common.ps1','windows/install.ps1','tools/run_tests.py',
+                 'tools/legacy/install_native_lid.py'):
         assert name in names, f'missing source payload {name}'
 modules = ['locklock_core', 'locklock_windows.state', 'locklock_windows.power',
-           'locklock_windows.ipc', 'locklock_windows.dispatch', 'input_lock_safety',
-           'aag_sleep_transaction_compat']
+           'locklock_windows.ipc', 'locklock_windows.dispatch', 'input_lock_safety']
 if args.linux:
     modules += ['input_lock_cli', 'input_lock_daemon', 'input_lock_notifier',
                 'input_lock_common', 'input_lock_gnome', 'input_lock_lid_policy']
