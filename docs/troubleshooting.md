@@ -1,4 +1,4 @@
-> Beta.2 power/lid behavior is documented in [the safety remediation](SAFETY-REMEDIATION-20260911.md). Persistent GNOME/UPower suppression is removed; do not recreate it.
+> Current lid and power behavior is documented in [independent lid protection](independent-lid-protection.md). Persistent GNOME/UPower suppression is removed; do not recreate it.
 
 # Troubleshooting
 
@@ -264,18 +264,32 @@ input-lock status
 journalctl -u input-lock.service -b --no-pager | grep LID_IGNORE_DISABLED
 ```
 
-`Last lid-ignore off:` and the journal show the reason and whether you requested it. An automatic disable also produced a critical notification with a "Re-enable…" action. Lid-ignore is never re-armed automatically; re-enable it with the lid open after checking the reason.
+`Last lid-ignore off:` and the journal show the reason and whether you requested it. An automatic disable also produced a critical notification with a "Re-enable…" action; the tray's own Unlock/Quit action only shows an informational note. Lid-ignore is never re-armed automatically; re-enable it with the lid open after checking the reason.
+
+Typical reasons: `controller-disconnected` (the tray stopped or did not check in, also after a long resume), `session-inactive` (logout, user switch), `supervision-logind-unavailable` (logind failed for about 15 s), `emergency-unlock`, `settings-reset`, `thermal-*`, `battery-critical`, `telemetry-lost`, `supervision-journal-unwritable` (`/var/lib/input-lock` full or read-only). A manual Power Mode change does **not** turn it off: the tray restores the power-saver hold and notifies you; only a hold that is still ineffective after one retry ends lid-ignore.
+
+## A protective suspend was deferred
+
+```bash
+journalctl -u input-lock.service -u input-lock-protect.service -u input-lock-failsafe.service -b --no-pager | grep -E 'PROTECTIVE_ACTION_DEFERRED|SLEEP_WINDOW'
+```
+
+`event=PROTECTIVE_ACTION_DEFERRED` means the root helper found the OS sleep path busy (logind `preparing`, `systemd-suspend.service` running, or it ran within the last 180 seconds and failed; in recovery also a recent success or a daemon that ended by watchdog). It requested nothing and wrote no latch, to avoid driving a second attempt into a stuck freezer. The daemon leaves `PROTECTIVE_ACTION_PENDING` (safety reason `PROTECTIVE_ACTION_DEFERRED`), lid-ignore stays off and logind's own lid policy applies. Nothing is re-armed. Open the lid, check why the OS suspend did not complete (`journalctl -u systemd-suspend.service -b`), and re-enable lid-ignore if you still need it.
+
+While a suspend is being prepared, `input-lock status` shows `OS sleep: in progress`; supervision takes no protective action until resume plus 35 s.
 
 ## Arming refused: previous emergency suspend failed
 
-Arming stays blocked until an administrator reviews and acknowledges the latch:
+A failure latch is written only when InputLock's own suspend request was accepted and the kernel transition then failed or was never confirmed. While it is active, arming stays blocked until an administrator reviews and acknowledges it:
 
 ```bash
+input-lock doctor
+/usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py check
 journalctl -u input-lock-failsafe.service -b --no-pager
 sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure
 ```
 
-The latch is archived, not deleted.
+`doctor` shows an active latch as `FAIL` (`Protection failure latch`) and a stale one as `INFO`. A latch is stale after a reboot or after a later successful suspend; it no longer blocks arming and needs no action, although acknowledging it archives it. `check` prints `{"ready": …, "errors": […], "info": […]}`. Later failures are appended to the latch, never overwritten. `acknowledge-failure` refuses while a protect, failsafe or system suspend unit is still running; it copies the latch to `/root/ARCHIVE/InputLock/` and renames it to `failure-acknowledged-<sha256>.json`, never deleting it.
 
 ## GNOME binding is not created or collides
 
@@ -424,7 +438,7 @@ input-lock logs -n 100
 
 Expected: at least one node named `Lid Switch` with class `lid-switch`. If none exists, the menu item stays disabled and the daemon safely refuses `input-lock lid-ignore on`. Do not substitute an arbitrary power-button or tablet-mode node.
 
-When enabled, status must report an active lid inhibitor, a connected controller and a supervised safety state with fresh telemetry. `input-lock doctor` checks the installed InputLock units, dependencies, the daemon protocol version and the GNOME emergency binding. There is no tray policy-repair writer. If monitoring is unavailable, reopen the lid and inspect the journals. Return to normal OS behavior with:
+When enabled, status must report an active lid inhibitor, a connected controller and a supervised safety state with fresh telemetry. `input-lock doctor` checks the installed InputLock units, dependencies, the daemon protocol version, the GNOME emergency binding and the native protection readiness (unit contracts, unit drop-ins and the failure latch). There is no tray policy-repair writer. If monitoring is unavailable, reopen the lid and inspect the journals. Return to normal OS behavior with:
 
 ```bash
 input-lock lid-ignore off

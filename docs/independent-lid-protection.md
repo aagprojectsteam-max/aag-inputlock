@@ -47,18 +47,58 @@ corroboration and logging only.
 | Protective suspend | median ≥104 °C for 60 s (≤2 samples below 101 °C tolerated) | ≥70 °C for 60 s | ≥80 °C for 20 s |
 | Emergency | ≥107 °C raw for 3 consecutive samples, confirmed by a second CPU source within 6 °C; or one source ≥108 °C for 10 s | ≥73 °C for 10 s | — |
 
-No action is ever taken on a single sample. Critical battery acts only while
-discharging (`discharging` true or AC absent). The samples inside the dwell
-window and the per-sensor evidence are kept in `last_decision`.
+How the table is implemented (`THERMAL_RULES` in `input_lock_safety.py`):
+
+- The temperatures are the EliteBook values. Each limit is capped below the
+  sensor's own critical trip: CPU `min(95, trip−15)` / `min(104, trip−6)` /
+  `min(107, trip−3)`, chassis `min(65, trip−15)` / `min(70, trip−10)` /
+  `min(73, trip−7)`, NVMe `min(77, trip−10)` / `min(80, trip−7)`.
+- Once a timer has started it keeps running while the median stays within the
+  hysteresis (3 °C for CPU, 2 °C for chassis and NVMe) below the limit. For the
+  CPU protective level up to 2 samples below that (below 101 °C) are tolerated
+  without a reset.
+- A level needs at least 3 distinct samples as well as its dwell time. A gap of
+  more than 10 s between samples (a suspend, a frozen telemetry thread) resets
+  the timers instead of counting as dwell time.
+- The "one source ≥108 °C for 10 s" rule uses raw readings; every other rule
+  uses the per-sensor median (chassis emergency too, per sensor).
+- CPU sources are the `TCPU` and `x86_pkg_temp` thermal zones and the
+  coretemp/k10temp package channel (`Package id`/`Tctl`, else `temp1`).
+
+No action is ever taken on a single sample. Critical battery means ≤10 % while
+discharging (`discharging` true or AC absent), or a UPower critical warning
+level, seen in 2 samples at least 2 s apart. The samples inside the dwell
+window and the per-sensor evidence are kept in
+`last_decision.thermal_evidence`. While a closed lid is supervised,
+`input-lock status` lists a whole missing telemetry category as
+`Missing telemetry:` (`missing_categories` in the safety snapshot) while its
+30-second loss timer runs.
 
 ## Sleep window
 
-Between `PrepareForSleep(true)` and resume plus one controller timeout, the
+`input-lock.service` is `Type=notify` with `WatchdogSec=20s`. Between
+`PrepareForSleep(true)` and resume plus one controller timeout (35 s), the
 controller and lease deadlines are paused and the daemon's systemd watchdog
-is extended to 300 seconds (restored to 20 seconds afterwards). The
-system-sleep hook calls `input-lock prepare-sleep` before and
-`input-lock resume-sleep` after a sleep. A kernel freeze that stalls for
-20 seconds therefore no longer kills the daemon or drops lid-ignore.
+is extended to 300 seconds with `sd_notify WATCHDOG_USEC` (restored to 20
+seconds afterwards). The system-sleep hook calls `input-lock prepare-sleep`
+before and `input-lock resume-sleep` after a sleep; the daemon also reacts to
+logind's `PrepareForSleep` signal, and either source opens or closes the same
+window. A kernel freeze that stalls for 20 seconds therefore no longer kills
+the daemon or drops lid-ignore.
+
+Inside the window:
+
+- the safety policy is told about it (`note_sleep_window`), takes no
+  protective action and `input-lock status` prints `OS sleep: in progress`
+  (`os_sleep_in_progress` in the safety snapshot, `system_sleep_in_progress` in
+  the state);
+- a protection reason that arises (for example a lost tray controller) is
+  deferred. At the end of the grace period it is acted on only if its cause
+  still holds (controller still gone, session still lost, lid switch still
+  missing); thermal and telemetry causes are re-evaluated by the safety policy
+  from fresh samples;
+- a window without a resume signal closes after 600 s (the policy itself
+  ignores logind's `preparing` for at most 300 s).
 
 ## When lid-ignore turns itself off
 
@@ -67,6 +107,11 @@ requested_by_user=…` and published as `last_lid_disable` in the daemon
 state. When the user did not request it, the tray shows a **critical,
 persistent** notification that names the reason and offers "Re-enable…",
 which goes through the normal confirmation dialog and requires an open lid.
+The `reason` is a short key such as `controller-disconnected`,
+`session-inactive`, `emergency-unlock`, `settings-reset`, `thermal-emergency`
+or `telemetry-lost`; the journal line also carries the internal detail. The
+tray's own Unlock/Quit action (an emergency unlock, which also ends
+lid-ignore) shows an informational note instead of the critical one.
 Lid-ignore is never re-armed automatically. Stopping the tray
 (`input-lock-notifier.service`) also ends lid-ignore; this is by design.
 
@@ -189,21 +234,66 @@ There is no AAG readiness exemption that simply sets this field true.
    refusal observed on 2026-10-16. An accepted D-Bus request is not proof
    of a completed kernel transition.
 3. Confirm a new successful `systemd-suspend.service` execution plus an increased
-   kernel suspend-success counter within 120 seconds of awake monotonic time.
-   No AAG receipt or wakeguard state is read. This confirms a kernel cycle, not
-   peripheral or storage recovery beyond systemd's result.
+   kernel suspend-success counter within 240 seconds of awake monotonic time
+   (`OBSERVE_BUDGET_SECONDS`). No AAG receipt or wakeguard state is read. This
+   confirms a kernel cycle, not peripheral or storage recovery beyond
+   systemd's result.
 4. Primary failure, daemon crash or the 20-second watchdog (300 seconds during
    a sleep transition) starts
    `input-lock-failsafe.service`. It stops InputLock synchronously before one
-   final ordinary suspend attempt, including when the journal is corrupt.
-   Already-running sleep transitions are not duplicated. Each helper's systemd
-   start timeout exceeds its suspend-observation budget by at least 60 seconds. Automatic daemon restart is disabled to prevent
-   new grabs and overwritten evidence racing recovery.
-5. Terminal failure persists `/var/lib/input-lock-protection/failure.json`, blocks
-   subsequent arming and remains visible in the journal. An `ExecStopPost` handler
-   also records externally terminated recovery (including timeout). Normal
-   results are recorded in `/var/lib/input-lock/safety-action-result.json`; the
-   tray shows a failure state when the daemon is available to receive it.
+   final ordinary suspend attempt, including when the journal is corrupt or
+   missing (a missing journal means nothing was pending: no request, no latch).
+   Both helper units use `TimeoutStartSec=330s`, the 240-second observation
+   budget plus at least 60 seconds for the steps before it. Automatic daemon
+   restart is disabled to prevent new grabs and overwritten evidence racing
+   recovery.
+5. **The OS sleep path is never asked twice.** Neither helper requests a
+   suspend, and neither latches, when logind is already `preparing`,
+   `systemd-suspend.service` is still running, or it ran within the last
+   180 seconds and failed. In recovery, a run within 180 seconds defers even
+   when it succeeded, and so does a daemon that ended with `Result=watchdog`
+   (it was frozen by the OS sleep freezer or wedged; it is stopped now and
+   logind owns the closed lid again). The receipt then says
+   `deferred-os-sleep-in-progress` (`transition_status` `DEFERRED`); the
+   daemon treats it like a cancellation and leaves `PROTECTIVE_ACTION_PENDING`.
+   Nothing is re-armed.
+
+### Receipts and the failure latch
+
+- **Receipt.** Each step of an eligible request writes a receipt (`result`,
+  `transition_status`, `dispatch_accepted`, boot and generation). The
+  authoritative copy is
+  `/var/lib/input-lock-protection/safety-action-result.json` in the root-owned
+  directory (`StateDirectory=input-lock-protection`, mode 0755). A copy is
+  still written to `/var/lib/input-lock/safety-action-result.json`; the daemon
+  reads the root-owned one first and falls back to the copy. Both are written
+  with `fchmod` on the temporary file before the rename, never through a
+  symbolic link. The tray shows a failure state when the daemon is available
+  to receive it.
+- **Narrow latching.** `/var/lib/input-lock-protection/failure.json` is written
+  only when InputLock's **own** suspend request was accepted by logind and the
+  kernel transition then failed or was never confirmed. Refusals before
+  dispatch, deferrals and cancellations do not latch.
+- **No overwrite.** An existing latch keeps its first error as the headline;
+  later failures are appended to `later_failures`. The failsafe unit's
+  `ExecStopPost` (`input_lock_safety.py record-failure`, also run after a
+  timeout or SIGKILL) appends its `SERVICE_RESULT` to an existing latch. Without
+  one it latches only if this boot's root-owned receipt shows an accepted
+  request that was never confirmed.
+- **Staleness.** A latch records `boot_id` and the kernel
+  `suspend_stats/success` counter. After a reboot, or once a later suspend has
+  succeeded, it is **stale**: ordinary suspend demonstrably works again, so it
+  no longer blocks arming and is reported as information. A new failure
+  re-activates a stale latch. A latch without that evidence (older format) or
+  one that cannot be read stays active.
+- **Inspection.** `input-lock doctor` shows the probe result: a stale latch and
+  unit drop-ins as `INFO`, an active latch as `FAIL` with the command below.
+  The probe can also be run directly; it prints
+  `{"ready": …, "errors": […], "info": […]}`:
+
+  ```bash
+  /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py check
+  ```
 
 InputLock cannot guarantee physical sleep when the kernel, logind, systemd, an
 administrator's inhibitor or a native hook refuses it. In that case its own
@@ -219,9 +309,40 @@ journalctl -u input-lock-failsafe.service -b --no-pager
 sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure
 ```
 
-`acknowledge-failure` archives the latch instead of deleting it.
+`acknowledge-failure` never deletes the latch. It runs only as root and only
+while `input-lock-protect.service`, `input-lock-failsafe.service` and
+`systemd-suspend.service` are inactive. It reads the latch through one
+`O_NOFOLLOW` descriptor (it must be a root-owned regular file), copies it to
+`/root/ARCHIVE/InputLock/<UTC time>-failure-latch-<hash>/failure.json`,
+verifies the copy's SHA-256, re-checks that the latch did not change meanwhile,
+and then renames it in place to `failure-acknowledged-<sha256>.json`.
 `input-lock status` and `input-lock doctor` print this hint when arming is
-refused because a previous emergency suspend failed.
+refused because a previous emergency suspend failed. A stale latch does not
+need acknowledging to arm again; acknowledging it only archives it.
+
+## Units
+
+- `input-lock.service`: `Type=notify`, `NotifyAccess=main`, `WatchdogSec=20s`
+  (extended to 300 s by the daemon during a sleep window), `Restart=no`,
+  `OnFailure=input-lock-failsafe.service`, `TimeoutStopSec=5s`. Its
+  `ExecStopPost` runs `input-lock-power-helper disable --no-block`: a needed
+  UPower restart (only when a legacy UPower drop-in is still present) is
+  enqueued without waiting, so it cannot overrun the 5-second stop timeout,
+  and the next `ExecStartPre` (which waits) verifies it.
+- `input-lock-protect.service` and `input-lock-failsafe.service`: root
+  `Type=oneshot`, `TimeoutStartSec=330s`, `StateDirectory=input-lock-protection`
+  with `StateDirectoryMode=0755` (root-owned), `PrivateDevices=yes`,
+  `ProtectKernelTunables/Modules/Logs=yes`, `ProtectControlGroups=yes`,
+  `RestrictNamespaces=yes`, `LockPersonality=yes`,
+  `SystemCallArchitectures=native`, `RestrictAddressFamilies=AF_UNIX`. They
+  deliberately have no `CapabilityBoundingSet=`: a narrow bounding set cannot
+  be verified without a real protective suspend, and a wrong one would
+  silently break this last-resort path.
+- The readiness probe compares these contracts by range, not by text:
+  `input-lock.service` watchdog 20–300 s, `Restart=no`, failsafe as
+  `OnFailure`, `KillMode=control-group`, `TimeoutStopSec` ≤ 30 s, `Type`
+  `simple` or `notify`; each helper's `TimeoutStartSec` between 300 s (budget
+  + 60 s) and 30 min. Drop-ins are reported as information.
 
 ## Upgrade and rollback
 
@@ -251,8 +372,10 @@ payload files and it imported code as root from the unverified checkout.
 `uninstall.sh` stops `input-lock-protect.service` and
 `input-lock-failsafe.service` (and confirms they stopped) before deleting their
 files, and archives `/var/lib/input-lock` and `/var/lib/input-lock-protection`
-(including any latch) to a root-only folder under `/var/backups/input-lock`
-before removing them, so a later reinstall does not inherit a stale latch.
+(including any latch) to a root-only folder
+`/var/backups/input-lock/uninstall-<timestamp>` before removing them, so a
+later reinstall does not inherit a latch. It keeps, and names, the installer
+backups under `/var/backups/input-lock` and the user's `~/.config/input-lock`.
 
 Isolated tests are not physical acceptance. No lid close, sleep, hibernate,
 reboot, hotplug, forced action or AAG Power test is needed for these source checks.
