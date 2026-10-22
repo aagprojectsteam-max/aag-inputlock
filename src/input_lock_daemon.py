@@ -9,6 +9,7 @@ recognize the unlock chords.  It never stores, transmits, or logs key content.
 from __future__ import annotations
 
 import errno
+import fcntl
 import fnmatch
 import json
 import logging
@@ -69,6 +70,11 @@ SLEEP_WINDOW_MAX_SECONDS: Final = 120.0
 # Kernel suspend counters: a change means an attempt completed or failed, i.e.
 # the machine is awake again (S-R1 resume evidence).
 SUSPEND_STATS_DIR: Final = Path("/sys/power/suspend_stats")
+# EVIOCGSW: the switch-state bitmap (P2-1). python3-evdev 1.9 has no
+# InputDevice.switches(), so the daemon reads it with the ioctl itself.
+_IOC_READ: Final = 2
+SW_LID_BIT: Final = 0x00
+SW_BITMAP_BYTES: Final = (0x10 + 1 + 7) // 8  # SW_CNT = SW_MAX + 1 = 0x11 bits
 # Distinct telemetry samples with logind PreparingForSleep=false that close the
 # window early (S-R1 resume evidence).
 SLEEP_RESUME_EVIDENCE_SAMPLES: Final = 2
@@ -86,6 +92,28 @@ PHYSICAL_EMERGENCY_SOURCES: Final = frozenset(
 )
 # Unsent responses a non-controller client may accumulate before it is dropped.
 CLIENT_OUTPUT_LIMIT: Final = 1 << 20
+
+
+def _ioc(direction: int, kind: str, number: int, size: int) -> int:
+    """The kernel's _IOC() request encoding (asm-generic/ioctl.h)."""
+    return (direction << 30) | (size << 16) | (ord(kind) << 8) | number
+
+
+def eviocgsw(length: int) -> int:
+    """EVIOCGSW(len) = _IOC(_IOC_READ, 'E', 0x1b, len)."""
+    return _ioc(_IOC_READ, "E", 0x1B, length)
+
+
+def read_lid_switch(device: object) -> bool:
+    """The SW_LID state of an evdev device, read with EVIOCGSW (P2-1).
+
+    Raises OSError when the device does not answer and AttributeError when
+    the object has no descriptor; callers treat either as "unreadable".
+    """
+    fd = device.fd
+    buffer = bytearray(SW_BITMAP_BYTES)
+    fcntl.ioctl(fd, eviocgsw(len(buffer)), buffer, True)
+    return bool(buffer[SW_LID_BIT // 8] & (1 << (SW_LID_BIT % 8)))
 
 
 class TransitionError(RuntimeError):
@@ -1264,14 +1292,18 @@ class InputLockDaemon:
             self._recheck_deferred_protection()
 
     def _lid_switch_readable(self) -> bool:
-        """At least one lid-switch device still answers EVIOCGSW (S-R8b)."""
+        """At least one lid-switch device still answers EVIOCGSW (S-R8b).
+
+        Read with the ioctl directly (P2-1): python3-evdev 1.9 has no
+        InputDevice.switches(). Any failure counts as unreadable.
+        """
         for record in self.devices.values():
             if "lid-switch" not in record.kinds:
                 continue
             try:
-                record.device.switches()
+                read_lid_switch(record.device)
                 return True
-            except OSError:
+            except (OSError, AttributeError, TypeError, ValueError):
                 continue
         return False
 
@@ -2124,11 +2156,15 @@ class InputLockDaemon:
                         from types import SimpleNamespace
                         self._forward_allowed_event(record, SimpleNamespace(code=code, value=1))
                     if "lid-switch" in record.kinds:
+                        # Re-read SW_LID after SYN_DROPPED with EVIOCGSW (P2-1).
+                        # Unreadable is treated as telemetry loss (fail safe).
                         try:
-                            self._handle_lid_switch_event(ecodes.SW_LID in record.device.switches())
-                        except OSError:
+                            closed = read_lid_switch(record.device)
+                        except (OSError, AttributeError, TypeError, ValueError):
                             if self.ignore_lid_close:
                                 self._start_protection("LID_TELEMETRY_LOST")
+                        else:
+                            self._handle_lid_switch_event(closed)
                     self._evaluate_hotkeys()
                     continue
                 if (

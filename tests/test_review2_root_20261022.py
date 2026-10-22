@@ -991,14 +991,23 @@ class MinorRootItemsTests(unittest.TestCase):
             daemon._start_protection("LID_TELEMETRY_LOST")
             self.assertEqual(daemon.deferred_protection, "LID_TELEMETRY_LOST")
             drain(daemon, "resume-sleep")
-            if readable:
-                lid.device.switches.return_value = []
-            else:
-                lid.device.switches.side_effect = OSError(19, "No such device")
+            # P2-1: the switch state is read with EVIOCGSW on the device's fd
+            # (python3-evdev 1.9 has no InputDevice.switches()).
+            lid.device = SimpleNamespace(fd=57)
+            calls = []
+
+            def ioctl(fd, request, buffer, mutate=True):
+                calls.append((fd, request, len(buffer), mutate))
+                if not readable:
+                    raise OSError(19, "No such device")
+                buffer[0] = 0x01                      # SW_LID set: closed
+                return 0
             daemon._start_protection = mock.Mock()
             daemon.clients[3].deadline = 1e9
             clock.now = 100.0 + daemon_module.CONTROLLER_TIMEOUT + 1
-            daemon._handle_timers()
+            with mock.patch.object(daemon_module.fcntl, "ioctl", ioctl):
+                daemon._handle_timers()
+        self.assertEqual(calls, [(57, daemon_module.eviocgsw(3), 3, True)])
         return daemon
 
     def test_b_deferred_lid_telemetry_loss_is_rechecked(self):
