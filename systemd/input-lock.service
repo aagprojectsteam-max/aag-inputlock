@@ -19,7 +19,10 @@ SupplementaryGroups=input
 # active.  Remove it as root before the unprivileged daemon starts.
 ExecStartPre=+/usr/lib/input-lock/input-lock-power-helper disable
 ExecStart=/usr/lib/input-lock/input-lock-daemon
-ExecStopPost=+/usr/lib/input-lock/input-lock-power-helper disable
+# ExecStopPost runs under TimeoutStopSec=5s, so a UPower restart (legacy
+# drop-in only) is enqueued with --no-block and verified by the next
+# ExecStartPre, which waits.
+ExecStopPost=+/usr/lib/input-lock/input-lock-power-helper disable --no-block
 LimitNOFILE=512
 ExecReload=/bin/kill -HUP $MAINPID
 # Between PrepareForSleep(true) and resume the daemon raises its own watchdog

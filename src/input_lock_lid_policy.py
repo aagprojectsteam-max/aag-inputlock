@@ -260,11 +260,13 @@ class UPowerPolicyController:
         restart: Callable[[], None] | None = None,
         service_active: Callable[[], bool] | None = None,
         runtime_action: Callable[[], str] | None = None,
+        restart_nowait: Callable[[], None] | None = None,
     ) -> None:
         self.config_path = config_path
         self.dropin_dir = dropin_dir
         self.dropin_path = dropin_dir / UPOWER_DROPIN_NAME
         self._restart = restart or self._restart_upower
+        self._restart_nowait = restart_nowait or self._schedule_upower_restart
         self._service_active = service_active or self._upower_is_active
         self._runtime_action = runtime_action or self._query_runtime_action
 
@@ -333,7 +335,26 @@ class UPowerPolicyController:
         raise PolicyError("critical-battery overrides are no longer supported")
 
 
-    def disable(self) -> dict[str, object]:
+    @staticmethod
+    def _schedule_upower_restart() -> None:
+        # Enqueue the restart job and return at once (review S6): the
+        # daemon unit's ExecStopPost runs under TimeoutStopSec=5s, while a
+        # blocking UPower restart may take up to 30 s.
+        subprocess.run(
+            ["systemctl", "restart", "--no-block", "upower.service"],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            timeout=4,
+        )
+
+    def disable(self, *, wait: bool = True) -> dict[str, object]:
+        """Remove the legacy UPower drop-in and restore UPower's own policy.
+
+        With ``wait=False`` (the daemon unit's ExecStopPost) the UPower
+        restart is only enqueued and not verified; the recovery marker is kept,
+        so the next ExecStartPre (``wait=True``) restarts again if needed,
+        verifies the runtime policy and removes the marker.
+        """
         pending = self.dropin_dir / ".input-lock-restore-pending.json"
         # No owned mutation means there is nothing to restore. In particular,
         # boot must not depend on UPower already answering its runtime API.
@@ -349,6 +370,12 @@ class UPowerPolicyController:
             _atomic_json(pending, {"version": 1, "action": "restore-normal"}, 0o600)
             self.dropin_path.unlink()
             _sync_directory(self.dropin_dir)
+        if not wait:
+            if pending.exists():
+                self._restart_nowait()
+            return {"restoration_required": True, "restart_scheduled": pending.exists(),
+                    "normal_os_policy": None, "dropin_present": self.dropin_path.exists(),
+                    "recovery_pending": pending.exists()}
         if pending.exists():
             self._restart()
         result = self.status()
