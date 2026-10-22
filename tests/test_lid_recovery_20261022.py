@@ -68,13 +68,19 @@ class SpikeTolerantArmingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "too high"):
             self.policy.arm(sample(self.now, 99))
 
-    def test_closed_lid_supervision_still_uses_raw_readings(self):
+    def test_closed_lid_supervision_needs_sustained_single_source_heat(self):
+        # Section F: three samples of one source are not enough; one source
+        # at emergency + 1 C must persist for 10 s (review A1).
         self.feed(60, 60, 60)
         self.now += 2
         self.policy.arm(sample(self.now))
         decision = None
         for _ in range(3):
             self.now += 1.5
+            decision = self.policy.update(sample(self.now, 101, lid_closed=True)) or decision
+        self.assertIsNone(decision)
+        for _ in range(6):
+            self.now += 2
             decision = self.policy.update(sample(self.now, 101, lid_closed=True)) or decision
         self.assertEqual(decision, "THERMAL_EMERGENCY")
 
@@ -102,18 +108,11 @@ class AcknowledgeFailureTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def ack(self, states=None, euid=0):
-        real_lstat = os.lstat
-
-        def lstat_as_root(path):
-            info = real_lstat(path)
-            return os.stat_result((info.st_mode, info.st_ino, info.st_dev, info.st_nlink, 0,
-                                   info.st_gid, info.st_size, info.st_atime, info.st_mtime, info.st_ctime))
-        safety.os.lstat = lstat_as_root
-        try:
-            return safety.acknowledge_failure(run=fake_systemctl(states or {}), latch=self.latch,
-                                              archive=self.archive, euid=lambda: euid, now=lambda: 0)
-        finally:
-            safety.os.lstat = real_lstat
+        # The test user stands in for root as the required owner (S5: the
+        # owner is now checked with fstat on the opened descriptor).
+        return safety.acknowledge_failure(run=fake_systemctl(states or {}), latch=self.latch,
+                                          archive=self.archive, euid=lambda: euid, now=lambda: 0,
+                                          expected_uid=self.uid)
 
     def test_archives_verifies_and_retains_the_failure(self):
         result = self.ack()
