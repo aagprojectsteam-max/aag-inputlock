@@ -51,7 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     if group not in available:
         raise SystemExit("Choose shared, linux, windows-native or all")
     sys.path[:0] = [str(ROOT / "src"), str(TESTS)]
-    logging.disable(logging.CRITICAL)
+    # Keep output quiet without disabling logging: assertLogs-based tests
+    # need records to flow. Records without a handler are simply dropped.
+    logging.lastResort = None
     suite = unittest.defaultTestLoader.loadTestsFromNames(available[group])
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     return 0 if result.wasSuccessful() else 1

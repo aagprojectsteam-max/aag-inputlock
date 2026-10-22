@@ -133,6 +133,10 @@ LID_DISABLE_REASON_TEXT: Final = {
     "configuration-reload": "The Input Lock configuration was reloaded, which resets all locks.",
     "invalid-config-reload": "The Input Lock configuration could not be reloaded, so all locks were reset.",
     "release-all": "All locks were released.",
+    # Normalised keys published by the daemon in last_lid_disable.reason.
+    "emergency-unlock": "Input was unlocked with an emergency unlock, which also turns Ignore Lid Close off.",
+    "settings-reset": "Input Lock settings were changed or reloaded, which resets all locks.",
+    "auto-unlock-timer": "The auto-unlock safety timer released input, which also turns Ignore Lid Close off.",
     "safety-journal-failed": "Input Lock could not save its safety record, so it stopped ignoring the lid.",
     "power-saver-ineffective": "The power-saver cooling hold could not be kept.",
     "lease-unavailable": "GNOME idle protection or power-saver cooling stopped working.",
