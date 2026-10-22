@@ -548,10 +548,13 @@ class ReadinessProbeTests(unittest.TestCase):
             for directive in ("PrivateDevices=yes", "ProtectKernelTunables=yes", "ProtectKernelModules=yes",
                               "ProtectKernelLogs=yes", "ProtectControlGroups=yes", "RestrictNamespaces=yes",
                               "LockPersonality=yes", "SystemCallArchitectures=native",
-                              "CapabilityBoundingSet=", "NoNewPrivileges=yes", "ReadWritePaths=/var/lib/input-lock",
-                              "StateDirectory=input-lock-protection"):
+                              "NoNewPrivileges=yes", "ReadWritePaths=/var/lib/input-lock",
+                              "StateDirectory=input-lock-protection", "StateDirectoryMode=0755"):
                 self.assertIn(directive, text, name)
             self.assertNotIn("SD_LOGIND_SKIP_INHIBITORS", text)
+            # Lead decision: no unverifiable capability bounding set on the
+            # last-resort safety path.
+            self.assertIsNone(re.search(r"^\s*CapabilityBoundingSet=", text, re.M), name)
 
 
 class LatchStateTests(unittest.TestCase):

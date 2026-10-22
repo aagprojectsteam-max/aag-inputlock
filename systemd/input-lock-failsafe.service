@@ -19,6 +19,9 @@ ProtectHome=yes
 PrivateTmp=yes
 # Same sandbox as input-lock-protect.service: read-only /sys and /proc,
 # systemctl and logind over AF_UNIX only, no device nodes.
+# Deliberately no CapabilityBoundingSet= (lead decision 2026-10-22): a narrow
+# bounding set cannot be verified without a real protective suspend, and a
+# wrong one would silently break this last-resort safety path.
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -31,5 +34,4 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 SystemCallArchitectures=native
-CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SYS_BOOT
 RestrictAddressFamilies=AF_UNIX

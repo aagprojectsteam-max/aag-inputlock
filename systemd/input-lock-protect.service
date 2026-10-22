@@ -18,8 +18,11 @@ ProtectHome=yes
 PrivateTmp=yes
 # Reads /sys (thermal, power_supply, suspend_stats) and /proc (lid, boot_id)
 # read-only; talks to logind and systemd only over AF_UNIX D-Bus/systemctl.
-# Root needs DAC override to write into input-lockd's 0700 state directory;
-# CAP_SYS_BOOT keeps logind's privileged-caller path for SuspendWithFlags.
+# Deliberately no CapabilityBoundingSet= (lead decision 2026-10-22): a narrow
+# bounding set cannot be verified without a real protective suspend, and a
+# wrong one would silently break this last-resort safety path. Root keeps its
+# default capabilities (for example DAC override to write the receipt copy
+# into input-lockd's 0700 state directory).
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -32,5 +35,4 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 SystemCallArchitectures=native
-CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SYS_BOOT
 RestrictAddressFamilies=AF_UNIX
