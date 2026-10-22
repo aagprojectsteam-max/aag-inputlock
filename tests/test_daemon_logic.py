@@ -276,25 +276,24 @@ class HotkeyTests(unittest.TestCase):
         self.assertTrue(daemon._saved_lid_ignore_close)
         daemon._persist_user_settings.assert_not_called()
 
-    def test_sleep_inhibition_is_never_supported(self):
+    def test_sleep_inhibition_and_external_policy_commands_are_gone(self):
+        # D1 (2026-10-22): the always-refusing sleep-inhibitor and external
+        # power-policy stubs were removed; their IPC commands are unknown now.
         daemon = InputLockDaemon.__new__(InputLockDaemon)
-        daemon.ignore_lid_close = True
-        daemon.lid_is_closed = True
-        self.assertFalse(daemon._sleep_should_be_inhibited())
-        with self.assertRaises(TransitionError):
-            daemon._acquire_sleep_inhibitor()
+        for name in ("_sleep_should_be_inhibited", "_acquire_sleep_inhibitor",
+                     "_set_lid_policy_health", "_set_lid_power_policy"):
+            self.assertFalse(hasattr(daemon, name), name)
+        daemon._send_and_close = mock.Mock()
+        for cmd in ("set-lid-policy-health", "set-lid-power-policy"):
+            daemon._handle_request(7, {"cmd": cmd, "healthy": True, "enabled": True, "threshold": 20})
+            self.assertEqual(daemon._send_and_close.call_args.args[1],
+                             {"ok": False, "error": "unsupported command"})
 
-    def test_external_policy_health_cannot_rearm(self):
-        daemon = InputLockDaemon.__new__(InputLockDaemon)
-        with self.assertRaises(TransitionError):
-            daemon._set_lid_policy_health(True)
-
-    def test_evdev_lid_state_takes_priority_and_reconciles(self) -> None:
+    def test_evdev_lid_state_takes_priority(self) -> None:
         daemon = InputLockDaemon.__new__(InputLockDaemon)
         daemon.lid_is_closed = False
         daemon.lid_state_from_evdev = False
         daemon.safety_sample = None
-        daemon._reconcile_sleep_inhibitor = mock.Mock()
         daemon._write_state = mock.Mock()
         daemon._emit_state_event = mock.Mock()
 
@@ -302,7 +301,6 @@ class HotkeyTests(unittest.TestCase):
 
         self.assertTrue(daemon.lid_is_closed)
         self.assertTrue(daemon.lid_state_from_evdev)
-        daemon._reconcile_sleep_inhibitor.assert_called_once_with()
         daemon._emit_state_event.assert_called_once_with("lid-closed")
 
     def test_quit_request_stops_daemon_cleanly(self) -> None:
