@@ -249,6 +249,13 @@ def print_status(state: dict[str, object]) -> None:
         print(f"Measured thermal: {safety.get('thermal', 'UNKNOWN')}")
         print(f"Lid protection:   {safety.get('thermal_protection', 'UNKNOWN')}")
         print(f"Safety reason:    {safety.get('reason', 'unknown')}")
+        missing = safety.get("missing_categories")
+        if isinstance(missing, list) and missing:
+            print("Missing telemetry: " + ", ".join(str(item) for item in missing))
+    sleeping = state.get("system_sleep_in_progress") is True or (
+        isinstance(safety, dict) and safety.get("os_sleep_in_progress") is True)
+    if sleeping:
+        print("OS sleep:         in progress (no protective action meanwhile)")
     ready, why = lid_readiness(state)
     print("Lid-ignore ready: " + ("yes" if ready else "no: " + why))
     last_disable = state.get("last_lid_disable")
@@ -387,6 +394,35 @@ def expected_emergency_hotkey(configured: str) -> str:
         if isinstance(binding, str):
             return _binding_hotkey(binding) or configured
     return configured
+
+
+def protection_checks(
+    add: Callable[[str, str, str], None],
+    report: Callable[[], dict[str, object]] | None = None,
+) -> None:
+    """Doctor lines from input_lock_safety.protection_report().
+
+    The report is a read-only capability check (unit contracts, logind
+    support, the failure latch). A stale latch (from an earlier boot, or
+    followed by a successful suspend) and unit drop-ins are information; an
+    active latch blocks lid-ignore until an operator acknowledges it.
+    """
+    try:
+        if report is None:
+            from input_lock_safety import protection_report as report
+        result = report()
+    except Exception as exc:
+        add("WARNING", "Native protection", f"readiness probe unavailable: {exc}")
+        return
+    for item in result.get("info", []) or []:
+        add("INFO", "Native protection", str(item))
+    errors = [str(item) for item in result.get("errors", []) or []]
+    if not errors:
+        add("PASS", "Native protection", "ordinary suspend and the protect/failsafe units are ready")
+    elif any("previous emergency suspend failed" in item for item in errors):
+        add("FAIL", "Protection failure latch", "; ".join(errors) + "; " + RECOVERY_HINT)
+    else:
+        add("WARNING", "Native protection", "; ".join(errors))
 
 
 def run_doctor() -> int:
@@ -555,6 +591,8 @@ def run_doctor() -> int:
             healthy = ready and daemon_state.get("lid_inhibitor_active") is True and daemon_state.get("lid_controller_connected") is True
             add("PASS" if healthy else "FAIL", "Lid supervision", str(safety.get("state", "unknown")))
         add("INFO", "Critical battery policy", "LockLock does not suppress UPower; platform critical-action acceptance is separate")
+
+    protection_checks(add)
 
     print("Input Lock Doctor")
     print("=================")

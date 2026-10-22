@@ -892,7 +892,9 @@ class TrayNotifier:
             LOG.info("Ignore Lid Close turned off on request (reason=%s)", reason)
             return False
         until = self.tray_unlock_until
-        if (reason == "ipc-emergency-unlock" and until is not None
+        # The daemon publishes the normalised key "emergency-unlock" for its
+        # "ipc-emergency-unlock" reason (interface 3); older daemons the raw one.
+        if (reason in {"ipc-emergency-unlock", "emergency-unlock"} and until is not None
                 and time.monotonic() <= until):
             self.tray_unlock_until = None
             LOG.info("Ignore Lid Close turned off by the tray's Unlock/Quit action")
