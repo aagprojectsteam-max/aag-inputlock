@@ -7,6 +7,9 @@ After=graphical-session-pre.target gnome-session-initialized.target
 Type=simple
 ExecStartPre=/usr/bin/python3 /usr/lib/input-lock/input_lock_lid_policy.py disable-user
 ExecStart=/usr/lib/input-lock/input-lock-notifier
+# By design, stopping or restarting the tray (it is the lid-ignore controller)
+# unlocks all input and turns Ignore Lid Close off. Re-enable it from the tray
+# menu afterwards; it is never re-armed automatically.
 ExecStopPost=-/usr/bin/input-lock session-ended
 ExecStopPost=/usr/bin/python3 /usr/lib/input-lock/input_lock_lid_policy.py disable-user
 Restart=on-failure
