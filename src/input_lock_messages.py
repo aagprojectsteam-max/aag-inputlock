@@ -30,10 +30,15 @@ SAFETY_REASON_TEXT: Final = {
     "CONTROLLER_LOST": N_("the tray lost contact with the service while the lid may have been closed"),
 }
 LID_DISABLE_REASON_TEXT: Final = {
+    # Emitted by the daemon when it drops the controller (review U-R1): lease
+    # expiry, and a connection the tray side closed or lost.
     "controller-lease-expired": N_(
         "The Input Lock tray did not check in with the background service in time "
-        "(this can happen while the computer is going to sleep or waking up)."),
-    "controller-disconnected": N_("The Input Lock tray's connection to the background service was closed."),
+        "(for example, the tray stopped responding, or the computer was going to sleep "
+        "or waking up)."),
+    "controller-disconnected": N_(
+        "The Input Lock tray's connection to the background service was closed "
+        "(the tray was stopped, restarted or crashed)."),
     "session-inactive": N_("Your desktop session stopped being active (user switch, logout or a session problem)."),
     "authorized-session-inactive": N_(
         "Your desktop session stopped being active (user switch, logout or a session problem)."),
@@ -85,43 +90,60 @@ def _safety_cause(reason: str, state: dict[str, object]) -> str:
     return ""
 
 
-def describe_lid_disable(reason: str, state: dict[str, object] | None = None,
-                         detail: str = "") -> str:
-    """Plain-words explanation for an Ignore Lid Close loss (review A8)."""
-    state = state if isinstance(state, dict) else {}
+def _english(message: str) -> str:
+    return message
+
+
+def _describe(reason: str, state: dict[str, object], detail: str, tr) -> str:
     reason = (reason or "").strip()
     lowered = reason.lower()
     known = LID_DISABLE_REASON_TEXT.get(lowered)
     if known is not None:
-        text = _(known)
+        text = tr(known)
     else:
         cause = _safety_cause(reason, state) if (
             lowered.startswith("safety") or reason.upper() in SAFETY_REASON_TEXT
             or ":" in reason or "=" in reason) else ""
         if cause in SAFETY_REASON_TEXT:
-            text = _("Safety protection stepped in: {cause}.").format(
-                cause=_(SAFETY_REASON_TEXT[cause]))
+            text = tr(N_("Safety protection stepped in: {cause}.")).format(
+                cause=tr(SAFETY_REASON_TEXT[cause]))
         elif lowered.startswith("safety"):
-            text = (_("Safety protection stepped in ({cause}).").format(
+            text = (tr(N_("Safety protection stepped in ({cause}).")).format(
                 cause=cause.lower().replace("_", " "))
-                if cause else _("Safety protection stepped in."))
+                if cause else tr(N_("Safety protection stepped in.")))
         elif "thermal" in lowered or "temperature" in lowered or "heat" in lowered:
-            text = _("Safety protection stepped in because of heat.")
+            text = tr(N_("Safety protection stepped in because of heat."))
         elif "battery" in lowered:
-            text = _("Safety protection stepped in because of the battery level.")
+            text = tr(N_("Safety protection stepped in because of the battery level."))
         elif "telemetry" in lowered or "supervision" in lowered or "monitor" in lowered:
-            text = _("Safety supervision could not keep monitoring the computer.")
+            text = tr(N_("Safety supervision could not keep monitoring the computer."))
         elif "sleep" in lowered or "suspend" in lowered or "resume" in lowered:
-            text = _("It was lost around a sleep or wake-up of the computer.")
+            text = tr(N_("It was lost around a sleep or wake-up of the computer."))
         elif "restart" in lowered or "shutdown" in lowered:
-            text = _(LID_DISABLE_REASON_TEXT["daemon-shutdown"])
+            text = tr(LID_DISABLE_REASON_TEXT["daemon-shutdown"])
         elif reason:
-            text = _("The Input Lock service turned it off (reason: {reason}).").format(reason=reason)
+            text = tr(N_("The Input Lock service turned it off (reason: {reason}).")).format(reason=reason)
         else:
-            text = _("The Input Lock service turned it off without giving a reason.")
+            text = tr(N_("The Input Lock service turned it off without giving a reason."))
     if detail:
-        text = _("{text} Details: {detail}").format(text=text.rstrip(), detail=detail)
+        text = tr(N_("{text} Details: {detail}")).format(text=text.rstrip(), detail=detail)
     return text
+
+
+def describe_lid_disable(reason: str, state: dict[str, object] | None = None,
+                         detail: str = "") -> str:
+    """Plain-words explanation for an Ignore Lid Close loss (review A8).
+
+    Never raises: a broken translation falls back to the English text, and a
+    malformed state to the bare reason (review U-R9).
+    """
+    state = state if isinstance(state, dict) else {}
+    for tr in (_, _english):
+        try:
+            return _describe(str(reason or ""), state, str(detail or ""), tr)
+        except Exception:  # noqa: BLE001 - display text must never break a caller
+            continue
+    return str(reason or "")
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +311,24 @@ def daemon_text(text: object) -> str:
     Several reasons may be joined with "; " (readiness lists). Known runs of
     segments are translated, the rest is kept; the longest known run wins
     because some single messages contain "; " themselves.
+
+    A translated segment that ends with a command on its own line (review
+    U-R2) is followed by a line break instead of "; ", so nothing is appended
+    to the command's line. English text has no line breaks and is returned
+    exactly as the daemon sent it. Never raises: on any translation problem
+    the daemon's English text is returned (review U-R9).
     """
-    raw = str(text)
+    try:
+        raw = str(text)
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        return _daemon_text(raw)
+    except Exception:  # noqa: BLE001 - display text must never break a caller
+        return raw
+
+
+def _daemon_text(raw: str) -> str:
     whole = _translate_whole(raw)
     if whole is not None:
         return whole
@@ -309,4 +347,7 @@ def daemon_text(text: object) -> str:
         else:
             result.append(parts[index])
             index += 1
-    return "; ".join(result)
+    joined = result[0]
+    for previous, part in zip(result, result[1:]):
+        joined += ("\n" if "\n" in previous else "; ") + part
+    return joined
