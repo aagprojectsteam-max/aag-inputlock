@@ -35,6 +35,8 @@ py-modules = [
   "input_lock_notifier",
   "input_lock_lid_policy",
   "input_lock_safety",
+  "input_lock_i18n",
+  "input_lock_messages",
 ]
 
 [tool.setuptools.packages.find]

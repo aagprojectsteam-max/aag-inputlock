@@ -6,6 +6,7 @@ recursive-include systemd *.service
 recursive-include integration input-lock-system-sleep
 recursive-include gnome-extension *.js *.json
 recursive-include docs *.md
+recursive-include po *.po *.pot
 recursive-include tests *.py *.sh
 recursive-include tools *.py
 recursive-include windows *.ps1 *.spec *.md
