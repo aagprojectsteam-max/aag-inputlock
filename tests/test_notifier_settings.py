@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+# These tests assert English output; the CLI/tray now follow the user's language (U7).
+os.environ["INPUT_LOCK_UI_LANGUAGE"] = "en"
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "src"

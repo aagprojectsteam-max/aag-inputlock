@@ -28,6 +28,9 @@ from input_lock_common import (
     response_ok,
     send_request,
 )
+import input_lock_i18n as i18n
+from input_lock_i18n import N_, _, ngettext
+from input_lock_messages import daemon_text, describe_lid_disable, protection_text, thermal_text
 
 SERVICE_NAME = "input-lock.service"
 # How long a command waits for the daemon socket while the unit is starting.
@@ -70,8 +73,8 @@ def _socket_path(*, fallback: bool) -> Path:
         return load_config().socket_path
     except Exception as exc:
         print(
-            f"input-lock: configuration cannot be parsed ({exc}); "
-            f"using the default socket {DEFAULT_SOCKET_PATH}",
+            _("input-lock: configuration cannot be parsed ({error}); "
+              "using the default socket {path}").format(error=exc, path=DEFAULT_SOCKET_PATH),
             file=sys.stderr,
         )
         return DEFAULT_SOCKET_PATH
@@ -115,9 +118,10 @@ def _send_with_retry(
                 sleep(CONNECT_RETRY_INTERVAL)
                 continue
             raise ProtocolError(
-                f"cannot connect to the Input Lock daemon at {socket_path} "
-                f"({exc}; {SERVICE_NAME} is {state}). "
-                f"Check: systemctl status {SERVICE_NAME}"
+                _("cannot connect to the Input Lock daemon at {path} "
+                  "({error}; {unit} is {state}). "
+                  "Check: systemctl status {unit}").format(
+                    path=socket_path, error=exc, unit=SERVICE_NAME, state=state)
             ) from exc
 
 
@@ -137,12 +141,14 @@ def _check_protocol(response: dict[str, object]) -> None:
         return
     _protocol_warned = True
     if reported is None:
-        detail = "does not report a protocol version (it is probably older than this CLI)"
+        message = _("input-lock: warning: the running daemon does not report a protocol version "
+                    "(it is probably older than this CLI); this CLI uses protocol {protocol}. "
+                    "Restart {unit} after an update.")
     else:
-        detail = f"reports protocol {reported!r}"
+        message = _("input-lock: warning: the running daemon reports protocol {reported}; this CLI "
+                    "uses protocol {protocol}. Restart {unit} after an update.")
     print(
-        f"input-lock: warning: the running daemon {detail}; this CLI uses protocol "
-        f"{PROTOCOL_VERSION}. Restart {SERVICE_NAME} after an update.",
+        message.format(reported=repr(reported), protocol=PROTOCOL_VERSION, unit=SERVICE_NAME),
         file=sys.stderr,
     )
 
@@ -165,16 +171,17 @@ def _request(
 def _state_from(response: dict[str, object]) -> dict[str, object]:
     state = response.get("state")
     if not isinstance(state, dict):
-        raise ProtocolError("daemon response does not contain state")
+        raise ProtocolError(_("daemon response does not contain state"))
     return state
 
 
-def _yes_no(value: object, yes: str = "Locked", no: str = "Unlocked") -> str:
-    return yes if value is True else no
+def _yes_no(value: object, yes: str = N_("Locked"), no: str = N_("Unlocked")) -> str:
+    return _(yes) if value is True else _(no)
 
 
-RECOVERY_HINT = ("review 'journalctl -u input-lock-failsafe.service', then run: "
-                 "sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure")
+# English on purpose: readiness reasons are data; daemon_text() translates them.
+RECOVERY_HINT = N_("review 'journalctl -u input-lock-failsafe.service', then run: "
+                   "sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure")
 
 
 def lid_readiness(state: dict[str, object]) -> tuple[bool, str]:
@@ -215,68 +222,71 @@ def print_status(state: dict[str, object]) -> None:
     locked = state.get("locked", {})
     if not isinstance(locked, dict):
         locked = {}
-    print("Input Lock Status")
-    print("-----------------")
-    print(f"Keyboard:    {_yes_no(locked.get('keyboard'))}")
-    print(f"Mouse:       {_yes_no(locked.get('mouse'))}")
-    print(f"Touchpad:    {_yes_no(locked.get('touchpad'))}")
-    print(f"Touchscreen: {_yes_no(locked.get('touchscreen'))}")
-    print(f"Active devices:   {state.get('active_devices', '?')}")
-    print(f"Grabbed devices:  {state.get('grabbed_devices', '?')}")
-    print(f"Primary hotkey:   {state.get('primary_hotkey', '?')}")
-    print(f"Emergency hotkey: {state.get('emergency_hotkey', '?')}")
-    print(
-        "Lid close:       "
-        + ("Keep running" if state.get("ignore_lid_close") is True else "Normal action")
-    )
-    print(
-        "Lid inhibitor:   "
-        + ("Active" if state.get("lid_inhibitor_active") is True else "Inactive")
-    )
-    print(
-        "Lid supervision:  "
-        + (
-            "Verified"
+    title = _("Input Lock Status")
+    print(title)
+    print("-" * len(title))
+    print(_("Keyboard:    {state}").format(state=_yes_no(locked.get("keyboard"))))
+    print(_("Mouse:       {state}").format(state=_yes_no(locked.get("mouse"))))
+    print(_("Touchpad:    {state}").format(state=_yes_no(locked.get("touchpad"))))
+    print(_("Touchscreen: {state}").format(state=_yes_no(locked.get("touchscreen"))))
+    print(_("Active devices:   {value}").format(value=state.get("active_devices", "?")))
+    print(_("Grabbed devices:  {value}").format(value=state.get("grabbed_devices", "?")))
+    print(_("Primary hotkey:   {value}").format(value=state.get("primary_hotkey", "?")))
+    print(_("Emergency hotkey: {value}").format(value=state.get("emergency_hotkey", "?")))
+    print(_("Lid close:       {value}").format(
+        value=_("Keep running") if state.get("ignore_lid_close") is True else _("Normal action")))
+    print(_("Lid inhibitor:   {value}").format(
+        value=_("Active") if state.get("lid_inhibitor_active") is True else _("Inactive")))
+    print(_("Lid supervision:  {value}").format(
+        value=(
+            _("Verified")
             if state.get("lid_policy_healthy") is True
-            else "Safety unavailable"
+            else _("Safety unavailable")
             if state.get("ignore_lid_close") is True
-            else "Normal policy"
-        )
-    )
+            else _("Normal policy")
+        )))
     safety = state.get("safety", {})
     if isinstance(safety, dict):
-        print(f"Safety state:     {safety.get('state', 'unknown')}")
-        print(f"Measured thermal: {safety.get('thermal', 'UNKNOWN')}")
-        print(f"Lid protection:   {safety.get('thermal_protection', 'UNKNOWN')}")
-        print(f"Safety reason:    {safety.get('reason', 'unknown')}")
+        # State and reason codes are identifiers and stay as published.
+        print(_("Safety state:     {value}").format(value=safety.get("state", _("unknown"))))
+        print(_("Measured thermal: {value}").format(value=thermal_text(safety.get("thermal", "UNKNOWN"))))
+        print(_("Lid protection:   {value}").format(
+            value=protection_text(safety.get("thermal_protection", "UNKNOWN"))))
+        print(_("Safety reason:    {value}").format(value=safety.get("reason", _("unknown"))))
         missing = safety.get("missing_categories")
         if isinstance(missing, list) and missing:
-            print("Missing telemetry: " + ", ".join(str(item) for item in missing))
+            print(_("Missing telemetry: {value}").format(value=", ".join(str(item) for item in missing)))
     sleeping = state.get("system_sleep_in_progress") is True or (
         isinstance(safety, dict) and safety.get("os_sleep_in_progress") is True)
     if sleeping:
-        print("OS sleep:         in progress (no protective action meanwhile)")
+        print(_("OS sleep:         in progress (no protective action meanwhile)"))
     ready, why = lid_readiness(state)
-    print("Lid-ignore ready: " + ("yes" if ready else "no: " + why))
+    if ready:
+        print(_("Lid-ignore ready: yes"))
+    else:
+        print(_("Lid-ignore ready: no: {reason}").format(reason=daemon_text(why)))
     last_disable = state.get("last_lid_disable")
     if isinstance(last_disable, dict) and last_disable.get("reason"):
-        who = "by user" if last_disable.get("requested_by_user") is True else "automatic"
-        print(f"Last lid-ignore off: {last_disable.get('reason')} ({who})")
-    print(f"Lid switches:     {state.get('lid_switch_devices', '?')}")
-    print(f"Auto-unlock:      {state.get('auto_unlock', '?')}")
-    print(f"Daemon:           {state.get('daemon', 'unknown')}")
+        by_user = last_disable.get("requested_by_user") is True
+        print(_("Last lid-ignore off: {reason} ({who})").format(
+            reason=last_disable.get("reason"), who=_("by user") if by_user else _("automatic")))
+        if not by_user:
+            print("  " + describe_lid_disable(str(last_disable.get("reason")), state))
+    print(_("Lid switches:     {value}").format(value=state.get("lid_switch_devices", "?")))
+    print(_("Auto-unlock:      {value}").format(value=state.get("auto_unlock", "?")))
+    print(_("Daemon:           {value}").format(value=state.get("daemon", _("unknown"))))
     incomplete = state.get("incomplete_devices", [])
     if isinstance(incomplete, list) and incomplete:
-        print("WARNING: requested lock is incomplete for:")
+        print(_("WARNING: requested lock is incomplete for:"))
         for path in incomplete:
             print(f"  - {path}")
 
 
 def print_devices(devices: object) -> None:
     if not isinstance(devices, list):
-        raise ProtocolError("daemon response does not contain a device list")
+        raise ProtocolError(_("daemon response does not contain a device list"))
     if not devices:
-        print("No lockable keyboard, mouse, touchpad, or touchscreen was detected.")
+        print(_("No lockable keyboard, mouse, touchpad, or touchscreen was detected."))
         return
     for item in devices:
         if not isinstance(item, dict):
@@ -289,12 +299,12 @@ def print_devices(devices: object) -> None:
         suffix = f" [{' '.join(flags)}]" if flags else ""
         classes = ", ".join(str(part) for part in item.get("classes", []))
         print(f"{item.get('path')}  {item.get('name')}{suffix}")
-        print(f"  Classes: {classes or '-'}")
-        print(f"  Vendor:Product: {item.get('vendor_product', '-')}")
+        print(_("  Classes: {value}").format(value=classes or "-"))
+        print(_("  Vendor:Product: {value}").format(value=item.get("vendor_product", "-")))
         for link in item.get("by_id", []):
-            print(f"  Stable path: {link}")
+            print(_("  Stable path: {value}").format(value=link))
         if item.get("exclusion_reason"):
-            print(f"  Exclusion: {item.get('exclusion_reason')}")
+            print(_("  Exclusion: {value}").format(value=item.get("exclusion_reason")))
 
 
 def _run(command: Sequence[str], timeout: float = 5.0) -> subprocess.CompletedProcess[str]:
@@ -412,17 +422,18 @@ def protection_checks(
             from input_lock_safety import protection_report as report
         result = report()
     except Exception as exc:
-        add("WARNING", "Native protection", f"readiness probe unavailable: {exc}")
+        add("WARNING", _("Native protection"),
+            _("readiness probe unavailable: {error}").format(error=exc))
         return
     for item in result.get("info", []) or []:
-        add("INFO", "Native protection", str(item))
+        add("INFO", _("Native protection"), daemon_text(item))
     errors = [str(item) for item in result.get("errors", []) or []]
     if not errors:
-        add("PASS", "Native protection", "ordinary suspend and the protect/failsafe units are ready")
+        add("PASS", _("Native protection"), _("ordinary suspend and the protect/failsafe units are ready"))
     elif any("previous emergency suspend failed" in item for item in errors):
-        add("FAIL", "Protection failure latch", "; ".join(errors) + "; " + RECOVERY_HINT)
+        add("FAIL", _("Protection failure latch"), daemon_text("; ".join(errors) + "; " + RECOVERY_HINT))
     else:
-        add("WARNING", "Native protection", "; ".join(errors))
+        add("WARNING", _("Native protection"), daemon_text("; ".join(errors)))
 
 
 def run_doctor() -> int:
@@ -434,37 +445,38 @@ def run_doctor() -> int:
     os_release = _read_os_release()
     os_name = os_release.get("PRETTY_NAME", platform.platform())
     if os_release.get("ID") == "ubuntu" and os_release.get("VERSION_ID") == "26.04":
-        add("PASS", "Operating system", os_name)
+        add("PASS", _("Operating system"), os_name)
     else:
-        add("WARNING", "Operating system", f"Designed for Ubuntu 26.04; found {os_name}")
+        add("WARNING", _("Operating system"),
+            _("Designed for Ubuntu 26.04; found {name}").format(name=os_name))
 
     session_type = os.environ.get("XDG_SESSION_TYPE", "unknown")
-    add("PASS" if session_type == "wayland" else "WARNING", "Session", session_type)
+    add("PASS" if session_type == "wayland" else "WARNING", _("Session"), session_type)
 
     if shutil.which("gnome-shell"):
         result = _run(["gnome-shell", "--version"])
         detail = result.stdout.strip() or result.stderr.strip()
-        add("PASS" if result.returncode == 0 else "WARNING", "GNOME Shell", detail)
+        add("PASS" if result.returncode == 0 else "WARNING", _("GNOME Shell"), detail)
     else:
-        add("WARNING", "GNOME Shell", "gnome-shell command not found")
+        add("WARNING", _("GNOME Shell"), _("gnome-shell command not found"))
 
     try:
         config = load_config(DEFAULT_CONFIG_PATH)
-        add("PASS", "Configuration", str(DEFAULT_CONFIG_PATH))
-        add("PASS", "Emergency hotkey", config.emergency_hotkey)
+        add("PASS", _("Configuration"), str(DEFAULT_CONFIG_PATH))
+        add("PASS", _("Emergency hotkey"), config.emergency_hotkey)
     except Exception as exc:
         config = None
-        add("FAIL", "Configuration", str(exc))
+        add("FAIL", _("Configuration"), daemon_text(exc))
         if "EMERGENCY_HOTKEY" in str(exc):
-            add("FAIL", "Emergency hotkey",
-                "invalid or equal to HOTKEY; the emergency unlock shortcut may not work")
+            add("FAIL", _("Emergency hotkey"),
+                _("invalid or equal to HOTKEY; the emergency unlock shortcut may not work"))
 
     required_modules = ("evdev", "pyudev", "dbus", "gi")
     missing = [name for name in required_modules if importlib.util.find_spec(name) is None]
     if missing:
-        add("FAIL", "Python dependencies", "missing: " + ", ".join(missing))
+        add("FAIL", _("Python dependencies"), _("missing: {modules}").format(modules=", ".join(missing)))
     else:
-        add("PASS", "Python dependencies", "all required modules available")
+        add("PASS", _("Python dependencies"), _("all required modules available"))
 
     try:
         import gi
@@ -474,13 +486,13 @@ def run_doctor() -> int:
         from gi.repository import AyatanaAppIndicator3, Gtk
         del AyatanaAppIndicator3, Gtk  # Import capability probe; no UI is created.
 
-        add("PASS", "Tray dependencies", "GTK 3 and Ayatana AppIndicator available")
+        add("PASS", _("Tray dependencies"), _("GTK 3 and Ayatana AppIndicator available"))
     except Exception as exc:
-        add("FAIL", "Tray dependencies", str(exc))
+        add("FAIL", _("Tray dependencies"), str(exc))
 
     service = _run(["systemctl", "is-active", "input-lock.service"])
     service_active = service.returncode == 0 and service.stdout.strip() == "active"
-    add("PASS" if service_active else "FAIL", "System service", service.stdout.strip() or "inactive")
+    add("PASS" if service_active else "FAIL", _("System service"), service.stdout.strip() or "inactive")
 
     daemon_state: dict[str, object] | None = None
     try:
@@ -489,43 +501,48 @@ def run_doctor() -> int:
         )
         protocol = daemon_state.get("protocol")
         if protocol == PROTOCOL_VERSION:
-            add("PASS", "Daemon protocol",
-                f"version {daemon_state.get('version', '?')}, protocol {protocol}")
+            add("PASS", _("Daemon protocol"),
+                _("version {version}, protocol {protocol}").format(
+                    version=daemon_state.get("version", "?"), protocol=protocol))
         else:
-            add("WARNING", "Daemon protocol",
-                f"daemon version {daemon_state.get('version', '?')} reports protocol "
-                f"{protocol if protocol is not None else 'none'}; this CLI uses "
-                f"{PROTOCOL_VERSION}. Restart {SERVICE_NAME}.")
+            add("WARNING", _("Daemon protocol"),
+                _("daemon version {version} reports protocol {protocol}; this CLI uses "
+                  "{expected}. Restart {unit}.").format(
+                    version=daemon_state.get("version", "?"),
+                    protocol=protocol if protocol is not None else _("none"),
+                    expected=PROTOCOL_VERSION, unit=SERVICE_NAME))
         if daemon_state.get("incomplete_devices"):
-            add("WARNING", "Lock completeness", "one or more devices are not grabbed")
+            add("WARNING", _("Lock completeness"), _("one or more devices are not grabbed"))
         else:
-            add("PASS", "Lock completeness", "no incomplete lock currently reported")
+            add("PASS", _("Lock completeness"), _("no incomplete lock currently reported"))
         count = int(daemon_state.get("active_devices", 0))
-        add("PASS" if count else "FAIL", "Input detection", f"{count} managed event nodes")
+        add("PASS" if count else "FAIL", _("Input detection"),
+            ngettext("{count} managed event nodes", "{count} managed event nodes", count).format(count=count))
         lid_count = int(daemon_state.get("lid_switch_devices", 0))
         add(
             "PASS" if lid_count else "WARNING",
-            "Lid switch detection",
-            f"{lid_count} lid switch event node(s)",
+            _("Lid switch detection"),
+            ngettext("{count} lid switch event node(s)", "{count} lid switch event node(s)",
+                     lid_count).format(count=lid_count),
         )
     except Exception as exc:
-        add("FAIL", "Daemon protocol", str(exc))
+        add("FAIL", _("Daemon protocol"), daemon_text(exc))
 
     if shutil.which("notify-send"):
-        add("PASS", "Notifications", "notify-send is installed")
+        add("PASS", _("Notifications"), _("notify-send is installed"))
     else:
-        add("WARNING", "Notifications", "notify-send is missing; locking still works")
+        add("WARNING", _("Notifications"), _("notify-send is missing; locking still works"))
     add(
         "PASS" if os.environ.get("DBUS_SESSION_BUS_ADDRESS") else "WARNING",
-        "Session D-Bus",
-        "available" if os.environ.get("DBUS_SESSION_BUS_ADDRESS") else "not present in this shell",
+        _("Session D-Bus"),
+        _("available") if os.environ.get("DBUS_SESSION_BUS_ADDRESS") else _("not present in this shell"),
     )
 
     tray_service = _run(["systemctl", "--user", "is-active", "input-lock-notifier.service"])
     tray_active = tray_service.returncode == 0 and tray_service.stdout.strip() == "active"
     add(
         "PASS" if tray_active else "WARNING",
-        "Tray service",
+        _("Tray service"),
         tray_service.stdout.strip() or tray_service.stderr.strip() or "inactive",
     )
 
@@ -534,7 +551,7 @@ def run_doctor() -> int:
     primary_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock/"
     emergency_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock-emergency/"
     if paths_text is None:
-        add("WARNING", "GNOME shortcuts", "gsettings unavailable outside the graphical session")
+        add("WARNING", _("GNOME shortcuts"), _("gsettings unavailable outside the graphical session"))
     else:
         try:
             from input_lock_gnome import parse_paths
@@ -543,9 +560,9 @@ def run_doctor() -> int:
             paths = []
         missing_paths = [path for path in (primary_path, emergency_path) if path not in paths]
         if missing_paths:
-            add("WARNING", "GNOME shortcuts", "one or both fallback bindings are absent")
+            add("WARNING", _("GNOME shortcuts"), _("one or both fallback bindings are absent"))
         else:
-            add("PASS", "GNOME shortcuts", "primary and emergency fallback bindings installed")
+            add("PASS", _("GNOME shortcuts"), _("primary and emergency fallback bindings installed"))
         if config is not None and emergency_path in paths:
             binding = _gsettings_get(
                 "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:" + emergency_path,
@@ -553,13 +570,13 @@ def run_doctor() -> int:
             )
             expected = expected_emergency_hotkey(config.emergency_hotkey)
             if binding is None or not gnome_binding_matches(binding, expected):
-                add("WARNING", "GNOME emergency binding",
-                    f"{binding or 'unreadable'} does not match EMERGENCY_HOTKEY="
-                    f"{config.emergency_hotkey}; re-run "
-                    "'python3 /usr/lib/input-lock/input_lock_gnome.py install' "
-                    "(or ./update.sh) while logged in")
+                add("WARNING", _("GNOME emergency binding"),
+                    _("{binding} does not match EMERGENCY_HOTKEY={hotkey}; re-run "
+                      "'python3 /usr/lib/input-lock/input_lock_gnome.py install' "
+                      "(or ./update.sh) while logged in").format(
+                        binding=binding or _("unreadable"), hotkey=config.emergency_hotkey))
             else:
-                add("PASS", "GNOME emergency binding", f"matches {expected}")
+                add("PASS", _("GNOME emergency binding"), _("matches {hotkey}").format(hotkey=expected))
 
     if daemon_state is not None and config is not None:
         try:
@@ -572,36 +589,46 @@ def run_doctor() -> int:
                 and "keyboard" in item.get("classes", [])
             ]
             if excluded_keyboards:
-                add("PASS", "Emergency device", f"{len(excluded_keyboards)} excluded keyboard node(s)")
+                add("PASS", _("Emergency device"),
+                    ngettext("{count} excluded keyboard node(s)", "{count} excluded keyboard node(s)",
+                             len(excluded_keyboards)).format(count=len(excluded_keyboards)))
             else:
-                add("WARNING", "Emergency device", "none configured; hotkeys and auto-unlock remain available")
+                add("WARNING", _("Emergency device"),
+                    _("none configured; hotkeys and auto-unlock remain available"))
         except Exception as exc:
-            add("WARNING", "Emergency device", str(exc))
+            add("WARNING", _("Emergency device"), daemon_text(exc))
         add(
             "PASS" if config.auto_unlock_seconds > 0 else "WARNING",
-            "Default auto-unlock",
-            f"{config.auto_unlock_seconds}s" if config.auto_unlock_seconds else "disabled (enable for first test)",
+            _("Default auto-unlock"),
+            _("{seconds}s").format(seconds=config.auto_unlock_seconds) if config.auto_unlock_seconds
+            else _("disabled (enable for first test)"),
         )
         safety = daemon_state.get("safety", {})
         sample = safety.get("sample") if isinstance(safety, dict) else None
         ready, why = lid_readiness(daemon_state)
-        add("PASS" if ready else "WARNING", "Supervised lid readiness",
-            "native protection and telemetry available" if ready else "lid-ignore cannot be armed: " + why)
+        add("PASS" if ready else "WARNING", _("Supervised lid readiness"),
+            _("native protection and telemetry available") if ready
+            else _("lid-ignore cannot be armed: {reason}").format(reason=daemon_text(why)))
         if daemon_state.get("ignore_lid_close") is True:
             healthy = ready and daemon_state.get("lid_inhibitor_active") is True and daemon_state.get("lid_controller_connected") is True
-            add("PASS" if healthy else "FAIL", "Lid supervision", str(safety.get("state", "unknown")))
-        add("INFO", "Critical battery policy", "LockLock does not suppress UPower; platform critical-action acceptance is separate")
+            add("PASS" if healthy else "FAIL", _("Lid supervision"), str(safety.get("state", "unknown")))
+        add("INFO", _("Critical battery policy"),
+            _("LockLock does not suppress UPower; platform critical-action acceptance is separate"))
 
     protection_checks(add)
 
-    print("Input Lock Doctor")
-    print("=================")
+    # The [PASS]/[WARNING]/[FAIL]/[INFO] level tags stay in English so the
+    # output can be grepped and compared in bug reports in any language.
+    title = _("Input Lock Doctor")
+    print(title)
+    print("=" * len(title))
     for level, name, detail in checks:
         print(f"[{level:7}] {name}: {detail}")
     failures = sum(level == "FAIL" for level, _name, _detail in checks)
     warnings = sum(level == "WARNING" for level, _name, _detail in checks)
-    print("-----------------")
-    print(f"Summary: {len(checks) - failures - warnings} PASS, {warnings} WARNING, {failures} FAIL")
+    print("-" * len(title))
+    print(_("Summary: {passed} PASS, {warnings} WARNING, {failures} FAIL").format(
+        passed=len(checks) - failures - warnings, warnings=warnings, failures=failures))
     return 1 if failures else 0
 
 
@@ -615,15 +642,17 @@ def emergency_unlock() -> int:
         return 0
     except Exception as exc:
         if os.geteuid() != 0:
-            print(f"Daemon unlock failed: {exc}", file=sys.stderr)
-            print("Recovery: sudo systemctl stop input-lock.service", file=sys.stderr)
+            print(_("Daemon unlock failed: {error}").format(error=daemon_text(exc)), file=sys.stderr)
+            print(_("Recovery: {command}").format(command="sudo systemctl stop input-lock.service"),
+                  file=sys.stderr)
             return 2
-        print(f"Daemon did not respond ({exc}); stopping the service to close all grabs.", file=sys.stderr)
+        print(_("Daemon did not respond ({error}); stopping the service to close all grabs.").format(
+            error=daemon_text(exc)), file=sys.stderr)
         result = subprocess.run(
             ["systemctl", "stop", "input-lock.service"], check=False
         )
         if result.returncode == 0:
-            print("Input Lock service stopped; kernel file descriptors were released.")
+            print(_("Input Lock service stopped; kernel file descriptors were released."))
             return 0
         return result.returncode or 3
 
@@ -631,16 +660,21 @@ def emergency_unlock() -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="input-lock",
-        description="Safely lock and unlock local evdev input devices.",
+        description=_("Safely lock and unlock local evdev input devices."),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    status = subparsers.add_parser("status", help="show lock state")
+    status = subparsers.add_parser("status", help=_("show lock state"))
     status.add_argument("--json", action="store_true", dest="as_json")
-    subparsers.add_parser("list-devices", help="show classified input devices")
+    subparsers.add_parser("list-devices", help=_("show classified input devices"))
+    action_help = {
+        "lock": N_("lock an input class"),
+        "unlock": N_("unlock an input class"),
+        "toggle": N_("toggle an input class"),
+    }
     for action in ("lock", "unlock", "toggle"):
-        action_parser = subparsers.add_parser(action, help=f"{action} an input class")
+        action_parser = subparsers.add_parser(action, help=_(action_help[action]))
         action_parser.add_argument(
             "mode",
             choices=(
@@ -657,17 +691,17 @@ def build_parser() -> argparse.ArgumentParser:
             type=int,
             default=None,
             metavar="SECONDS",
-            help="auto-unlock after 0..86400 seconds (0 disables)",
+            help=_("auto-unlock after 0..86400 seconds (0 disables)"),
         )
-    subparsers.add_parser("emergency-unlock", help="release every input class")
-    change = subparsers.add_parser("set-hotkey", help="change the primary shortcut")
-    change.add_argument("hotkey", help="for example CTRL+ALT+Z")
-    lid = subparsers.add_parser("lid-ignore", help="ignore or restore lid-close events")
+    subparsers.add_parser("emergency-unlock", help=_("release every input class"))
+    change = subparsers.add_parser("set-hotkey", help=_("change the primary shortcut"))
+    change.add_argument("hotkey", help=_("for example {shortcut}").format(shortcut="CTRL+ALT+Z"))
+    lid = subparsers.add_parser("lid-ignore", help=_("ignore or restore lid-close events"))
     lid.add_argument("state", choices=("on", "off"))
-    subparsers.add_parser("doctor", help="run installation and safety checks")
-    logs = subparsers.add_parser("logs", help="show recent daemon journal")
+    subparsers.add_parser("doctor", help=_("run installation and safety checks"))
+    logs = subparsers.add_parser("logs", help=_("show recent daemon journal"))
     logs.add_argument("-n", "--lines", type=int, default=200)
-    subparsers.add_parser("reload", help="validate and reload configuration")
+    subparsers.add_parser("reload", help=_("validate and reload configuration"))
     # Internal fixed commands used by GNOME, the sleep hook and the notifier
     # service. Without help= argparse leaves them out of the command list, and
     # the explicit metavar keeps them out of the usage line.
@@ -679,6 +713,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Before the parser: its help texts are translated when it is built.
+    # setup() never raises; on any problem the CLI simply stays in English.
+    i18n.setup()
     args = build_parser().parse_args(argv)
     try:
         if args.command == "status":
@@ -693,7 +730,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command in {"lock", "unlock", "toggle"}:
             if args.timeout is not None and not 0 <= args.timeout <= 86_400:
-                raise ProtocolError("--timeout must be between 0 and 86400")
+                raise ProtocolError(_("--timeout must be between 0 and 86400"))
             payload: dict[str, object] = {"cmd": args.command, "mode": args.mode}
             if args.timeout is not None:
                 payload["timeout"] = args.timeout
@@ -708,7 +745,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             from input_lock_gnome import set_primary
 
             if set_primary(hotkey) != 0:
-                raise ProtocolError("the shortcut conflicts with another GNOME binding")
+                raise ProtocolError(_("the shortcut conflicts with another GNOME binding"))
             try:
                 response = _request({"cmd": "set-hotkey", "hotkey": hotkey})
             except Exception:
@@ -736,7 +773,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ).returncode
         if args.command == "reload":
             response = _request({"cmd": "reload"})
-            print(response.get("message", "reload scheduled"))
+            print(daemon_text(response.get("message", "reload scheduled")))
             return 0
         if args.command in INTERNAL_COMMANDS:
             # Called by GNOME, the sleep hook and the notifier unit: fall back
@@ -750,7 +787,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
     except Exception as exc:
-        print(f"input-lock: {exc}", file=sys.stderr)
+        print(_("input-lock: {error}").format(error=daemon_text(exc)), file=sys.stderr)
         return 1
     return 1
 

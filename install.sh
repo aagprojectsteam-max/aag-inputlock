@@ -30,6 +30,8 @@ PAYLOAD_FIXED=(
     src/input_lock_gnome.py
     src/input_lock_lid_policy.py
     src/input_lock_safety.py
+    src/input_lock_i18n.py
+    src/input_lock_messages.py
     src/input-lock
     src/input-lock-daemon
     src/input-lock-notifier
@@ -50,6 +52,7 @@ PAYLOAD_FIXED=(
     systemd/input-lock-failsafe.service
     systemd/input-lock-notifier.service
     integration/input-lock-system-sleep
+    tools/po_compile.py
 )
 # Python modules installed into /usr/lib/input-lock (besides locklock_core/).
 LIB_MODULES=(
@@ -60,6 +63,15 @@ LIB_MODULES=(
     input_lock_gnome.py
     input_lock_lid_policy.py
     input_lock_safety.py
+    input_lock_i18n.py
+    input_lock_messages.py
+)
+# User-interface translations: po/<lang>.po is compiled in the stage (msgfmt,
+# or tools/po_compile.py when msgfmt is missing) and installed as
+# /usr/share/locale/<lang>/LC_MESSAGES/input-lock.mo. Each one is also listed
+# in BACKUP_ITEMS and RESTORE_ITEMS below.
+LOCALES=(
+    he
 )
 # Executables installed into /usr/lib/input-lock.
 LIB_PROGRAMS=(
@@ -98,6 +110,7 @@ BACKUP_ITEMS=(
     /usr/share/icons/hicolor/scalable/status/input-lock-unlocked-lid-ignored.svg
     /usr/share/applications/input-lock.desktop
     /usr/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team
+    /usr/share/locale/he/LC_MESSAGES/input-lock.mo
     /etc/UPower/UPower.conf.d/99-zzzz-input-lock-no-auto-sleep.conf
     /etc/UPower/UPower.conf.d/.input-lock-restore-pending.json
 )
@@ -124,6 +137,7 @@ RESTORE_ITEMS=(
     /usr/share/icons/hicolor/scalable/status/input-lock-unlocked-lid-ignored.svg
     /usr/share/applications/input-lock.desktop
     /usr/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team
+    /usr/share/locale/he/LC_MESSAGES/input-lock.mo
 )
 
 usage() {
@@ -229,8 +243,11 @@ root_python() {
 }
 
 collect_payload() {
-    local path
+    local path lang
     PAYLOAD=("${PAYLOAD_FIXED[@]}")
+    for lang in "${LOCALES[@]}"; do
+        PAYLOAD+=("po/$lang.po")
+    done
     for path in "$PROJECT_DIR"/src/locklock_core/*.py; do
         [[ -e "$path" ]] || fail "package is incomplete: src/locklock_core"
         PAYLOAD+=("${path#"$PROJECT_DIR"/}")
@@ -339,6 +356,7 @@ validate_stage() {
     for item in "${PYTHON_PROGRAMS[@]}"; do
         python_files+=("$STAGE/$item")
     done
+    python_files+=("$STAGE/tools/po_compile.py")
     root_python - "$STAGE/.compiled" "${python_files[@]}" <<'PY' \
         || fail 'the Python payload does not compile; nothing was changed'
 import py_compile
@@ -349,6 +367,22 @@ output = Path(sys.argv[1])
 output.mkdir(mode=0o700)
 for index, source in enumerate(sys.argv[2:]):
     py_compile.compile(source, cfile=str(output / f"{index}.pyc"), doraise=True)
+PY
+    for item in "${LOCALES[@]}"; do
+        compile_catalog "$STAGE/po/$item.po" "$STAGE/locale/$item/LC_MESSAGES/input-lock.mo" \
+            || fail "po/$item.po does not compile; nothing was changed"
+    done
+    root_python - "$STAGE/locale" "${LOCALES[@]}" <<'PY' \
+        || fail 'a compiled translation catalogue is invalid; nothing was changed'
+import gettext
+import sys
+
+root, *languages = sys.argv[1:]
+for language in languages:
+    with open(f"{root}/{language}/LC_MESSAGES/input-lock.mo", "rb") as handle:
+        catalogue = gettext.GNUTranslations(handle)
+    if catalogue.info().get("language") != language or catalogue.gettext("Input Lock") == "Input Lock":
+        raise SystemExit(f"{language}: catalogue header or content is wrong")
 PY
     bash -n "$STAGE/src/input-lock-launch" || fail 'src/input-lock-launch has a shell syntax error'
     sh -n "$STAGE/integration/input-lock-system-sleep" || fail 'the system-sleep hook has a shell syntax error'
@@ -385,6 +419,19 @@ print(config.socket_path)
     [[ "$effective_uid" == "$TARGET_UID" ]] \
         || fail "existing configuration authorizes UID $effective_uid, not target UID $TARGET_UID"
     [[ "$SOCKET_PATH" == /* ]] || fail 'cannot determine the daemon socket path'
+}
+
+# Compile one .po catalogue inside the stage. msgfmt --check also validates
+# the python-brace-format placeholders; the stdlib fallback keeps hosts
+# without the gettext tools installable.
+compile_catalog() {
+    local source=$1 target=$2
+    install -d -m 0755 "$(dirname -- "$target")"
+    if command -v msgfmt >/dev/null 2>&1; then
+        msgfmt --check -o "$target" "$source"
+    else
+        root_python "$STAGE/tools/po_compile.py" "$source" "$target"
+    fi
 }
 
 install_packages() {
@@ -454,6 +501,10 @@ install_files() {
         /usr/share/icons/hicolor/scalable/status/
     install -d -m 0755 /usr/share/pixmaps
     install -m 0644 "$STAGE/assets/aag-projects-team.png" /usr/share/pixmaps/input-lock-about.png
+    for item in "${LOCALES[@]}"; do
+        install -D -m 0644 "$STAGE/locale/$item/LC_MESSAGES/input-lock.mo" \
+            "/usr/share/locale/$item/LC_MESSAGES/input-lock.mo"
+    done
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache --quiet --force /usr/share/icons/hicolor || true
     fi

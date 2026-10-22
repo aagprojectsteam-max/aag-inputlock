@@ -11,6 +11,9 @@ import subprocess
 import sys
 from typing import Final
 
+import input_lock_i18n as i18n
+from input_lock_i18n import _
+
 
 ROOT_SCHEMA: Final = "org.gnome.settings-daemon.plugins.media-keys"
 KEY: Final = "custom-keybindings"
@@ -125,7 +128,8 @@ def emergency_binding() -> str:
 
         return hotkey_to_binding(load_config().emergency_hotkey)
     except Exception as exc:
-        print(f"Using the default emergency shortcut {EMERGENCY_BINDING}: {exc}", file=sys.stderr)
+        print(_("Using the default emergency shortcut {binding}: {error}").format(
+            binding=EMERGENCY_BINDING, error=exc), file=sys.stderr)
         return EMERGENCY_BINDING
 
 
@@ -165,7 +169,8 @@ def check(primary_binding: str = PRIMARY_BINDING, emergency: str | None = None) 
     collisions = find_collisions(primary_binding, emergency)
     if collisions:
         for path, binding in collisions:
-            print(f"Collision: {binding} is already assigned at {path}", file=sys.stderr)
+            print(_("Collision: {binding} is already assigned at {path}").format(
+                binding=binding, path=path), file=sys.stderr)
         return 2
     return 0
 
@@ -174,7 +179,7 @@ def install() -> int:
     primary_binding = hotkey_to_binding(daemon_primary_hotkey())
     emergency = emergency_binding()
     if canonical_binding(primary_binding) == canonical_binding(emergency):
-        raise ValueError("the primary shortcut must differ from the emergency shortcut")
+        raise ValueError(_("the primary shortcut must differ from the emergency shortcut"))
     if check(primary_binding, emergency) != 0:
         return 2
     current = paths()
@@ -183,13 +188,13 @@ def install() -> int:
     values = (
         (
             PRIMARY_PATH,
-            "Input Lock — toggle keyboard and mouse",
+            _("Input Lock — toggle keyboard and mouse"),
             "/usr/bin/input-lock gnome-hotkey",
             primary_binding,
         ),
         (
             EMERGENCY_PATH,
-            "Input Lock — emergency unlock",
+            _("Input Lock — emergency unlock"),
             "/usr/bin/input-lock gnome-emergency",
             emergency,
         ),
@@ -198,7 +203,7 @@ def install() -> int:
         run("set", schema(path), "name", quote(name))
         run("set", schema(path), "command", quote(command))
         run("set", schema(path), "binding", quote(binding))
-    print("GNOME fallback shortcuts installed.")
+    print(_("GNOME fallback shortcuts installed."))
     return 0
 
 
@@ -206,16 +211,16 @@ def set_primary(hotkey: str) -> int:
     binding = hotkey_to_binding(hotkey)
     emergency = emergency_binding()
     if canonical_binding(binding) == canonical_binding(emergency):
-        raise ValueError("the primary shortcut must differ from the emergency shortcut")
+        raise ValueError(_("the primary shortcut must differ from the emergency shortcut"))
     if PRIMARY_PATH not in paths():
         # Writing the relocatable schema alone would have no visible effect.
-        raise RuntimeError(
+        raise RuntimeError(_(
             "the Input Lock GNOME shortcuts are not installed; run "
-            "'input_lock_gnome.py install' (or reinstall Input Lock) first")
+            "'input_lock_gnome.py install' (or reinstall Input Lock) first"))
     if check(binding, emergency) != 0:
         return 2
     run("set", schema(PRIMARY_PATH), "binding", quote(binding))
-    print(f"GNOME primary shortcut set to {binding}.")
+    print(_("GNOME primary shortcut set to {binding}.").format(binding=binding))
     return 0
 
 
@@ -229,7 +234,7 @@ def remove() -> int:
                 run("reset", schema(path), key)
             except Exception:
                 pass
-    print("GNOME fallback shortcuts removed.")
+    print(_("GNOME fallback shortcuts removed."))
     return 0
 
 
@@ -241,11 +246,12 @@ def status() -> int:
             print(f"{path}: {binding_for(path)}")
             found += 1
         else:
-            print(f"{path}: missing")
+            print(_("{path}: missing").format(path=path))
     return 0 if found == len(OWN_PATHS) else 1
 
 
 def main() -> int:
+    i18n.setup()
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "action", choices=("check", "install", "remove", "status", "set-primary")
@@ -255,11 +261,11 @@ def main() -> int:
     try:
         if args.action == "set-primary":
             if not args.hotkey:
-                parser.error("set-primary requires HOTKEY")
+                parser.error(_("set-primary requires HOTKEY"))
             return set_primary(args.hotkey)
         return {"check": check, "install": install, "remove": remove, "status": status}[args.action]()
     except Exception as exc:
-        print(f"GNOME shortcut operation failed: {exc}", file=sys.stderr)
+        print(_("GNOME shortcut operation failed: {error}").format(error=exc), file=sys.stderr)
         return 1
 
 

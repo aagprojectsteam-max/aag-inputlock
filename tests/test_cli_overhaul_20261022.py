@@ -21,6 +21,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# These tests assert English output; the CLI/tray now follow the user's language (U7).
+os.environ["INPUT_LOCK_UI_LANGUAGE"] = "en"
+
 import input_lock_cli as cli  # noqa: E402
 from input_lock_common import (  # noqa: E402
     DEFAULT_SOCKET_PATH,

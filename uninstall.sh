@@ -181,6 +181,8 @@ Gio.Settings.sync()
         /usr/share/icons/hicolor/scalable/status/input-lock-unlocked-lid-ignored.svg \
         /etc/UPower/UPower.conf.d/99-zzzz-input-lock-no-auto-sleep.conf
     rm -rf -- "/usr/share/gnome-shell/extensions/$EXTENSION_UUID"
+    # Translation catalogues of the input-lock text domain, every language.
+    rm -f -- /usr/share/locale/*/LC_MESSAGES/input-lock.mo
     rm -rf -- /usr/lib/input-lock /etc/input-lock /usr/share/doc/input-lock
     rm -rf -- /run/input-lock
 

@@ -22,6 +22,9 @@ import unittest  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 from unittest import mock  # noqa: E402
 
+# These tests assert English output; the CLI/tray now follow the user's language (U7).
+os.environ["INPUT_LOCK_UI_LANGUAGE"] = "en"
+
 from test_daemon_logic import daemon_module  # noqa: E402  (installs evdev/pyudev stubs if needed)
 from test_daemon_overhaul_20261022 import Clock, armed_daemon, base_daemon, drain, make_sample  # noqa: E402
 from test_remediation_linux import daemon_fixture  # noqa: E402
