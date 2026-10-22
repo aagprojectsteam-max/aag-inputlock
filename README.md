@@ -21,6 +21,18 @@ Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUA
 - **Cursor hiding** is driven by GNOME idle watches; any input counts as activity.
 - **Removed:** the `lid_power_policy_enabled` / `lid_battery_threshold` user settings (old values in `/var/lib/input-lock/user-settings.json` are ignored; the state names them under `unsupported_settings`), the `set-lid-power-policy` / `set-lid-policy-health` IPC commands and the unused AAG compatibility module. A refused tray-controller claim now returns an error with a reason.
 
+## Language / שפה
+
+The tray menu, notifications, dialogs, the CLI (`status`, `doctor`, errors, `--help`) and the GNOME shortcut names use gettext (text domain `input-lock`). English is the default and the fallback; a Hebrew translation is included (`po/he.po`).
+
+- **Automatic (default):** the language follows the session locale (`LC_ALL`, `LC_MESSAGES`, `LANG`, then `LANGUAGE`). A Hebrew session such as `he_IL.UTF-8` gets the Hebrew interface with a right-to-left layout.
+- **Per user:** *Settings… → Language* offers *Automatic*, *עברית* and *English*. The choice is stored as `ui_language` (`auto`, `he` or `en`) in `~/.config/input-lock/cursor-settings.json`. The CLI uses it at once; the tray uses it the next time it starts. The tray is not restarted for you, because stopping it turns Ignore Lid Close off.
+- **English for one command,** for example for a bug report: `INPUT_LOCK_UI_LANGUAGE=en input-lock doctor`.
+- **Always English:** log lines and journal events, status codes such as `LID_IGNORE_ARMED`, the doctor level tags (`[PASS]`, `[FAIL]`), the IPC protocol, and the installer scripts. Messages from the root service are translated only where the tray or CLI shows them.
+- **Build:** `install.sh` compiles `po/*.po` with `msgfmt` (or `tools/po_compile.py` when the gettext tools are missing) to `/usr/share/locale/<lang>/LC_MESSAGES/input-lock.mo`. In a source checkout run `python3 tools/po_compile.py --build`. After changing user-facing strings run `python3 tools/po_extract.py` and update `po/he.po`; the tests fail on any missing, fuzzy or inconsistent entry.
+
+ממשק המשתמש זמין גם בעברית: הוא נבחר אוטומטית לפי שפת המערכת, ואפשר לבחור עברית או אנגלית בחלון ההגדרות (‎`Settings…`‎ ← שפה).
+
 **License:** MIT — see [LICENSE](LICENSE).
 
 הפרויקט כולל שני backends נפרדים: תמיכת Ubuntu 26.04 LTS, ‏GNOME 50 ו־Wayland המוכחת, וגרסת בטא ל־Windows 11 x64. שתי המערכות חולקות ליבת הגדרות, פרוטוקול ומדיניות, אך משתמשות במנגנוני מערכת מקוריים ונפרדים.
@@ -41,7 +53,7 @@ Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUA
 
 ה־CLI מתקשר עם השירות באמצעות Unix socket עם פרוטוקול JSON מצומצם. ה־socket נגיש לחיבור מקומי, אך השירות בודק כל לקוח באמצעות `SO_PEERCRED` ומקבל פקודות רק מ־root או מה־UID שהוגדר בהתקנה. אין `eval`, אין shell commands מהלקוח ואין פרמטר חופשי לביצוע.
 
-סמל ה־Tray וההתראות מופעלים מתהליך משתמש נפרד. הוא יורש את D-Bus הנכון מה־user manager של systemd, ולכן שירות המערכת אינו מנחש `DISPLAY`, ‏`WAYLAND_DISPLAY` או `DBUS_SESSION_BUS_ADDRESS`. ממשק ה־Tray באנגלית וכולל נעילה/שחרור, שינוי קיצור, התעלמות מסגירת מכסה ו־About.
+סמל ה־Tray וההתראות מופעלים מתהליך משתמש נפרד. הוא יורש את D-Bus הנכון מה־user manager של systemd, ולכן שירות המערכת אינו מנחש `DISPLAY`, ‏`WAYLAND_DISPLAY` או `DBUS_SESSION_BUS_ADDRESS`. ממשק ה־Tray זמין באנגלית ובעברית (ראו „Language / שפה” למעלה) וכולל נעילה/שחרור, שינוי קיצור, התעלמות מסגירת מכסה ו־About.
 
 הפעולה `Quit` בתפריט ה־Tray מבקשת אישור, משחררת את כל התקני הקלט ומסיימת ביציאה תקינה הן את ה־daemon והן את תהליך ה־Tray. כדי להפעיל את Input Lock שוב יש להריץ `sudo systemctl start input-lock.service` ולאחריו `systemctl --user start input-lock-notifier.service`.
 
@@ -49,7 +61,7 @@ Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUA
 
 תפריט ה־Tray כולל גם את האפשרות `Start at Login`. סימון או ביטול שלה מעדכן יחד את שירות המערכת ואת שירות ה־Tray; Ubuntu מציג בקשת אימות גרפית לשינוי שירות המערכת. שירות ה־Tray מסודר אחרי `gnome-session-initialized.target`, ולכן הוא אינו מנסה ליצור חלון לפני שחיבור Wayland של GNOME מוכן. אם התצוגה עדיין אינה זמינה הוא יוצא ללא core-dump ו־systemd מנסה שוב. ביטול האפשרות אינו סוגר את התוכנה מיד—לכך מיועדת הפעולה `Quit`.
 
-הפעולה `Settings…` פותחת חלון הגדרות מאוחד. בחלון ניתן לבחור אילו סוגי קלט ייכללו בנעילה הרגילה—מקלדת, עכבר ו־Touchpad, ומסך מגע—לשנות את הקיצור הראשי ולהחליט אם Input Lock יופעל אוטומטית בכניסה למשתמש. יש לבחור לפחות סוג קלט אחד. הבחירות נשמרות בקובץ ההעדפות ואינן אובדות בעדכון או בהפעלה מחדש.
+הפעולה `Settings…` פותחת חלון הגדרות מאוחד. בחלון ניתן לבחור אילו סוגי קלט ייכללו בנעילה הרגילה—מקלדת, עכבר ו־Touchpad, ומסך מגע—לשנות את הקיצור הראשי, להחליט אם Input Lock יופעל אוטומטית בכניסה למשתמש ולבחור את שפת הממשק (אוטומטית, עברית או אנגלית; השינוי חל בהפעלה הבאה של ה־Tray). יש לבחור לפחות סוג קלט אחד. הבחירות נשמרות בקובץ ההעדפות ואינן אובדות בעדכון או בהפעלה מחדש.
 
 באותו חלון ניתן להפעיל `Automatically lock after no activity` ולבחור זמן של 1–1440 דקות. כל אירוע מקלדת, עכבר, Touchpad או מסך מגע מאפס את הספירה. הטיימר פועל רק ב־Session המורשה וכשהקלט משוחרר; בסיום הזמן הוא נועל את סוגי הקלט שנבחרו באותו חלון. ביטול תיבת הסימון משבית את Auto-Lock, וברירת המחדל לאחר התקנה חדשה היא כבויה.
 
@@ -338,7 +350,7 @@ gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/or
 
 ### תפריט ה־Tray
 
-לחיצה על הסמל מציגה תפריט באנגלית:
+לחיצה על הסמל מציגה תפריט. השמות להלן הם של הממשק האנגלי; בממשק העברי הם מופיעים בעברית (למשל „התעלמות מסגירת מכסה”):
 
 - `Lock Input` / `Unlock Input` — נעילה או שחרור של מצב ברירת־המחדל.
 - `Shortcut: …` — הקיצור הפעיל כעת.
