@@ -122,10 +122,16 @@ class ClientState:
 
 def session_is_eligible(properties: dict[str, object]) -> bool:
     """Only an active local graphical user on a real seat may control locking."""
+    return session_is_locked_local(properties, require_unlocked=True)
+
+
+def session_is_locked_local(properties: dict[str, object], *, require_unlocked: bool = False) -> bool:
+    """The active local graphical session of the user, optionally only if unlocked."""
     seat = properties.get("Seat", ())
+    locked = bool(properties.get("LockedHint", False))
     return (
         bool(properties.get("Active")) and not bool(properties.get("Remote", True))
-        and not bool(properties.get("LockedHint", False))
+        and (not locked if require_unlocked else True)
         and properties.get("Class") == "user"
         and properties.get("Type") in {"wayland", "x11"}
         and isinstance(seat, (tuple, list)) and len(seat) == 2 and bool(seat[0])
@@ -217,6 +223,7 @@ class LogindMonitor(threading.Thread):
                 nonlocal session_error_reported
                 paths: set[str] = set()
                 active_paths: set[str] = set()
+                locked_paths: set[str] = set()
                 try:
                     for row in manager.ListSessions(timeout=3):
                         if int(row[1]) == self.authorized_uid:
@@ -231,11 +238,14 @@ class LogindMonitor(threading.Thread):
                             values = dict(properties.GetAll("org.freedesktop.login1.Session", timeout=3))
                             if session_is_eligible(values):
                                 active_paths.add(path)
+                            elif session_is_locked_local(values):
+                                locked_paths.add(path)
                 except Exception as exc:  # D-Bus failures must remove eligibility.
                     if not session_error_reported:
                         LOG.warning("event=LOGIND_UNAVAILABLE error=%s", exc)
                     session_error_reported = True
                     active_paths.clear()
+                    locked_paths.clear()
                 if active_paths:
                     if session_error_reported:
                         LOG.info("event=LOGIND_RESTORED")
@@ -243,7 +253,8 @@ class LogindMonitor(threading.Thread):
                     self.callback("logind-healthy")
                 self._authorized_paths = paths
                 self._authorized_active_paths = active_paths
-                self.callback("session-active" if active_paths else "session-inactive")
+                self.callback("session-active" if active_paths else
+                              "session-locked" if locked_paths else "session-inactive")
 
             def prepare_for_sleep(starting: object) -> None:
                 if bool(starting):
@@ -707,12 +718,22 @@ class InputLockDaemon:
             except queue.Empty:
                 break
             if event == "prepare-sleep" and self.config.unlock_on_suspend:
-                self._emergency_unlock("system-suspend")
+                self._release_inputs_keep_lid("system-suspend")
             elif event == "session-active":
                 if not self.authorized_session_active:
                     self.last_input_activity = time.monotonic()
                 self.authorized_session_active = True
                 self._write_state()
+            elif event == "session-locked":
+                # The user's own local session with the screen locked (GNOME
+                # also locks on every suspend). New locks/lid changes still need
+                # an unlocked session, but continuous lid-ignore is kept.
+                was_active = self.authorized_session_active
+                self.authorized_session_active = False
+                if self.config.unlock_on_session_switch and was_active:
+                    self._release_inputs_keep_lid(
+                        "authorized-session-locked",
+                        preserve_safety=self.safety.state == "PROTECTIVE_ACTION_PENDING")
             elif event == "session-inactive":
                 was_active = self.authorized_session_active
                 self.authorized_session_active = False
@@ -1902,6 +1923,32 @@ class InputLockDaemon:
         self._emergency_unlock("release-all")
 
 
+    def _release_inputs_keep_lid(self, reason: str, *, preserve_safety: bool = False) -> None:
+        """Release keyboard/mouse locks without dropping the user's lid-ignore.
+
+        User decision 2026-10-22: continuous lid-ignore means "never sleep on
+        lid close". A suspend from another source (menu, idle, another power
+        manager) or a locked screen must not silently turn it off. Input locks
+        are still released, so the user can type at the lock screen or after
+        resume. The lid-switch grab, the logind lid inhibitor and the armed
+        thermal and battery safety stay in place; only that safety, a lost
+        tray controller, logout, or the user ends lid-ignore. A protective
+        (safety) suspend releases lid-ignore itself before it requests sleep.
+        """
+        if not self.ignore_lid_close:
+            self._emergency_unlock(reason, preserve_safety=preserve_safety)
+            return
+        try:
+            self.pending_hotkey = None
+            self.auto_unlock_deadline = None
+            # Records state and emits the event itself.
+            self._set_locked_kinds(set(), reason=reason + "-lid-ignore-kept", timeout=None)
+        except Exception:
+            LOG.exception("Input release before suspend failed; using the full emergency unlock")
+            self._emergency_unlock(reason)
+            return
+        LOG.info("Input locks released before suspend; continuous lid-ignore kept; reason=%s", reason)
+
     def _emergency_unlock(self, reason: str, *, preserve_safety: bool = False) -> None:
         # No acquisition, device reopening, persistence prerequisite, or policy
         # reconciliation may precede release. Each restriction is independent.
@@ -2241,7 +2288,7 @@ class InputLockDaemon:
                 response = {"ok": True, "state": self._state_payload()}
             elif cmd == "prepare-sleep":
                 if self.config.unlock_on_suspend:
-                    self._emergency_unlock("system-sleep-hook")
+                    self._release_inputs_keep_lid("system-sleep-hook")
                 response = {"ok": True, "state": self._state_payload()}
             elif cmd == "reload":
                 self.reload_requested = True
