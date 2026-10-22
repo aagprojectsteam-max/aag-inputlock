@@ -91,15 +91,36 @@ window and the per-sensor evidence are kept in
 
 ## Sleep window
 
-`input-lock.service` is `Type=notify` with `WatchdogSec=20s`. Between
+`input-lock.service` is `Type=notify` with `WatchdogSec=60s`: longer than
+one 20-second kernel freezer timeout (`/sys/power/pm_freeze_timeout`), so a
+single freeze outside a sleep window is not fatal. Between
 `PrepareForSleep(true)` and resume plus one controller timeout (35 s), the
 controller and lease deadlines are paused and the daemon's systemd watchdog
-is extended to 300 seconds with `sd_notify WATCHDOG_USEC` (restored to 20
-seconds afterwards). The system-sleep hook calls `input-lock prepare-sleep`
-before and `input-lock resume-sleep` after a sleep; the daemon also reacts to
-logind's `PrepareForSleep` signal, and either source opens or closes the same
-window. A kernel freeze that stalls for 20 seconds therefore no longer kills
-the daemon or drops lid-ignore.
+is extended to 300 seconds with `sd_notify WATCHDOG_USEC`. The system-sleep
+hook calls `input-lock prepare-sleep` before and `input-lock resume-sleep`
+after a sleep; the daemon also reacts to logind's `PrepareForSleep` signal,
+and either source opens or closes the same window. A failing suspend can make
+several 20-second freeze attempts inside one `PrepareForSleep` window (on
+2026-10-22 two attempts each, about 105 s from `PrepareForSleep` to the final
+failure); none of them kills the daemon or drops lid-ignore.
+
+**Watchdog restore.** The window can close for supervision purposes (resume
+signal, `post` hook, resume evidence or the cap), but the watchdog goes back
+to 60 s only once logind reports `PreparingForSleep=false` (the
+`PrepareForSleep(false)` signal or a telemetry sample read after the
+extension). It is never restored while logind still reports
+`PreparingForSleep=true`. When that state is unknown (no reading, or
+telemetry stopped for more than 30 s) it stays extended until the window cap
+has passed. The same `PreparingForSleep=false` reading tells the logind
+monitor that the sleep is over, so it takes its delay inhibitor again even if
+the `PrepareForSleep(false)` signal itself was missed.
+
+**Window cap.** Read at runtime when the window opens:
+`InhibitDelayMaxSec + 60 s + 3 × pm_freeze_timeout`, clamped to 150–300 s.
+`InhibitDelayMaxUSec` comes from logind (read by the monitor's refresh
+thread; 30 s if unknown) and `pm_freeze_timeout` from sysfs (20 s if
+unreadable). With this host's 30 s and 20 s that is 30 + 60 + 3 × 20 = 150 s,
+which covers the 105 s failing suspend above.
 
 Who can open it, and how the daemon sees the signal in time:
 
@@ -112,13 +133,16 @@ Who can open it, and how the daemon sees the signal in time:
   `block`; polkit allows `input-lockd` exactly
   `org.freedesktop.login1.inhibit-delay-sleep`). Its `PrepareForSleep(true)`
   handler extends the watchdog first and only then releases the lock, so
-  logind waits (at most `InhibitDelayMaxSec`, 5 s by default) until the
-  extension is in place. The lock is taken again after resume.
+  logind waits (at most `InhibitDelayMaxSec`, 5 s by default, 30 s on this
+  host) until the extension is in place. The lock is taken again after
+  resume.
 - The logind monitor dispatches signals on its own private connection; the
   periodic session and UPower queries run on a separate thread and
   connection, so a signal is never queued behind them. Every monitor restart
   opens fresh connections, and a bus disconnect (for example a dbus-broker
-  restart) stops the monitor so that the daemon restarts it.
+  restart) stops the monitor so that the daemon restarts it. Each monitor run
+  tags its events with a generation; events of a retired run (its refresh
+  worker is joined for only 1 s) are dropped.
 
 Inside the window:
 
@@ -133,17 +157,23 @@ Inside the window:
   missing or unreadable); thermal and telemetry causes are re-evaluated by the
   safety policy from fresh samples. A decision the policy itself already made
   is acted on as soon as the window closes;
-- the window closes early on evidence that the machine is awake again: a
-  change of `/sys/power/suspend_stats/success` or `fail`, or logind reporting
-  `PreparingForSleep=false` in two consecutive samples;
-- a window without a resume signal or such evidence closes after 120 s of
-  awake time (the monotonic clock does not run while suspended).
+- the window closes early on evidence that the machine is awake again:
+  logind reporting `PreparingForSleep=false` in two consecutive samples, or a
+  change of `/sys/power/suspend_stats/success` or `fail` **together with** a
+  `PreparingForSleep=false` reading. The kernel bumps those counters after
+  every failed freeze attempt, and one suspend can make several attempts
+  while logind is still preparing, so a counter change alone never closes
+  the window;
+- a window without a resume signal or such evidence closes at the window cap
+  (150 s on this host) of awake time (the monotonic clock does not run while
+  suspended).
 
 With an armed lid-ignore, a closed lid, a TCPU at 106 °C and a forged
 `prepare-sleep` that never resumes, protection now acts after about 62 s
 (user request refused) or, for a real root-opened window without any resume
-evidence, at the 120 s window limit, with the heat seen during the window
-already counted.
+evidence, at the window cap (150 s here), with the heat seen during the
+window already counted. Firmware and hardware thermal trips are independent
+of this window.
 
 ## When lid-ignore turns itself off
 
@@ -300,8 +330,8 @@ There is no AAG readiness exemption that simply sets this field true.
    (`OBSERVE_BUDGET_SECONDS`). No AAG receipt or wakeguard state is read. This
    confirms a kernel cycle, not peripheral or storage recovery beyond
    systemd's result.
-4. Primary failure, daemon crash or the 20-second watchdog (300 seconds during
-   a sleep transition) starts
+4. Primary failure, daemon crash or the 60-second watchdog (300 seconds during
+   a sleep transition, until logind stops preparing) starts
    `input-lock-failsafe.service`. It stops InputLock synchronously before one
    final ordinary suspend attempt, including when the journal is corrupt or
    missing (a missing journal means nothing was pending: no request, no latch).
@@ -388,8 +418,9 @@ need acknowledging to arm again; acknowledging it only archives it.
 
 ## Units
 
-- `input-lock.service`: `Type=notify`, `NotifyAccess=main`, `WatchdogSec=20s`
-  (extended to 300 s by the daemon during a sleep window), `Restart=no`,
+- `input-lock.service`: `Type=notify`, `NotifyAccess=main`, `WatchdogSec=60s`
+  (extended to 300 s by the daemon from `PrepareForSleep(true)` until logind
+  stops preparing; see "Sleep window"), `Restart=no`,
   `OnFailure=input-lock-failsafe.service`, `TimeoutStopSec=5s`. Its
   `ExecStopPost` runs `input-lock-power-helper disable --no-block`: a needed
   UPower restart (only when a legacy UPower drop-in is still present) is
@@ -408,7 +439,7 @@ need acknowledging to arm again; acknowledging it only archives it.
   uninstall) does not fail the unit with `226/NAMESPACE`; the readiness probe
   does not inspect `ReadWritePaths`.
 - The readiness probe compares these contracts by range, not by text:
-  `input-lock.service` watchdog 20–300 s, `Restart=no`, failsafe as
+  `input-lock.service` watchdog 60–300 s, `Restart=no`, failsafe as
   `OnFailure`, `KillMode=control-group`, `TimeoutStopSec` ≤ 30 s, `Type`
   `simple` or `notify`; each helper's `TimeoutStartSec` between 300 s (budget
   + 60 s) and 30 min. Drop-ins are reported as information. The probe runs on
