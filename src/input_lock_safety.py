@@ -5,15 +5,18 @@ No incident-time thermal evidence established the cause of the 2026-09-11 stop.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from collections import deque
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 LOG = logging.getLogger("input-lock-safety")
@@ -21,6 +24,9 @@ BREADCRUMB = Path("/var/lib/input-lock/safety.json")
 PROTECT_UNIT = "input-lock-protect.service"
 FAILSAFE_UNIT = "input-lock-failsafe.service"
 FAILURE_LATCH = Path("/var/lib/input-lock-protection/failure.json")
+ACK_ARCHIVE = Path("/root/ARCHIVE/InputLock")
+LATCH_ERROR = "previous emergency suspend failed; operator recovery required (see 'input-lock doctor')"
+ACK_COMMAND = "sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure"
 THERMAL_MEASUREMENTS = ("NORMAL", "WARNING", "HIGH_RISK", "EMERGENCY")
 THERMAL_STATES = ("NORMAL", "WARNING", "HIGH_RISK", "EMERGENCY_SOFTWARE_PROTECTION")
 
@@ -106,6 +112,8 @@ class SafetyPolicy:
         self.required_sensors: set[str] = set()
         self.previous_ac = None
         self.last_decision: dict | None = None
+        # Recent raw readings, for the arm gate only (see _arming_sensors).
+        self.recent: deque = deque(maxlen=64)
 
     def event(self, reason: str) -> None:
         self.events.append(reason)
@@ -122,8 +130,14 @@ class SafetyPolicy:
             raise ValueError("Lid-ignore unavailable: " + detail)
         if not sample.healthy(self.clock()) or sample.lid_closed is not False:
             raise ValueError("Open the lid and restore fresh safety telemetry before arming")
-        if any(sensor.risk() >= 2 for sensor in sample.sensors):
-            raise ValueError("Temperature is already too high to arm lid-ignore")
+        smoothed = self._arming_sensors(sample)
+        hot = [s for s in smoothed if s.risk() >= 2]
+        # A single raw reading well above the emergency limit still refuses.
+        hot += [s for s in sample.sensors if s.celsius >= s.emergency + 5]
+        if hot:
+            worst = max(hot, key=lambda s: s.celsius)
+            raise ValueError("Temperature is already too high to arm lid-ignore "
+                             f"({worst.identity} {worst.celsius:.0f}C)")
         # Explicit re-arm with a freshly observed open lid starts a new
         # episode even if no periodic open-lid update ran in between.
         self.release()
@@ -133,6 +147,38 @@ class SafetyPolicy:
         self.armed = True
         self.sample = sample
         self.transition("LID_IGNORE_ARMED", "LID_IGNORE_ARMED")
+
+    ARM_WINDOW_SECONDS = 10.0
+
+    def _remember(self, sample: Sample) -> None:
+        if self.recent and self.recent[-1][0] == sample.at:
+            return
+        self.recent.append((sample.at, {s.identity: s.celsius for s in sample.sensors}))
+
+    def _arming_sensors(self, sample: Sample) -> list[Sensor]:
+        """Per-sensor median of the last few seconds, used only to arm.
+
+        CPU package sensors on this hardware class jump for single 2-second
+        samples (for example 87 -> 101 -> 91C) while the sustained level is
+        normal. Arming refuses sustained heat, not one transient sample.
+        Closed-lid supervision in update() is unchanged and uses raw readings
+        with its own dwell. With fewer than three recent samples the raw
+        reading is used, so the gate is never looser than before on no data.
+        """
+        self._remember(sample)
+        horizon = sample.at - self.ARM_WINDOW_SECONDS
+        window = [rows for at, rows in self.recent if horizon <= at <= sample.at]
+        result = []
+        for sensor in sample.sensors:
+            values = sorted(rows[sensor.identity] for rows in window
+                            if sensor.identity in rows and math.isfinite(rows[sensor.identity]))
+            if len(values) < 3 or not math.isfinite(sensor.celsius):
+                result.append(sensor)
+                continue
+            middle = len(values) // 2
+            median = values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
+            result.append(replace(sensor, celsius=median))
+        return result
 
     def release(self, reason: str = "SAFE_STATE_RESTORED") -> None:
         self.armed = False
@@ -144,6 +190,7 @@ class SafetyPolicy:
     def update(self, sample: Sample) -> str | None:
         now = self.clock()
         self.sample = sample
+        self._remember(sample)
         if not self.armed:
             return None
         if sample.lid_closed is False:
@@ -468,7 +515,7 @@ def protection_errors(run=subprocess.run, status=native_status, counter=None) ->
     """
     try:
         if FAILURE_LATCH.exists():
-            return ["previous emergency suspend failed; operator recovery required"]
+            return [LATCH_ERROR]
         state = status()
         if not state["supported"] or state["blocked"] or state["preparing"]:
             return ["ordinary suspend unavailable, blocked, or already in progress"]
@@ -678,16 +725,79 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
         return 1
 
 
+def acknowledge_failure(run=subprocess.run, latch=FAILURE_LATCH, archive=ACK_ARCHIVE,
+                        euid=os.geteuid, now=time.time) -> dict:
+    """Explicit operator acknowledgement of a failed final protective suspend.
+
+    This never claims the failed attempt succeeded. The latch is copied to a
+    root-only, hash-verified archive and kept in place, renamed to
+    failure-acknowledged-<sha256>.json, exactly as the 2026-10-17 recovery did.
+    Raises FileNotFoundError when no latch is present.
+    """
+    if euid() != 0:
+        raise PermissionError("acknowledge-failure must run as root")
+    info = os.lstat(latch)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0:
+        raise RuntimeError("failure latch is not a root-owned regular file; review manually")
+    for unit in (PROTECT_UNIT, FAILSAFE_UNIT, "systemd-suspend.service"):
+        state = unit_properties(run, unit).get("ActiveState")
+        if state not in {"inactive", "failed"}:
+            raise RuntimeError(f"{unit} is {state}; wait until it finishes")
+    data = latch.read_bytes()
+    record = json.loads(data)
+    if not isinstance(record, dict):
+        raise RuntimeError("failure latch is not a JSON object; review manually")
+    digest = hashlib.sha256(data).hexdigest()
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now()))
+    if any(p.is_symlink() for p in (archive, *archive.parents)):
+        raise RuntimeError("archive path contains a symlink")
+    archive.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for attempt in range(100):
+        target = archive / (f"{stamp}-failure-latch-{digest[:12]}" + (f"-{attempt}" if attempt else ""))
+        try:
+            target.mkdir(mode=0o700)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise RuntimeError("cannot allocate a unique archive directory")
+    saved = target / "failure.json"
+    fd = os.open(saved, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if hashlib.sha256(saved.read_bytes()).hexdigest() != digest:
+        raise RuntimeError("archive verification failed; latch left in place")
+    retained = latch.with_name(f"failure-acknowledged-{digest}.json")
+    if os.path.lexists(retained):
+        retained = latch.with_name(f"failure-acknowledged-{digest}-{stamp}.json")
+    os.rename(latch, retained)
+    os.sync()
+    LOG.info("event=PROTECTION_FAILURE_ACKNOWLEDGED sha256=%s archive=%s", digest, saved)
+    return {"acknowledged": True, "sha256": digest, "error": record.get("error"),
+            "archive": str(saved), "retained_as": str(retained)}
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="InputLock ordinary suspend protection")
-    parser.add_argument("action", choices=("protect", "recover", "check", "record-failure"))
+    parser.add_argument("action", choices=("protect", "recover", "check", "record-failure", "acknowledge-failure"))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
     if args.action == "check":
         errors = protection_errors()
         print(json.dumps({"ready": not errors, "errors": errors}))
         raise SystemExit(bool(errors))
+    if args.action == "acknowledge-failure":
+        try:
+            print(json.dumps(acknowledge_failure()))
+        except FileNotFoundError:
+            print(json.dumps({"acknowledged": False, "reason": "no failure latch present"}))
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise SystemExit("acknowledge-failure refused: " + str(exc))
+        raise SystemExit(0)
     if os.geteuid() != 0:
         raise SystemExit("protective adapter requires the installed root service")
     if args.action == "record-failure":

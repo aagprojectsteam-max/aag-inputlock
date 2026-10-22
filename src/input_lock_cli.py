@@ -40,6 +40,31 @@ def _yes_no(value: object, yes: str = "Locked", no: str = "Unlocked") -> str:
     return yes if value is True else no
 
 
+RECOVERY_HINT = ("review 'journalctl -u input-lock-failsafe.service', then run: "
+                 "sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure")
+
+
+def lid_readiness(state: dict[str, object]) -> tuple[bool, str]:
+    """Why lid-ignore can or cannot be armed right now, from daemon state."""
+    safety = state.get("safety", {})
+    sample = safety.get("sample") if isinstance(safety, dict) else None
+    if not isinstance(sample, dict):
+        return False, "safety telemetry not reported yet"
+    protection = sample.get("protection_errors") or []
+    if protection:
+        reason = "; ".join(str(item) for item in protection)
+        if "previous emergency suspend failed" in reason:
+            reason += "; " + RECOVERY_HINT
+        return False, reason
+    if sample.get("errors"):
+        return False, "telemetry errors: " + "; ".join(str(item) for item in sample["errors"])
+    if sample.get("stack_ready") is not True:
+        return False, "native suspend readiness unavailable"
+    if sample.get("dependencies_ok") is not True:
+        return False, "power/logind supervision is not fresh"
+    return True, "ready"
+
+
 def print_status(state: dict[str, object]) -> None:
     locked = state.get("locked", {})
     if not isinstance(locked, dict):
@@ -78,6 +103,8 @@ def print_status(state: dict[str, object]) -> None:
         print(f"Measured thermal: {safety.get('thermal', 'UNKNOWN')}")
         print(f"Lid protection:   {safety.get('thermal_protection', 'UNKNOWN')}")
         print(f"Safety reason:    {safety.get('reason', 'unknown')}")
+    ready, why = lid_readiness(state)
+    print("Lid-ignore ready: " + ("yes" if ready else "no: " + why))
     print(f"Lid switches:     {state.get('lid_switch_devices', '?')}")
     print(f"Auto-unlock:      {state.get('auto_unlock', '?')}")
     print(f"Daemon:           {state.get('daemon', 'unknown')}")
@@ -274,9 +301,9 @@ def run_doctor() -> int:
         )
         safety = daemon_state.get("safety", {})
         sample = safety.get("sample") if isinstance(safety, dict) else None
-        ready = isinstance(sample, dict) and sample.get("stack_ready") is True and sample.get("dependencies_ok") is True and not sample.get("errors")
+        ready, why = lid_readiness(daemon_state)
         add("PASS" if ready else "WARNING", "Supervised lid readiness",
-            "AAG graph and telemetry available" if ready else "Lid-ignore cannot be armed until required telemetry and installed AAG adapter are available")
+            "native protection and telemetry available" if ready else "lid-ignore cannot be armed: " + why)
         if daemon_state.get("ignore_lid_close") is True:
             healthy = ready and daemon_state.get("lid_inhibitor_active") is True and daemon_state.get("lid_controller_connected") is True
             add("PASS" if healthy else "FAIL", "Lid supervision", str(safety.get("state", "unknown")))
