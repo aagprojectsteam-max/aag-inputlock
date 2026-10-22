@@ -23,7 +23,7 @@ def properties(unit):
     }
     return dict(LoadState='loaded', ActiveState='inactive', ExecStart=commands[unit], InvocationID='invocation',
                 OnFailure=safety.FAILSAFE_UNIT if unit in {'input-lock.service', safety.PROTECT_UNIT} else '',
-                Restart='no', WatchdogUSec='20s', TimeoutStopUSec='5s', KillMode='control-group',
+                Restart='no', WatchdogUSec='1min', TimeoutStopUSec='5s', KillMode='control-group',
                 User='', Type='notify' if unit == 'input-lock.service' else 'oneshot',
                 TimeoutStartUSec='5min 30s',
                 ExecStopPost='/usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py record-failure'

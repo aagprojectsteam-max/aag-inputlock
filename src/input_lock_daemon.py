@@ -58,17 +58,35 @@ REQUEST_TIMEOUT: Final = 5.0
 CONTROLLER_TIMEOUT: Final = 35.0
 RESTART_REQUIRED_CONFIG: Final = ("authorized_uid", "authorized_user", "socket_path", "state_path", "default_mode", "lock_touchscreen")
 PROTOCOL: Final = 3  # == input_lock_common.PROTOCOL_VERSION
-# The unit keeps WatchdogSec=20s. Between PrepareForSleep(true) and resume the
-# kernel freezer may stop this process for 20 s per failed attempt, so the
-# watchdog is extended for that window only (A3).
-WATCHDOG_NORMAL_USEC: Final = 20_000_000
+# The unit has WatchdogSec=60s (P1-1): longer than one 20 s kernel freezer
+# timeout, so a single freeze outside a sleep window is not fatal. Between
+# PrepareForSleep(true) and the end of logind's PreparingForSleep the freezer
+# may stop this process for 20 s per failed attempt, and one suspend can make
+# several attempts, so the watchdog is extended for that time only (A3). It is
+# never restored while logind still reports PreparingForSleep=true.
+WATCHDOG_NORMAL_USEC: Final = 60_000_000
 WATCHDOG_SLEEP_USEC: Final = 300_000_000
-# A sleep window that never sees its resume signal is closed after this long
-# (S-R1). CLOCK_MONOTONIC stops while the machine is suspended, so this is
-# awake time spent preparing (or failing) to sleep, not time asleep.
-SLEEP_WINDOW_MAX_SECONDS: Final = 120.0
-# Kernel suspend counters: a change means an attempt completed or failed, i.e.
-# the machine is awake again (S-R1 resume evidence).
+# A sleep window that never sees its resume signal is closed after a cap
+# derived at runtime (P1-1): InhibitDelayMaxSec + 60 s + 3 x pm_freeze_timeout,
+# clamped to [SLEEP_WINDOW_MIN_SECONDS, SLEEP_WINDOW_MAX_SECONDS] (150 s with
+# logind's 30 s and the kernel's 20 s). CLOCK_MONOTONIC stops while the machine
+# is suspended, so this is awake time spent preparing (or failing) to sleep.
+SLEEP_WINDOW_MIN_SECONDS: Final = 150.0
+SLEEP_WINDOW_MAX_SECONDS: Final = 300.0
+SLEEP_WINDOW_MARGIN_SECONDS: Final = 60.0
+SLEEP_WINDOW_FREEZE_ATTEMPTS: Final = 3
+# Fallbacks when logind or the kernel value cannot be read.
+INHIBIT_DELAY_MAX_FALLBACK_SECONDS: Final = 30.0
+PM_FREEZE_TIMEOUT_FALLBACK_SECONDS: Final = 20.0
+PM_FREEZE_TIMEOUT_PATH: Final = Path("/sys/power/pm_freeze_timeout")
+# A PreparingForSleep=true reading counts as current for this long: longer
+# than one freezer stop (20 s) plus the 2 s telemetry interval. Telemetry
+# that stops altogether leaves the state unknown (P1-1).
+LOGIND_PREPARING_FRESH_SECONDS: Final = 30.0
+# Kernel suspend counters. They change after every completed or failed
+# attempt, and one suspend may make several failing attempts while logind is
+# still preparing, so a change is resume evidence only together with logind
+# PreparingForSleep=false (S-R1, P1-1).
 SUSPEND_STATS_DIR: Final = Path("/sys/power/suspend_stats")
 # EVIOCGSW: the switch-state bitmap (P2-1). python3-evdev 1.9 has no
 # InputDevice.switches(), so the daemon reads it with the ioctl itself.
@@ -114,6 +132,27 @@ def read_lid_switch(device: object) -> bool:
     buffer = bytearray(SW_BITMAP_BYTES)
     fcntl.ioctl(fd, eviocgsw(len(buffer)), buffer, True)
     return bool(buffer[SW_LID_BIT // 8] & (1 << (SW_LID_BIT % 8)))
+
+
+def _read_seconds(path: Path, scale: float) -> float | None:
+    """A positive number from a sysfs file, divided by ``scale``, or None."""
+    try:
+        value = float(path.read_text().strip()) / scale
+    except (OSError, ValueError):
+        return None
+    return value if 0 < value < 86_400 else None
+
+
+class _LogindEvent(str):
+    """A control event tagged with the LogindMonitor generation that posted
+    it, so a retired monitor's late refresh round is dropped (P3-2)."""
+
+    logind_generation: int
+
+    def __new__(cls, text: str, generation: int) -> "_LogindEvent":
+        event = super().__new__(cls, text)
+        event.logind_generation = generation
+        return event
 
 
 class TransitionError(RuntimeError):
@@ -362,6 +401,11 @@ class LogindMonitor(threading.Thread):
         self._delay_fd: int | None = None
         self._delay_error_reported = False
         self._sleeping = False
+        # Monotonic time of the last PrepareForSleep(true) (P3-2).
+        self._sleep_started_at: float | None = None
+        # logind InhibitDelayMaxUSec in seconds, read by the refresh thread
+        # for the daemon's sleep-window cap (P1-1); None until read.
+        self.inhibit_delay_max_seconds: float | None = None
         self._refresh_wanted = threading.Event()
         self._stopping = threading.Event()
 
@@ -462,6 +506,7 @@ class LogindMonitor(threading.Thread):
     def prepare_for_sleep(self, starting: object) -> None:
         """PrepareForSleep handler on the signal connection; never blocks."""
         if bool(starting):
+            self._sleep_started_at = time.monotonic()
             self._sleeping = True
             # Extend the watchdog from this thread at once, before the main
             # loop runs and before the kernel freezer can stop the process,
@@ -475,6 +520,35 @@ class LogindMonitor(threading.Thread):
             self.callback("resume-sleep")
             # The refresh thread re-acquires the delay lock (off this path).
             self._refresh_wanted.set()
+
+    def sleep_finished(self, observed_at: float) -> None:
+        """The daemon saw logind PreparingForSleep=false at ``observed_at``
+        (monotonic) after its sleep window closed (P3-2).
+
+        If PrepareForSleep(false) was missed while this monitor kept running,
+        _sleeping would stay True and the delay inhibitor would never be
+        re-acquired. A reading taken before the latest PrepareForSleep(true)
+        says nothing about that newer sleep and is ignored.
+        """
+        started = self._sleep_started_at
+        if started is not None and observed_at <= started:
+            return
+        if self._sleeping:
+            LOG.info("event=SLEEP_DELAY_INHIBITOR_REARM reason=resume-signal-missed")
+        self._sleeping = False
+        self._refresh_wanted.set()
+
+    def refresh_inhibit_delay_with(self, api: object) -> None:
+        """Remember logind's InhibitDelayMaxUSec for the window cap (P1-1)."""
+        read = getattr(api, "inhibit_delay_max_usec", None)
+        if not callable(read):
+            return
+        try:
+            seconds = int(read()) / 1_000_000
+        except Exception:
+            return
+        if 0 <= seconds <= 3600:
+            self.inhibit_delay_max_seconds = seconds
 
     def request_refresh(self, *_args: object, **_kwargs: object) -> None:
         """Signal handlers only ask for a refresh; the calls run elsewhere."""
@@ -538,6 +612,8 @@ class LogindMonitor(threading.Thread):
                     self.callback("power-unavailable")
             if api is not None:
                 self.acquire_delay_inhibitor(api.inhibit_sleep_delay)
+                if self.inhibit_delay_max_seconds is None:
+                    self.refresh_inhibit_delay_with(api)
                 self.refresh_sessions_with(api.list_sessions, api.session_properties)
                 power_ok = self.refresh_power_with(api)
                 if self._session_error_reported or not power_ok:
@@ -667,6 +743,13 @@ class _LogindBusApi:
             "critical_action": str(self.upower.GetCriticalAction(timeout=3)),
         }
 
+    def inhibit_delay_max_usec(self) -> int:
+        properties = self._dbus.Interface(
+            self.bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1", introspect=False),
+            "org.freedesktop.DBus.Properties",
+        )
+        return int(properties.Get("org.freedesktop.login1.Manager", "InhibitDelayMaxUSec", timeout=3))
+
     def inhibit_sleep_delay(self) -> object:
         return self.manager.Inhibit(
             "sleep", "Input Lock",
@@ -702,6 +785,22 @@ class InputLockDaemon:
     # times that showed logind no longer preparing a sleep (S-R1).
     sleep_stats_at_open: tuple[int, int] | None = None
     sleep_not_preparing: tuple[float, ...] = ()
+    # Cap of the current sleep window, fixed when it opens (P1-1).
+    sleep_window_cap: float = SLEEP_WINDOW_MIN_SECONDS
+    # Latest known logind PreparingForSleep (True/False/None = unknown) and
+    # the monotonic time it was observed: from PrepareForSleep signals, the
+    # sleep hook and telemetry samples, whichever is newest (P1-1).
+    logind_preparing: bool | None = None
+    logind_preparing_at = float("-inf")
+    # Monotonic time the watchdog was extended for a sleep, until restored
+    # (P1-1). It outlives the window while logind is still preparing.
+    watchdog_extended_since: float | None = None
+    watchdog_extended_cap: float = SLEEP_WINDOW_MIN_SECONDS
+    # The window closed but the monitor has not yet been told that logind
+    # stopped preparing (P3-2).
+    sleep_monitor_reset_pending = False
+    # Generation of the live LogindMonitor; events of older ones are dropped.
+    logind_generation = 0
     # Latest readiness-probe result, written by its own thread (S-R2).
     protection_probe_errors: tuple[str, ...] = ("native protection probe pending",)
     protection_probe_at: float | None = None
@@ -1050,6 +1149,9 @@ class InputLockDaemon:
             evidence = self._sleep_resume_evidence()
             if evidence:
                 self._leave_sleep_window("resume-evidence:" + evidence)
+        else:
+            self._observe_sample_preparing()
+            self._after_sleep_window()
         # While logind prepares a system sleep, the OS is already suspending.
         # The policy is still updated in the window (S-R1): it gathers
         # evidence but takes no action while it knows a sleep is being
@@ -1212,15 +1314,58 @@ class InputLockDaemon:
         Extend the systemd watchdog and pause controller/lease deadlines until
         the resume signal plus CONTROLLER_TIMEOUT. Idempotent.
         """
+        now = time.monotonic()
+        # Both sources mean logind is preparing a sleep right now.
+        self._note_logind_preparing(True, now)
         sd_notify("WATCHDOG=1")
         sd_notify(f"WATCHDOG_USEC={WATCHDOG_SLEEP_USEC}")
         if self.sleep_window_since is None:
-            self.sleep_window_since = time.monotonic()
+            self.sleep_window_since = now
+            self.sleep_window_cap = self._sleep_window_cap()
             self.sleep_stats_at_open = self._suspend_stats()
             self.sleep_not_preparing = ()
-            LOG.info("event=SLEEP_WINDOW_OPENED source=%s watchdog_usec=%d", source, WATCHDOG_SLEEP_USEC)
+            LOG.info("event=SLEEP_WINDOW_OPENED source=%s watchdog_usec=%d cap=%.0fs",
+                     source, WATCHDOG_SLEEP_USEC, self.sleep_window_cap)
+        if self.watchdog_extended_since is None:
+            self.watchdog_extended_since = now
+        self.watchdog_extended_cap = self.sleep_window_cap
+        self.sleep_monitor_reset_pending = False
         self.sleep_grace_until = None
         self._note_safety_sleep_window(True)
+
+    def _sleep_window_cap(self) -> float:
+        """InhibitDelayMax + 60 s + 3 x pm_freeze_timeout, clamped (P1-1).
+
+        A failing suspend can make several freeze attempts (20 s each by
+        default) after logind's delay, all inside one PrepareForSleep window.
+        """
+        inhibit = getattr(self.logind_monitor, "inhibit_delay_max_seconds", None)
+        if not isinstance(inhibit, (int, float)) or isinstance(inhibit, bool) or not 0 <= inhibit <= 3600:
+            inhibit = INHIBIT_DELAY_MAX_FALLBACK_SECONDS
+        freeze = _read_seconds(PM_FREEZE_TIMEOUT_PATH, 1000.0)
+        if freeze is None:
+            freeze = PM_FREEZE_TIMEOUT_FALLBACK_SECONDS
+        cap = inhibit + SLEEP_WINDOW_MARGIN_SECONDS + SLEEP_WINDOW_FREEZE_ATTEMPTS * freeze
+        return min(SLEEP_WINDOW_MAX_SECONDS, max(SLEEP_WINDOW_MIN_SECONDS, cap))
+
+    def _note_logind_preparing(self, value: bool | None, at: float, *, strict: bool = False) -> None:
+        """Record logind PreparingForSleep as observed at ``at``; an older
+        observation never overrides a newer one (P1-1). Signals and the hook
+        are processed in order, so one at the same instant wins; a telemetry
+        sample must be strictly newer (``strict``)."""
+        if at > self.logind_preparing_at or (not strict and at == self.logind_preparing_at):
+            self.logind_preparing = value
+            self.logind_preparing_at = at
+
+    def _observe_sample_preparing(self) -> None:
+        sample = self.safety_sample
+        if sample is not None:
+            self._note_logind_preparing(sample.preparing, sample.at, strict=True)
+
+    def _logind_stopped_preparing_since(self, since: float) -> bool:
+        """logind's latest reported PreparingForSleep is false, observed no
+        earlier than ``since``."""
+        return self.logind_preparing is False and self.logind_preparing_at >= since
 
     @staticmethod
     def _suspend_stats() -> tuple[int, int] | None:
@@ -1233,26 +1378,66 @@ class InputLockDaemon:
 
     def _sleep_resume_evidence(self) -> str | None:
         """Evidence that the machine is awake again although no resume signal
-        arrived (S-R1): a kernel suspend counter changed, or logind reported
-        PreparingForSleep=false in SLEEP_RESUME_EVIDENCE_SAMPLES consecutive
-        distinct samples taken after the window opened."""
+        arrived (S-R1): logind reported PreparingForSleep=false in
+        SLEEP_RESUME_EVIDENCE_SAMPLES consecutive distinct samples taken after
+        the window opened, or a kernel suspend counter changed and logind's
+        latest reading is PreparingForSleep=false.
+
+        The counters change after each failed freeze attempt, and one suspend
+        can make several attempts while logind is still preparing (P1-1), so
+        a counter change alone is never resume evidence.
+        """
         since = self.sleep_window_since
         if since is None:
             return None
-        opened = self.sleep_stats_at_open
-        if opened is not None:
-            current = self._suspend_stats()
-            if current is not None and current != opened:
-                return "suspend-stats"
+        self._observe_sample_preparing()
         sample = self.safety_sample
         if sample is not None and sample.at > since:
             if sample.preparing is True:
                 self.sleep_not_preparing = ()
             elif sample.preparing is False and sample.at not in self.sleep_not_preparing:
                 self.sleep_not_preparing = (*self.sleep_not_preparing, sample.at)
-            if len(self.sleep_not_preparing) >= SLEEP_RESUME_EVIDENCE_SAMPLES:
-                return "logind-not-preparing"
+        opened = self.sleep_stats_at_open
+        if opened is not None and self._logind_stopped_preparing_since(since):
+            current = self._suspend_stats()
+            if current is not None and current != opened:
+                return "suspend-stats"
+        if len(self.sleep_not_preparing) >= SLEEP_RESUME_EVIDENCE_SAMPLES:
+            return "logind-not-preparing"
         return None
+
+    def _after_sleep_window(self) -> None:
+        """Finish a closed sleep window once logind has stopped preparing.
+
+        The watchdog stays extended while logind reports PreparingForSleep=
+        true, however the window closed: a failing suspend's next freeze
+        attempt would otherwise kill the daemon (P1-1). With PreparingForSleep
+        unknown (no reading, or the last "true" is older than
+        LOGIND_PREPARING_FRESH_SECONDS because telemetry stopped) it stays
+        extended until the window cap. Only a reading of false also tells the
+        logind monitor that the sleep is over, so it re-acquires its delay
+        inhibitor if PrepareForSleep(false) was missed (P3-2).
+        """
+        if self.sleep_window_since is not None:
+            return
+        now = time.monotonic()
+        since = self.watchdog_extended_since
+        stopped = since is not None and self._logind_stopped_preparing_since(since)
+        if since is not None:
+            expired = now - since >= self.watchdog_extended_cap
+            preparing = (self.logind_preparing is True
+                         and now - self.logind_preparing_at <= LOGIND_PREPARING_FRESH_SECONDS)
+            if stopped or (expired and not preparing):
+                self.watchdog_extended_since = None
+                sd_notify(f"WATCHDOG_USEC={WATCHDOG_NORMAL_USEC}")
+                sd_notify("WATCHDOG=1")
+                LOG.info("event=WATCHDOG_RESTORED watchdog_usec=%d reason=%s", WATCHDOG_NORMAL_USEC,
+                         "logind-not-preparing" if stopped else "cap-preparing-unknown")
+        if self.sleep_monitor_reset_pending and self.logind_preparing is False:
+            self.sleep_monitor_reset_pending = False
+            finished = getattr(self.logind_monitor, "sleep_finished", None)
+            if callable(finished):
+                finished(self.logind_preparing_at)
 
     def _note_safety_sleep_window(self, active: bool) -> None:
         """Tell the safety policy that an OS sleep is (no longer) in progress.
@@ -1268,24 +1453,27 @@ class InputLockDaemon:
             note(active)
 
     def _leave_sleep_window(self, source: str) -> None:
-        """PrepareForSleep(false), the 'post' hook, or the window time limit."""
+        """PrepareForSleep(false), the 'post' hook, resume evidence or the
+        window cap. Supervision resumes now; the watchdog is restored only
+        once logind has stopped preparing (_after_sleep_window, P1-1)."""
         self._note_safety_sleep_window(False)
         if self.sleep_window_since is None:
+            self._after_sleep_window()
             return
         now = time.monotonic()
         self.sleep_window_since = None
         self.sleep_stats_at_open = None
         self.sleep_not_preparing = ()
+        self.sleep_monitor_reset_pending = True
         self.sleep_grace_until = now + CONTROLLER_TIMEOUT
         for client in self.clients.values():
             if client.subscribed:
                 client.deadline = max(client.deadline, self.sleep_grace_until)
         if self.lid_lease_deadline is not None:
             self.lid_lease_deadline = max(self.lid_lease_deadline, self.sleep_grace_until)
-        sd_notify(f"WATCHDOG_USEC={WATCHDOG_NORMAL_USEC}")
-        sd_notify("WATCHDOG=1")
-        LOG.info("event=SLEEP_WINDOW_CLOSED source=%s grace=%.0fs watchdog_usec=%d",
-                 source, CONTROLLER_TIMEOUT, WATCHDOG_NORMAL_USEC)
+        LOG.info("event=SLEEP_WINDOW_CLOSED source=%s grace=%.0fs logind_preparing=%s",
+                 source, CONTROLLER_TIMEOUT, self.logind_preparing)
+        self._after_sleep_window()
         if self.deferred_protection is not None and self.safety.state == "PROTECTIVE_ACTION_PENDING":
             # The policy itself already decided (and disarmed); nothing else
             # would act on that decision, so do not wait for the grace end.
@@ -1337,7 +1525,15 @@ class InputLockDaemon:
     # ------------------------------ logind -------------------------------
 
     def _start_logind_monitor(self) -> None:
-        self.logind_monitor = LogindMonitor(self.config.authorized_uid, self._post_control)
+        # Each monitor run tags its events with its own generation, so a
+        # retired monitor's late refresh round is dropped (P3-2).
+        self.logind_generation += 1
+        generation = self.logind_generation
+
+        def post(event: str) -> None:
+            self._post_control(_LogindEvent(event, generation))
+
+        self.logind_monitor = LogindMonitor(self.config.authorized_uid, post)
         self.logind_monitor.start()
 
     def _logind_succeeded(self) -> None:
@@ -1371,11 +1567,19 @@ class InputLockDaemon:
                 event = self.control_queue.get_nowait()
             except queue.Empty:
                 break
+            generation = getattr(event, "logind_generation", None)
+            if generation is not None and generation != self.logind_generation:
+                # A retired monitor's refresh worker (joined for only 1 s)
+                # finished one more round after the restart (P3-2).
+                LOG.debug("event=LOGIND_STALE_EVENT_DROPPED generation=%s", generation)
+                continue
             if event == "prepare-sleep":
                 self._enter_sleep_window("logind")
                 if self.config.unlock_on_suspend:
                     self._release_inputs_keep_lid("system-suspend")
             elif event == "resume-sleep":
+                # PrepareForSleep(false): logind has stopped preparing.
+                self._note_logind_preparing(False, time.monotonic())
                 self._leave_sleep_window("logind")
             elif event == "session-active":
                 self._logind_succeeded()
@@ -1408,6 +1612,9 @@ class InputLockDaemon:
                 if self.logind_error_since is None:
                     self.logind_error_since = time.monotonic()
             elif event == "logind-monitor-stopped":
+                # Retire the stopped monitor: anything its worker posts from
+                # now on belongs to an older generation (P3-2).
+                self.logind_generation += 1
                 now = time.monotonic()
                 if self.logind_error_since is None:
                     self.logind_error_since = now
@@ -1424,6 +1631,8 @@ class InputLockDaemon:
                 self.safety_sample = Sample(**payload)
                 if self.safety_sample.at < self.last_lid_event_at:
                     self.safety_sample.lid_closed = self.lid_is_closed
+                self._observe_sample_preparing()
+                self._after_sleep_window()
             elif event.startswith("protective-result:"):
                 result = json.loads(event.partition(":")[2])
                 if (self.protective_result is None or self.ignore_lid_close or
@@ -1949,7 +2158,7 @@ class InputLockDaemon:
                 "org.freedesktop.login1.Manager",
             )
             # This runs on the main loop: bound the call well below the
-            # 20 s watchdog instead of the ~25 s D-Bus default (B4).
+            # 60 s watchdog instead of the ~25 s D-Bus default (B4).
             descriptor = manager.Inhibit(
                 "handle-lid-switch",
                 "Input Lock",
@@ -2696,7 +2905,7 @@ class InputLockDaemon:
         deadlines.extend(client.deadline for client in self.clients.values()
                          if not (paused and client.subscribed))
         if paused:
-            deadlines.append(self.sleep_window_since + SLEEP_WINDOW_MAX_SECONDS)
+            deadlines.append(self.sleep_window_since + self.sleep_window_cap)
         if self.sleep_grace_until is not None:
             deadlines.append(self.sleep_grace_until)
         if self.logind_error_since is not None and not self.logind_error_handled:
@@ -2723,9 +2932,9 @@ class InputLockDaemon:
             self.accept_retry_at = None
             self.selector.register(self.server, selectors.EVENT_READ, ("server", None))
         if (self.sleep_window_since is not None
-                and now - self.sleep_window_since >= SLEEP_WINDOW_MAX_SECONDS):
-            LOG.warning("event=SLEEP_WINDOW_TIMEOUT seconds=%.0f; resume signal missing",
-                        now - self.sleep_window_since)
+                and now - self.sleep_window_since >= self.sleep_window_cap):
+            LOG.warning("event=SLEEP_WINDOW_TIMEOUT seconds=%.0f logind_preparing=%s; resume signal missing",
+                        now - self.sleep_window_since, self.logind_preparing)
             self._leave_sleep_window("timeout")
         # Controller and lid-lease deadlines are paused during a system sleep
         # window and extended to resume + CONTROLLER_TIMEOUT (A4). The lease

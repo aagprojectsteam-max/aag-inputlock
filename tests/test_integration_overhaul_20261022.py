@@ -246,7 +246,7 @@ class SafetySleepWindowHookTests(unittest.TestCase):
         daemon = base_daemon(clock)
         with mock.patch.object(daemon_module.time, "monotonic", clock):
             drain(daemon, "prepare-sleep")
-            clock.now += daemon_module.SLEEP_WINDOW_MAX_SECONDS
+            clock.now += daemon.sleep_window_cap
             daemon._handle_timers()
         self.assertIsNone(daemon.safety.sleep_window_since)
 
@@ -457,8 +457,14 @@ class ReadinessProbeAgainstMergedUnitsTests(unittest.TestCase):
         daemon_unit = unit_directives(self.units["input-lock.service"])
         self.assertEqual(daemon_unit["Type"], ["notify"])
         self.assertEqual(daemon_unit["NotifyAccess"], ["main"])
-        self.assertEqual(daemon_unit["WatchdogSec"], ["20s"])
-        self.assertEqual(daemon_module.WATCHDOG_NORMAL_USEC, 20_000_000)
+        # P1-1: 60 s, longer than one 20 s freezer timeout; sd_notify
+        # restores exactly the unit's value.
+        self.assertEqual(daemon_unit["WatchdogSec"], ["60s"])
+        self.assertEqual(daemon_module.WATCHDOG_NORMAL_USEC, 60_000_000)
+        self.assertEqual(safety._seconds(daemon_unit["WatchdogSec"][-1]) * 1_000_000,
+                         daemon_module.WATCHDOG_NORMAL_USEC)
+        self.assertEqual(safety.DAEMON_WATCHDOG_MIN_SECONDS, 60)
+        self.assertEqual(safety.DAEMON_WATCHDOG_MAX_SECONDS * 1_000_000, daemon_module.WATCHDOG_SLEEP_USEC)
         self.assertEqual(daemon_module.WATCHDOG_SLEEP_USEC, 300_000_000)
 
 

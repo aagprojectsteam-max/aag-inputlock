@@ -25,10 +25,12 @@ ExecStart=/usr/lib/input-lock/input-lock-daemon
 ExecStopPost=+/usr/lib/input-lock/input-lock-power-helper disable --no-block
 LimitNOFILE=512
 ExecReload=/bin/kill -HUP $MAINPID
-# Between PrepareForSleep(true) and resume the daemon raises its own watchdog
-# to 300 s with sd_notify WATCHDOG_USEC (the kernel freezer may stop it for 20 s
-# per failed suspend attempt) and restores 20 s afterwards.
-WatchdogSec=20s
+# 60 s: longer than one 20 s kernel freezer timeout, so a single freeze outside
+# a sleep window is not fatal. From PrepareForSleep(true) the daemon raises its
+# own watchdog to 300 s with sd_notify WATCHDOG_USEC (one suspend may make
+# several failing 20 s freeze attempts) and restores 60 s only once logind no
+# longer reports PreparingForSleep (or, if that is unknown, at the window cap).
+WatchdogSec=60s
 Restart=no
 RestartSec=2s
 TimeoutStopSec=5s

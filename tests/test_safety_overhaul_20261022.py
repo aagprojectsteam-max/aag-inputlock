@@ -475,7 +475,7 @@ def unit(name, **changes):
     values = dict(LoadState="loaded", ActiveState="inactive", ExecStart=commands[name], Restart="no",
                   OnFailure=safety.FAILSAFE_UNIT if name in {"input-lock.service", safety.PROTECT_UNIT} else "",
                   User="", Type="notify" if name == "input-lock.service" else "oneshot",
-                  WatchdogUSec="20s", TimeoutStopUSec="5s", KillMode="control-group",
+                  WatchdogUSec="1min", TimeoutStopUSec="5s", KillMode="control-group",
                   TimeoutStartUSec="5min 30s", DropInPaths="",
                   ExecStopPost=("/usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py record-failure"
                                 if name == safety.FAILSAFE_UNIT else ""))
@@ -511,7 +511,10 @@ class ReadinessProbeTests(unittest.TestCase):
         self.assertEqual(self.report({"input-lock.service": {"Type": "simple"}})["errors"], [])
 
     def test_watchdog_and_stop_timeout_ranges(self):
-        for value, ok in (("20s", True), ("2min 30s", True), ("5min", True), ("300000000", True),
+        # 60 s from the unit (P1-1: longer than one 20 s freezer timeout), up
+        # to 300 s while the daemon has extended it for a sleep.
+        for value, ok in (("1min", True), ("60s", True), ("60000000", True), ("2min 30s", True),
+                          ("5min", True), ("300000000", True), ("20s", False), ("59s", False),
                           ("19s", False), ("5min 1s", False), ("0", False), ("infinity", False)):
             with self.subTest(watchdog=value):
                 errors = self.report({"input-lock.service": {"WatchdogUSec": value}})["errors"]

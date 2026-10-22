@@ -126,9 +126,13 @@ class SleepWindowRootOnlyTests(unittest.TestCase):
             self.assertIsNotNone(daemon.sleep_window_since)
             daemon._handle_request(9, {"cmd": "resume-sleep"})
             self.assertTrue(daemon._send_and_close.call_args.args[1]["ok"])
-        self.assertIsNone(daemon.sleep_window_since)
+            self.assertIsNone(daemon.sleep_window_since)
+            # The hook's 'post' runs while logind is still preparing (P1-1).
+            self.assertEqual([c.args[0] for c in notify.call_args_list],
+                             ["WATCHDOG=1", "WATCHDOG_USEC=300000000"])
+            drain(daemon, "resume-sleep")                 # PrepareForSleep(false)
         self.assertEqual([c.args[0] for c in notify.call_args_list],
-                         ["WATCHDOG=1", "WATCHDOG_USEC=300000000", "WATCHDOG_USEC=20000000", "WATCHDOG=1"])
+                         ["WATCHDOG=1", "WATCHDOG_USEC=300000000", "WATCHDOG_USEC=60000000", "WATCHDOG=1"])
 
     def test_hook_stays_posix_sh_and_calls_the_cli(self):
         hook = (REPO / "integration" / "input-lock-system-sleep").read_text()
@@ -137,9 +141,13 @@ class SleepWindowRootOnlyTests(unittest.TestCase):
         self.assertIn("/usr/bin/input-lock prepare-sleep", hook)
         self.assertIn("/usr/bin/input-lock resume-sleep", hook)
 
-    def test_window_cap_is_about_two_minutes(self):
-        self.assertEqual(daemon_module.SLEEP_WINDOW_MAX_SECONDS, 120.0)
+    def test_window_cap_is_derived_and_clamped(self):
+        # P1-1: InhibitDelayMax + 60 s + 3 x pm_freeze_timeout in 150-300 s.
+        self.assertEqual(daemon_module.SLEEP_WINDOW_MIN_SECONDS, 150.0)
+        self.assertEqual(daemon_module.SLEEP_WINDOW_MAX_SECONDS, 300.0)
         self.assertEqual(safety.SLEEP_WINDOW_MAX_SECONDS, 300.0)
+        with mock.patch.object(daemon_module, "PM_FREEZE_TIMEOUT_PATH", Path("/nonexistent/pm_freeze_timeout")):
+            self.assertEqual(base_daemon()._sleep_window_cap(), 150.0)   # 30 + 60 + 3 x 20
 
 
 class ThermalSleepWindowScenarioTests(unittest.TestCase):
@@ -200,25 +208,29 @@ class ThermalSleepWindowScenarioTests(unittest.TestCase):
     def test_root_window_without_resume_is_capped_and_evidence_counts(self):
         daemon, step = self.simulate(window="root", preparing=None)
         self.assertIsNotNone(step)
-        self.assertTrue(120 <= step <= 124, step)
+        cap = daemon.sleep_window_cap
+        self.assertTrue(150 <= cap <= 300, cap)
+        self.assertTrue(cap <= step <= cap + 4, (cap, step))
         self.assertIsNone(daemon.sleep_window_since)
         rule = daemon.safety.last_decision["thermal_evidence"]["rule"]
         self.assertEqual(rule["rule"], "cpu-protective")
         # The heat during the window was counted, not discarded.
-        self.assertGreaterEqual(rule["elapsed_seconds"], 110)
+        self.assertGreaterEqual(rule["elapsed_seconds"], cap - 10)
 
     def test_root_window_closes_early_when_logind_is_not_preparing(self):
         daemon, step = self.simulate(window="root", preparing=False)
         self.assertTrue(60 <= step <= 64, step)
 
-    def test_root_window_closes_early_when_a_suspend_completed(self):
-        def resumed(step):
+    def test_counter_change_while_logind_prepares_does_not_close_the_window(self):
+        # P1-1: the kernel bumps the counters after each failed freeze
+        # attempt, while logind still prepares the same suspend. That alone
+        # is no resume evidence: the window stays open up to its cap.
+        def attempt_failed(step):
             if step == 10:
-                self.stats.set(6, 1)
-        daemon, step = self.simulate(window="root", preparing=True, on_step=resumed)
-        # The policy still ignores logind's own "preparing" up to its cap,
-        # but the daemon window (paused deadlines, watchdog) closed at once.
+                self.stats.set(5, 2)
+        daemon, step = self.simulate(window="root", preparing=True, on_step=attempt_failed)
         self.assertIsNotNone(step)
+        self.assertGreaterEqual(step, daemon.sleep_window_cap)
         self.assertIsNone(daemon.sleep_window_since)
 
     def test_kernel_counter_change_closes_the_window(self):
@@ -231,8 +243,13 @@ class ThermalSleepWindowScenarioTests(unittest.TestCase):
             clock.now = 101.0
             daemon._safety_tick()
             self.assertIsNotNone(daemon.sleep_window_since)
-            self.stats.set(5, 2)          # a failed attempt also means awake again
+            self.stats.set(5, 2)          # an attempt failed ...
             clock.now = 102.0
+            daemon._safety_tick()
+            # ... but logind may still be preparing another attempt (P1-1).
+            self.assertIsNotNone(daemon.sleep_window_since)
+            daemon.safety_sample = hot_sample(102.5, preparing=False)
+            clock.now = 103.0
             with self.assertLogs("input-lock-daemon", "INFO") as logs:
                 daemon._safety_tick()
         self.assertIsNone(daemon.sleep_window_since)

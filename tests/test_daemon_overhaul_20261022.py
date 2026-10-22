@@ -162,7 +162,7 @@ class WatchdogSleepWindowTests(unittest.TestCase):
         self.assertEqual(self.fake.messages(), ["WATCHDOG=1", "WATCHDOG_USEC=300000000"])
         self.assertIsNotNone(daemon.sleep_window_since)
         drain(daemon, "resume-sleep")
-        self.assertEqual(self.fake.messages(), ["WATCHDOG_USEC=20000000", "WATCHDOG=1"])
+        self.assertEqual(self.fake.messages(), ["WATCHDOG_USEC=60000000", "WATCHDOG=1"])
         self.assertIsNone(daemon.sleep_window_since)
 
     def test_sleep_hook_ipc_pre_and_post(self):
@@ -177,8 +177,13 @@ class WatchdogSleepWindowTests(unittest.TestCase):
         self.fake.messages()
         daemon._handle_request(9, {"cmd": "resume-sleep"})
         self.assertTrue(daemon._send_and_close.call_args.args[1]["ok"])
-        self.assertEqual(self.fake.messages(), ["WATCHDOG_USEC=20000000", "WATCHDOG=1"])
-        drain(daemon, "resume-sleep")  # Second close is a no-op.
+        self.assertIsNone(daemon.sleep_window_since)
+        # The 'post' hook runs while logind still reports PreparingForSleep
+        # (P1-1): the watchdog stays extended until PrepareForSleep(false).
+        self.assertEqual(self.fake.messages(), [])
+        drain(daemon, "resume-sleep")
+        self.assertEqual(self.fake.messages(), ["WATCHDOG_USEC=60000000", "WATCHDOG=1"])
+        drain(daemon, "resume-sleep")  # A second signal is a no-op.
         self.assertEqual(self.fake.messages(), [])
 
     def test_monitor_thread_extends_watchdog_before_the_main_loop(self):
@@ -200,10 +205,14 @@ class WatchdogSleepWindowTests(unittest.TestCase):
         daemon = base_daemon(clock)
         with mock.patch.object(daemon_module.time, "monotonic", clock):
             drain(daemon, "prepare-sleep")
-            clock.now = 100 + daemon_module.SLEEP_WINDOW_MAX_SECONDS
+            self.fake.messages()
+            clock.now = 100 + daemon.sleep_window_cap
             daemon._handle_timers()
-        self.assertIsNone(daemon.sleep_window_since)
-        self.assertEqual(self.fake.messages()[-2:], ["WATCHDOG_USEC=20000000", "WATCHDOG=1"])
+            self.assertIsNone(daemon.sleep_window_since)
+            # Closed for supervision; the last PreparingForSleep reading (the
+            # signal) is now stale, so the state is unknown and the cap has
+            # passed: the watchdog goes back to the unit's 60 s.
+            self.assertEqual(self.fake.messages()[-2:], ["WATCHDOG_USEC=60000000", "WATCHDOG=1"])
 
 
 class SleepWindowLeaseTests(unittest.TestCase):
@@ -1053,11 +1062,11 @@ class ReadinessNotificationTests(unittest.TestCase):
             self.assertLess(order.index(name), ready, name)
         self.assertLess(ready, order.index("_start_logind_monitor"))
 
-    def test_unit_is_notify_and_keeps_the_20s_watchdog(self):
+    def test_unit_is_notify_with_the_60s_watchdog(self):
         unit = (Path(__file__).resolve().parents[1] / "systemd" / "input-lock.service").read_text()
         lines = {line.strip() for line in unit.splitlines()}
         self.assertIn("Type=notify", lines)
-        self.assertIn("WatchdogSec=20s", lines)
+        self.assertIn("WatchdogSec=60s", lines)  # P1-1
         self.assertIn("Restart=no", lines)
 
     def test_sleep_hook_has_a_post_branch(self):

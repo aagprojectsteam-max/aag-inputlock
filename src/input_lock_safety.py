@@ -43,6 +43,11 @@ THERMAL_STATES = ("NORMAL", "WARNING", "HIGH_RISK", "EMERGENCY_SOFTWARE_PROTECTI
 OBSERVE_BUDGET_SECONDS = 240
 HELPER_START_TIMEOUT_MIN_SECONDS = OBSERVE_BUDGET_SECONDS + 60
 HELPER_START_TIMEOUT_MAX_SECONDS = 1800
+# input-lock.service WatchdogUSec: 60 s from the unit (longer than one 20 s
+# kernel freezer timeout), up to 300 s while the daemon has extended it for a
+# system sleep with sd_notify WATCHDOG_USEC.
+DAEMON_WATCHDOG_MIN_SECONDS = 60
+DAEMON_WATCHDOG_MAX_SECONDS = 300
 # A systemd-suspend activation this recent means the OS sleep path was just
 # used. After a failed attempt the freezer is likely still stuck; a second
 # request would only repeat that failure (2026-10-21 19:20 -> 19:21).
@@ -1210,11 +1215,13 @@ def protection_report(run=subprocess.run, status=native_status, counter=None) ->
             if unit == "input-lock.service":
                 watchdog = _seconds(props.get("WatchdogUSec"))
                 stop = _seconds(props.get("TimeoutStopUSec"))
-                # 20 s normally; up to 300 s while the daemon has extended it
-                # for an OS sleep transition (frozen tasks cannot ping).
+                # 60 s normally (longer than one 20 s freezer timeout); up to
+                # 300 s while the daemon has extended it for an OS sleep
+                # transition (frozen tasks cannot ping).
                 if (props.get("Restart") != "no" or props.get("KillMode") != "control-group"
                         or props.get("Type", "simple") not in {"simple", "notify"}
-                        or watchdog is None or not 20 <= watchdog <= 300
+                        or watchdog is None
+                        or not DAEMON_WATCHDOG_MIN_SECONDS <= watchdog <= DAEMON_WATCHDOG_MAX_SECONDS
                         or stop is None or not 0 < stop <= 30):
                     return {"errors": ["InputLock watchdog/restart contract changed"], "info": info}
         return {"errors": errors, "info": info}
