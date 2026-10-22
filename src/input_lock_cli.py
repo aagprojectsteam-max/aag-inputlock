@@ -333,6 +333,17 @@ _GNOME_MODIFIERS = {
 
 def gnome_binding_matches(binding: str, hotkey: str) -> bool:
     """True when a GNOME accelerator such as ``<Control><Alt><Shift>F12`` is ``hotkey``."""
+    found = _binding_hotkey(binding)
+    if found is None:
+        return False
+    try:
+        return found == canonical_hotkey(hotkey)
+    except ConfigError:
+        return False
+
+
+def _binding_hotkey(binding: str) -> str | None:
+    """Canonical hotkey text of a GNOME accelerator, or None if unsupported."""
     text = binding.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
         text = text[1:-1]
@@ -340,18 +351,42 @@ def gnome_binding_matches(binding: str, hotkey: str) -> bool:
     while text.startswith("<"):
         end = text.find(">")
         if end < 0:
-            return False
+            return None
         name = _GNOME_MODIFIERS.get(text[1:end].lower())
         if name is None:
-            return False
+            return None
         modifiers.append(name)
         text = text[end + 1:]
-    if not text:
-        return False
     try:
-        return canonical_hotkey("+".join([*modifiers, text])) == canonical_hotkey(hotkey)
+        return canonical_hotkey("+".join([*modifiers, text])) if text else None
     except ConfigError:
-        return False
+        return None
+
+
+def expected_emergency_hotkey(configured: str) -> str:
+    """The emergency hotkey the GNOME fallback binding should carry.
+
+    Newer input_lock_gnome modules expose ``emergency_binding()``, which
+    builds the binding from EMERGENCY_HOTKEY (F12 fallback); prefer it so
+    doctor and the installer agree. Otherwise use the configured value.
+    """
+    try:
+        import input_lock_gnome
+    except Exception:
+        return configured
+    builder = getattr(input_lock_gnome, "emergency_binding", None)
+    if not callable(builder):
+        return configured
+    for args in ((), (configured,)):
+        try:
+            binding = builder(*args)
+        except TypeError:
+            continue
+        except Exception:
+            return configured
+        if isinstance(binding, str):
+            return _binding_hotkey(binding) or configured
+    return configured
 
 
 def run_doctor() -> int:
@@ -480,12 +515,15 @@ def run_doctor() -> int:
                 "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:" + emergency_path,
                 "binding",
             )
-            if binding is None or not gnome_binding_matches(binding, config.emergency_hotkey):
+            expected = expected_emergency_hotkey(config.emergency_hotkey)
+            if binding is None or not gnome_binding_matches(binding, expected):
                 add("WARNING", "GNOME emergency binding",
                     f"{binding or 'unreadable'} does not match EMERGENCY_HOTKEY="
-                    f"{config.emergency_hotkey}; run the update while logged in")
+                    f"{config.emergency_hotkey}; re-run "
+                    "'python3 /usr/lib/input-lock/input_lock_gnome.py install' "
+                    "(or ./update.sh) while logged in")
             else:
-                add("PASS", "GNOME emergency binding", f"matches {config.emergency_hotkey}")
+                add("PASS", "GNOME emergency binding", f"matches {expected}")
 
     if daemon_state is not None and config is not None:
         try:

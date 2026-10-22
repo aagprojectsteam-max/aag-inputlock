@@ -281,6 +281,19 @@ class ReadinessAndBindingTests(unittest.TestCase):
         self.assertFalse(cli.gnome_binding_matches("''", "CTRL+ALT+SHIFT+F12"))
         self.assertFalse(cli.gnome_binding_matches("'<Hyper>F12'", "CTRL+ALT+SHIFT+F12"))
 
+    def test_expected_emergency_binding_uses_gnome_builder_when_present(self) -> None:
+        from types import SimpleNamespace
+
+        configured = "CTRL+ALT+SHIFT+F12"
+        no_args = SimpleNamespace(emergency_binding=lambda: "<Control><Alt><Shift>F11")
+        with_arg = SimpleNamespace(emergency_binding=lambda hotkey: "<Control><Alt><Shift>F10")
+        broken = SimpleNamespace(emergency_binding=mock.Mock(side_effect=RuntimeError("x")))
+        absent = SimpleNamespace()
+        for module, expected in ((no_args, "CTRL+ALT+SHIFT+F11"), (with_arg, "CTRL+ALT+SHIFT+F10"),
+                                 (broken, configured), (absent, configured)):
+            with self.subTest(module=module), mock.patch.dict(sys.modules, {"input_lock_gnome": module}):
+                self.assertEqual(cli.expected_emergency_hotkey(configured), expected)
+
 
 class HarnessTests(unittest.TestCase):
     def load_runner(self):
