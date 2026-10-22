@@ -1,4 +1,4 @@
-# AAG LockLock 2.0.0-beta.4 — Ubuntu ו־Windows
+# AAG LockLock 2.0.0-beta.5 — Ubuntu ו־Windows
 
 
 Version 2.0.0-beta.4 source update: Linux lid-ignore now uses independent logind inhibition and InputLock-owned ordinary suspend protection. It requires native protection readiness; retired AAG services and AAG Power APIs are not prerequisites. See [independent lid protection and deployment limits](docs/independent-lid-protection.md). Historical deployment records describe earlier code; this source change is not a claim of physical acceptance.

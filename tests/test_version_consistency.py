@@ -18,6 +18,11 @@ class VersionConsistencyTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(project, f"{match.group(1)}b{match.group(2)}")
 
+    def test_config_header_names_current_version(self):
+        public = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        header = (ROOT / "config" / "input-lock.conf").read_text(encoding="utf-8").splitlines()[0]
+        self.assertEqual(header, f"# AAG LockLock {public} configuration")
+
     def test_readme_names_current_version(self):
         public = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
         self.assertIn(f"# AAG LockLock {public}", (ROOT / "README.md").read_text(encoding="utf-8"))

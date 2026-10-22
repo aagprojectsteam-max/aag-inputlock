@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aag-locklock"
-version = "2.0.0b4"
+version = "2.0.0b5"
 description = "Safe input locking for Ubuntu and Windows"
 readme = "README.md"
 license = "MIT"
@@ -35,7 +35,6 @@ py-modules = [
   "input_lock_notifier",
   "input_lock_lid_policy",
   "input_lock_safety",
-  "aag_sleep_transaction_compat",
 ]
 
 [tool.setuptools.packages.find]
