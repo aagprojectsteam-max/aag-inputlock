@@ -14,9 +14,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from locklock_core import LOCK_MODES, MAX_MESSAGE_BYTES, VERSION as CORE_VERSION
+from locklock_core import (
+    LOCK_MODES,
+    MAX_MESSAGE_BYTES,
+    VERSION as CORE_VERSION,
+    HotkeyError,
+    parse_hotkey,
+)
 
 VERSION: Final = CORE_VERSION
+# Version of the JSON control protocol between the CLI/tray and the daemon.
+# The daemon reports it as "protocol" in status responses and state snapshots.
+PROTOCOL_VERSION: Final = 3
 
 DEFAULT_CONFIG_PATH: Final = Path("/etc/input-lock/input-lock.conf")
 DEFAULT_SOCKET_PATH: Final = Path("/run/input-lock/control.sock")
@@ -74,6 +83,20 @@ _KNOWN_KEYS: Final = {
     "SOCKET_PATH",
     "STATE_PATH",
 }
+
+
+def canonical_hotkey(text: str) -> str:
+    """Validate a shortcut and return its canonical text, e.g. ``CTRL+ALT+Z``.
+
+    A shortcut needs at least two modifiers (CTRL, ALT, SHIFT, SUPER) and
+    exactly one key from A-Z, 0-9 or F1-F12. This is the single parser shared
+    by the configuration, the CLI, the daemon IPC and the GNOME fallback.
+    """
+
+    try:
+        return parse_hotkey(text, minimum_modifiers=2).text
+    except HotkeyError as exc:
+        raise ConfigError(f"invalid shortcut {text!r}: {exc}") from exc
 
 
 def _parse_bool(key: str, value: str) -> bool:
@@ -169,10 +192,16 @@ def load_config(path: Path | str | None = None) -> Config:
         if not candidate.is_absolute() or ".." in candidate.parts:
             raise ConfigError(f"{key} must be an absolute path without '..'")
 
-    hotkey = values.get("HOTKEY", "CTRL+ALT+Z").upper()
-    emergency_hotkey = values.get(
-        "EMERGENCY_HOTKEY", "CTRL+ALT+SHIFT+F12"
-    ).upper()
+    canonical: dict[str, str] = {}
+    for key, default in (("HOTKEY", "CTRL+ALT+Z"), ("EMERGENCY_HOTKEY", "CTRL+ALT+SHIFT+F12")):
+        try:
+            canonical[key] = canonical_hotkey(values.get(key, default))
+        except ConfigError as exc:
+            raise ConfigError(
+                f"{key}: {exc} (use at least two of CTRL/ALT/SHIFT/SUPER plus one key A-Z, 0-9 or F1-F12)"
+            ) from exc
+    hotkey = canonical["HOTKEY"]
+    emergency_hotkey = canonical["EMERGENCY_HOTKEY"]
     if hotkey == emergency_hotkey:
         raise ConfigError("HOTKEY and EMERGENCY_HOTKEY must be different")
 
