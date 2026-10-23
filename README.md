@@ -1,9 +1,38 @@
-# AAG LockLock 2.0.0-beta.4 — Ubuntu ו־Windows
+# AAG LockLock 2.0.0-beta.5 — Ubuntu ו־Windows
 
 
-Version 2.0.0-beta.4 source update: Linux lid-ignore now uses independent logind inhibition and InputLock-owned ordinary suspend protection. It requires native protection readiness; retired AAG services and AAG Power APIs are not prerequisites. See [independent lid protection and deployment limits](docs/independent-lid-protection.md). Historical deployment records describe earlier code; this source change is not a claim of physical acceptance.
+Version 2.0.0-beta.5 source update: Linux lid-ignore now uses independent logind inhibition and InputLock-owned ordinary suspend protection. It requires native protection readiness; retired AAG services and AAG Power APIs are not prerequisites. See [independent lid protection and deployment limits](docs/independent-lid-protection.md). Historical deployment records describe earlier code; this source change is not a claim of physical acceptance.
 
-Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUALIFICATION.md).
+Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUALIFICATION.md). 2.0.0-beta.5 has not been physically requalified.
+
+## What changed in 2.0.0-beta.5 (Linux)
+
+- **Thermal policy.** Decisions use only new telemetry samples (about every 2 s) and per-sensor medians of 5 samples; a single spike never acts. CPU: warning at a median ≥95 °C for 30 s, protective suspend at a median ≥104 °C for 60 s, emergency at ≥107 °C for 3 consecutive samples confirmed by an independent witness — chassis SEN1/SEN2 or NVMe at or above its own warning level, since all CPU sensors read the same package (otherwise only ≥108 °C for 10 s applies). Chassis 65/70/73 °C and NVMe 77/80 °C have their own dwell times. Telemetry is lost only when a whole sensor category is missing for ≥30 s. Firmware/kernel 110 °C protection is untouched. Details: [thermal policy](docs/independent-lid-protection.md#thermal-policy-200-beta5).
+- **Sleep.** `input-lock.service` is `Type=notify` (the daemon sends `READY=1` once its socket, device scan and first state file exist). From `PrepareForSleep(true)` until resume plus 35 s the daemon pauses its controller and lease deadlines, extends its watchdog from the normal `WatchdogSec=60s` to 300 s and, while supervision keeps sampling, takes no protective action as long as the OS reports that a suspend is being prepared (`input-lock status` shows `OS sleep: in progress`; the window closes early on resume and is capped at `InhibitDelayMaxSec + 60 s + 3 × pm_freeze_timeout`, clamped to 150–300 s; 150 s with logind's 30 s and the kernel's 20 s). The watchdog returns to 60 s only once logind reports `PreparingForSleep=false`, never while it still reports true (a failing suspend can make several 20 s freeze attempts), and after the cap if that is unknown; the sleep hook calls `input-lock prepare-sleep` before and `input-lock resume-sleep` after. The daemon accepts these two commands only from root (the hook); run by hand as a normal user, the CLI explains this and changes nothing.
+- **Protective suspend.** The root helper waits up to 240 s for the kernel transition; the protect and failsafe units allow 330 s (`TimeoutStartSec`). It never asks for a second suspend while one is in progress or right after one failed (within 180 s): it records `deferred-os-sleep-in-progress`, and the daemon then leaves the pending state without re-arming anything. The receipt now lives in the root-owned `/var/lib/input-lock-protection/` (mode 0755); a copy is still written to `/var/lib/input-lock/`.
+- **Lid-ignore loss is visible.** Every disable is logged with its reason; `input-lock status` shows `Last lid-ignore off:`. Turning it off yourself, or changing a setting that resets the locks, shows nothing. A side effect of another action of yours (the emergency shortcut, the TTY recovery chord, the tray's Unlock/Quit) shows a short informational notice naming that action. Anything else shows a critical, persistent notification with a "Re-enable…" action (confirmation dialog, open lid required). If the tray first reported a lost connection, it shows one corrected notice with the real reason after it reconnects. It never re-arms itself. A manual Power Mode change keeps lid-ignore and restores the power-saver hold with a notification. Stopping the tray (`input-lock-notifier`) ends lid-ignore by design.
+- **Hotkeys are validated.** `HOTKEY` and `EMERGENCY_HOTKEY` need at least two of CTRL/ALT/SHIFT/SUPER plus one key A–Z, 0–9 or F1–F12, and must differ; otherwise the configuration is invalid and `input-lock doctor` reports FAIL. The GNOME emergency shortcut follows `EMERGENCY_HOTKEY`; after changing it run `python3 /usr/lib/input-lock/input_lock_gnome.py install` (doctor warns while they differ). `input-lock set-hotkey` fails with a clear error when the GNOME bindings are not installed.
+- **Emergency path.** After an emergency unlock by the emergency hotkey, the GNOME emergency shortcut or the TTY recovery chord, IPC requests that would lock (`lock`, `lock-default`, and `toggle`/the GNOME primary-shortcut fallback while nothing is locked) are refused for 60 s and the requesting PID is logged; unlocking is never refused. The internal commands and `input-lock emergency-unlock` fall back to the default socket when the configuration cannot be parsed.
+- **CLI.** The CLI waits up to 5 s for the daemon socket while the service starts, then names the socket and `systemctl status input-lock.service`. It warns once when the running daemon speaks another protocol version (current: 3).
+- **Failure latch.** Written only when InputLock's own suspend request was accepted and the transition then failed; later failures are appended, never overwritten. While it is active, arming stays blocked until `sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure` (the latch is archived and renamed, never deleted). After a reboot or a later successful suspend the latch is stale: it no longer blocks arming, and `input-lock doctor` and `input_lock_safety.py check` show it as information.
+- **Installer.** It refuses a checkout other accounts can modify, compiles and validates a root-owned staged copy before stopping anything, restores the backup automatically on failure, reports doctor problems as post-install warnings, and prunes stale files from `/usr/lib/input-lock`. `tools/install_native_lid.py` is retired.
+- **Units.** The protect and failsafe units gain sandboxing (`PrivateDevices`, kernel/cgroup protection, `RestrictNamespaces`, native syscalls only) but deliberately no `CapabilityBoundingSet`. The daemon unit's stop hook no longer waits for a UPower restart.
+- **Uninstaller.** Stops the protect and failsafe units first, archives `/var/lib/input-lock` and `/var/lib/input-lock-protection` (with any latch) before removing them, and cleans up the GNOME extension entry. See section 11 below.
+- **Cursor hiding** is driven by GNOME idle watches; any input counts as activity, including RustDesk and other uinput devices. The installer enables the extension only on a fresh installation; an update never re-enables it after you disabled it.
+- **Removed:** the `lid_power_policy_enabled` / `lid_battery_threshold` user settings (old values in `/var/lib/input-lock/user-settings.json` are ignored; the state names them under `unsupported_settings`), the `set-lid-power-policy` / `set-lid-policy-health` IPC commands and the unused AAG compatibility module. A refused tray-controller claim now returns an error with a reason.
+
+## Language / שפה
+
+The tray menu, notifications, dialogs, the CLI (`status`, `doctor`, errors, `--help`) and the GNOME shortcut names use gettext (text domain `input-lock`). English is the default and the fallback; a Hebrew translation is included (`po/he.po`).
+
+- **Automatic (default):** the language follows the session locale (`LC_ALL`, `LC_MESSAGES`, `LANG`, then `LANGUAGE`). A Hebrew session such as `he_IL.UTF-8` gets the Hebrew interface with a right-to-left layout.
+- **Per user:** *Settings… → Language* offers *Automatic*, *עברית* and *English*. The choice is stored as `ui_language` (`auto`, `he` or `en`) in `~/.config/input-lock/cursor-settings.json`. The CLI uses it at once; the tray uses it the next time it starts. The tray is not restarted for you, because stopping it turns Ignore Lid Close off. If that file exists but is not valid JSON, it is never overwritten: saving reports the problem and keeps the file, so fix or remove it and save again.
+- **Commands stay copyable:** in the Hebrew text, commands, paths and shortcuts are never wrapped in invisible direction marks, and a command to run stands on a line of its own, so it can be copied straight into a terminal.
+- **English for one command,** for example for a bug report: `INPUT_LOCK_UI_LANGUAGE=en input-lock doctor`.
+- **Always English:** log lines and journal events, status codes such as `LID_IGNORE_ARMED`, the doctor level tags (`[PASS]`, `[FAIL]`), the IPC protocol, and the installer scripts. Messages from the root service are translated only where the tray or CLI shows them.
+- **Build:** `install.sh` compiles `po/*.po` with `msgfmt` (or `tools/po_compile.py` when the gettext tools are missing) to `/usr/share/locale/<lang>/LC_MESSAGES/input-lock.mo`. In a source checkout run `python3 tools/po_compile.py --build`. After changing user-facing strings run `python3 tools/po_extract.py` and update `po/he.po`; the tests fail on any missing, fuzzy or inconsistent entry.
+
+ממשק המשתמש זמין גם בעברית: הוא נבחר אוטומטית לפי שפת המערכת, ואפשר לבחור עברית או אנגלית בחלון ההגדרות (‎`Settings…`‎ ← שפה).
 
 **License:** MIT — see [LICENSE](LICENSE).
 
@@ -25,7 +54,7 @@ Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUA
 
 ה־CLI מתקשר עם השירות באמצעות Unix socket עם פרוטוקול JSON מצומצם. ה־socket נגיש לחיבור מקומי, אך השירות בודק כל לקוח באמצעות `SO_PEERCRED` ומקבל פקודות רק מ־root או מה־UID שהוגדר בהתקנה. אין `eval`, אין shell commands מהלקוח ואין פרמטר חופשי לביצוע.
 
-סמל ה־Tray וההתראות מופעלים מתהליך משתמש נפרד. הוא יורש את D-Bus הנכון מה־user manager של systemd, ולכן שירות המערכת אינו מנחש `DISPLAY`, ‏`WAYLAND_DISPLAY` או `DBUS_SESSION_BUS_ADDRESS`. ממשק ה־Tray באנגלית וכולל נעילה/שחרור, שינוי קיצור, התעלמות מסגירת מכסה ו־About.
+סמל ה־Tray וההתראות מופעלים מתהליך משתמש נפרד. הוא יורש את D-Bus הנכון מה־user manager של systemd, ולכן שירות המערכת אינו מנחש `DISPLAY`, ‏`WAYLAND_DISPLAY` או `DBUS_SESSION_BUS_ADDRESS`. ממשק ה־Tray זמין באנגלית ובעברית (ראו „Language / שפה” למעלה) וכולל נעילה/שחרור, שינוי קיצור, התעלמות מסגירת מכסה ו־About.
 
 הפעולה `Quit` בתפריט ה־Tray מבקשת אישור, משחררת את כל התקני הקלט ומסיימת ביציאה תקינה הן את ה־daemon והן את תהליך ה־Tray. כדי להפעיל את Input Lock שוב יש להריץ `sudo systemctl start input-lock.service` ולאחריו `systemctl --user start input-lock-notifier.service`.
 
@@ -33,11 +62,11 @@ Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUA
 
 תפריט ה־Tray כולל גם את האפשרות `Start at Login`. סימון או ביטול שלה מעדכן יחד את שירות המערכת ואת שירות ה־Tray; Ubuntu מציג בקשת אימות גרפית לשינוי שירות המערכת. שירות ה־Tray מסודר אחרי `gnome-session-initialized.target`, ולכן הוא אינו מנסה ליצור חלון לפני שחיבור Wayland של GNOME מוכן. אם התצוגה עדיין אינה זמינה הוא יוצא ללא core-dump ו־systemd מנסה שוב. ביטול האפשרות אינו סוגר את התוכנה מיד—לכך מיועדת הפעולה `Quit`.
 
-הפעולה `Settings…` פותחת חלון הגדרות מאוחד. בחלון ניתן לבחור אילו סוגי קלט ייכללו בנעילה הרגילה—מקלדת, עכבר ו־Touchpad, ומסך מגע—לשנות את הקיצור הראשי ולהחליט אם Input Lock יופעל אוטומטית בכניסה למשתמש. יש לבחור לפחות סוג קלט אחד. הבחירות נשמרות בקובץ ההעדפות ואינן אובדות בעדכון או בהפעלה מחדש.
+הפעולה `Settings…` פותחת חלון הגדרות מאוחד. בחלון ניתן לבחור אילו סוגי קלט ייכללו בנעילה הרגילה—מקלדת, עכבר ו־Touchpad, ומסך מגע—לשנות את הקיצור הראשי, להחליט אם Input Lock יופעל אוטומטית בכניסה למשתמש ולבחור את שפת הממשק (אוטומטית, עברית או אנגלית; השינוי חל בהפעלה הבאה של ה־Tray). יש לבחור לפחות סוג קלט אחד. הבחירות נשמרות בקובץ ההעדפות ואינן אובדות בעדכון או בהפעלה מחדש.
 
 באותו חלון ניתן להפעיל `Automatically lock after no activity` ולבחור זמן של 1–1440 דקות. כל אירוע מקלדת, עכבר, Touchpad או מסך מגע מאפס את הספירה. הטיימר פועל רק ב־Session המורשה וכשהקלט משוחרר; בסיום הזמן הוא נועל את סוגי הקלט שנבחרו באותו חלון. ביטול תיבת הסימון משבית את Auto-Lock, וברירת המחדל לאחר התקנה חדשה היא כבויה.
 
-האפשרות `Hide cursor after no activity` מסתירה את סמן העכבר אחרי זמן של דקות ושניות שנבחר באמצעות כפתורי ‎−/+‎. תזוזה ממשית של הסמן או שינוי במצב כפתורי העכבר מחזירים אותו מיד ומתחילים את הספירה מחדש. המימוש הוא הרחבת GNOME מצומצמת המשתמשת ישירות במיקום הסמן וב־CursorTracker של Mutter, ולכן פועל באופן גלובלי ב־Wayland ואינו מושפע מפעילות Idle מדומה של RustDesk או התקני uinput. האפשרות כבויה כברירת מחדל והעדפת המשתמש נשמרת תחת `~/.config/input-lock/`. GNOME Wayland טוען התקנה או עדכון של קוד ההרחבה בכניסה הבאה למשתמש; המתקין אינו מכבה הרחבה פעילה באמצע Session.
+האפשרות `Hide cursor after no activity` מסתירה את סמן העכבר אחרי זמן של דקות ושניות שנבחר באמצעות כפתורי ‎−/+‎. כל פעילות קלט—מקלדת, עכבר, Touchpad או מסך מגע, וגם קלט מדומה של RustDesk או של התקני uinput—מחזירה את הסמן מיד ומתחילה את הספירה מחדש. המימוש הוא הרחבת GNOME מצומצמת שמקבלת התראות פעילות וחוסר פעילות ממוניטור ה־Idle של Mutter (ללא דגימה של מיקום הסמן) ומשתמשת ב־CursorTracker, ולכן פועלת באופן גלובלי ב־Wayland. האפשרות כבויה כברירת מחדל והעדפת המשתמש נשמרת תחת `~/.config/input-lock/`. GNOME Wayland טוען התקנה או עדכון של קוד ההרחבה בכניסה הבאה למשתמש; המתקין אינו מכבה הרחבה פעילה באמצע Session. המתקין מפעיל את ההרחבה רק בהתקנה חדשה; עדכון לעולם אינו מפעיל מחדש הרחבה שהמשתמש כיבה, ואפשר להפעיל אותה מחלון ה־Settings של ה־Tray.
 
 `Ignore Lid Close (continuous, safety-monitored)` מופעל רק עם מכסה פתוח, משתמש גרפי פעיל, בקר Tray מחובר וניטור תקין. במצב תקין הוא מתעלם מסגירת המכסה ברציפות, **ללא טיימר של 2 או 4 דקות**. בזמן שהאפשרות פעילה, ה־Tray מחזיק חסימת GNOME Idle זמנית וגם פרופיל `power-saver` **זמני בלבד**, כדי להפחית קפיצות חום ולמנוע כניסה לשינה מחוסר פעילות; בביטול האפשרות פרופיל החשמל הקודם חוזר אוטומטית. ההגדרות הקבועות של GNOME אינן משתנות, ושינת חירום/שינה ידנית אינה נחסמת. במקרה חום מסוכן, סוללה קריטית או אובדן השגחה InputLock משחרר את העיכוב ומבקש השהיה רגילה. לאחר הפעלת השירות מחדש יש להפעיל את האפשרות שוב במפורש. ראו [מדיניות ההגנה המעודכנת](docs/independent-lid-protection.md).
 
@@ -193,8 +222,8 @@ find . -maxdepth 3 -type f -print
 
    ```bash
    cd ~/Downloads
-   unzip locklock-2.0.0-beta.4.zip
-   cd locklock-2.0.0-beta.4
+   unzip locklock-2.0.0-beta.5.zip
+   cd locklock-2.0.0-beta.5
    ```
 
 2. הרץ את הבדיקות הלא־מסוכנות:
@@ -224,7 +253,9 @@ find . -maxdepth 3 -type f -print
    input-lock doctor
    ```
 
-המתקין מגבה גרסה קיימת, שומר קובץ הגדרות קיים בעדכון, אינו מבצע נעילת ניסיון, ועוצר את השירות אם ההתקנה נכשלת לאחר שהחלו שינויים.
+המתקין מגבה גרסה קיימת, שומר קובץ הגדרות קיים בעדכון ואינו מבצע נעילת ניסיון.
+
+Since 2.0.0-beta.5 the installer refuses a checkout that other accounts can modify, compiles and validates a root-owned staged copy before it stops anything, and restores the backup automatically (restarting the previous service if it was running) when a step fails after files were replaced. Once the new daemon is running, problems such as doctor FAIL items are printed as `post-install:` warnings; the daemon is not stopped.
 
 ## חלק 7 — הגדרת הקיצור
 
@@ -242,6 +273,8 @@ input-lock set-hotkey 'CTRL+ALT+X'
 Ctrl+Alt+Z             → /usr/bin/input-lock gnome-hotkey
 Ctrl+Alt+Shift+F12     → /usr/bin/input-lock gnome-emergency
 ```
+
+The emergency binding is generated from `EMERGENCY_HOTKEY` (Ctrl+Alt+Shift+F12 by default). After changing `EMERGENCY_HOTKEY`, run `python3 /usr/lib/input-lock/input_lock_gnome.py install` again; `input-lock doctor` warns while the installed binding differs. `input-lock set-hotkey` fails with a clear error when the GNOME bindings are not installed.
 
 הם שכבת fallback בלבד. בזמן נעילה GNOME אינו מקבל את אירועי המקלדת, ולכן ה־daemon מזהה את אותם צירופים ישירות. מנגנון debounce מאחד את אירוע ה־daemon ואת קריאת GNOME כדי למנוע Toggle כפול.
 
@@ -318,7 +351,7 @@ gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/or
 
 ### תפריט ה־Tray
 
-לחיצה על הסמל מציגה תפריט באנגלית:
+לחיצה על הסמל מציגה תפריט. השמות להלן הם של הממשק האנגלי; בממשק העברי הם מופיעים בעברית (למשל „התעלמות מסגירת מכסה”):
 
 - `Lock Input` / `Unlock Input` — נעילה או שחרור של מצב ברירת־המחדל.
 - `Shortcut: …` — הקיצור הפעיל כעת.
@@ -444,13 +477,22 @@ sudo ./update.sh
 
 העדכון משחרר את כל ההתקנים, שומר את קובץ ההגדרות הקיים, מגבה קבצים מותקנים ומפעיל מחדש במצב משוחרר.
 
+The update uses the same checks as the installer (see section 6): an unsafe checkout is refused before anything changes, and a failure restores the backup automatically. Files in `/usr/lib/input-lock` that the release does not install are removed after a successful update (they remain in the backup under `/var/backups/input-lock/`).
+
 הסרה מלאה:
 
 ```bash
 sudo ./uninstall.sh
 ```
 
-ההסרה משחררת לפני הכול את הקלט, מסירה את שירות המערכת ושירות המשתמש, את שני קיצורי GNOME, קוד, תיעוד, sleep hook, runtime/cache/backup ואת חשבון השירות אם נוצר על־ידי המתקין. היא אינה מסירה את חבילת Python/Ubuntu המשותפת ואינה מוחקת קיצורי GNOME אחרים.
+The uninstaller:
+
+- releases all input first, then stops `input-lock.service`, `input-lock-protect.service` and `input-lock-failsafe.service` and confirms they stopped before deleting their files (if one is still running it aborts and keeps every file; run it again later);
+- restores the normal lid and power policy, disables the units (a re-run does not abort when they are already gone) and stops and disables the tray service;
+- removes both GNOME fallback shortcuts, the cursor extension (also from `enabled-extensions`), code, documentation, units, the sleep hook, `/etc/input-lock`, `/run/input-lock` and the `input-lockd` account if the installer created it;
+- archives `/var/lib/input-lock` and `/var/lib/input-lock-protection` (including any failure latch) to a root-only folder `/var/backups/input-lock/uninstall-<timestamp>` and removes them, so a later reinstall does not start with a stale latch.
+
+It intentionally keeps, and tells you about: the installer backups under `/var/backups/input-lock` (delete with `sudo rm -rf /var/backups/input-lock`) and your personal preferences in `~/.config/input-lock` (delete with `rm -rf ~/.config/input-lock`). It does not remove shared Python/Ubuntu packages or other GNOME shortcuts.
 
 ## חלק 12 — בדיקת קבלה סופית
 

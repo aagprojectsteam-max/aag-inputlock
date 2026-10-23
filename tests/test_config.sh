@@ -36,7 +36,11 @@ grep -q 'org.freedesktop.login1.inhibit-handle-lid-switch' \
 grep -q 'input-lock-protect.service' \
     "$PROJECT_DIR/config/90-input-lock.rules"
 grep -q '99-zzzz-input-lock-no-auto-sleep.conf' "$PROJECT_DIR/install.sh"
-grep -Fq '"$PROJECT_DIR/LICENSE" /usr/share/doc/input-lock/LICENSE' "$PROJECT_DIR/install.sh"
+grep -Fq '"$STAGE/LICENSE" /usr/share/doc/input-lock/LICENSE' "$PROJECT_DIR/install.sh"
+# Root never runs Python from the checkout and never installs unverified files.
+grep -q '^verify_source_tree()' "$PROJECT_DIR/install.sh"
+grep -q '^prune_unmanaged()' "$PROJECT_DIR/install.sh"
+grep -q 'stop_and_verify input-lock-protect.service' "$PROJECT_DIR/uninstall.sh"
 grep -q 'After=.*gnome-session-initialized.target' \
     "$PROJECT_DIR/systemd/input-lock-notifier.service"
 

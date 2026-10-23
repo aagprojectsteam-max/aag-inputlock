@@ -1,4 +1,4 @@
-> Beta.2 power/lid behavior is documented in [the safety remediation](SAFETY-REMEDIATION-20260911.md). Persistent GNOME/UPower suppression is removed; do not recreate it.
+> Current lid and power behavior is documented in [independent lid protection](independent-lid-protection.md). Persistent GNOME/UPower suppression is removed; do not recreate it.
 
 # Troubleshooting
 
@@ -208,6 +208,89 @@ input-lock doctor
 
 Rollback: restore the dated copy under `/var/backups/input-lock/` or rerun the package's `update.sh`.
 
+## `cannot connect to the Input Lock daemon at …`
+
+The CLI retried for up to 5 seconds while `input-lock.service` was activating or active, or the unit is not running at all. The message names the socket path and the unit state.
+
+```bash
+systemctl status input-lock.service --no-pager
+journalctl -u input-lock.service -b --no-pager -n 100
+```
+
+Repair: start the service (`sudo systemctl start input-lock.service`). With `Type=notify`, `systemctl start` returns once the daemon is ready. If it fails, read the journal; the daemon names an invalid configuration explicitly.
+
+## `configuration cannot be parsed …; using the default socket`
+
+Printed by the internal commands (GNOME shortcuts, the sleep hook, the tray's stop hook) and by `input-lock emergency-unlock`. They still reach the daemon on `/run/input-lock/control.sock`, so the emergency path keeps working, but the configuration needs repair:
+
+```bash
+sudoedit /etc/input-lock/input-lock.conf
+input-lock doctor
+sudo systemctl reload input-lock.service
+```
+
+## Invalid `HOTKEY` or `EMERGENCY_HOTKEY`
+
+Since 2.0.0-beta.5 both shortcuts must have at least two of CTRL, ALT, SHIFT, SUPER plus exactly one key A–Z, 0–9 or F1–F12, and they must differ. Values such as `CTRL+ALT+SHIFT+F21`, `A+B` or `SHIFT+A` make the configuration invalid; `input-lock doctor` reports FAIL and names the setting. Correct the value, then reinstall the GNOME fallback binding so it follows `EMERGENCY_HOTKEY`:
+
+```bash
+sudoedit /etc/input-lock/input-lock.conf
+sudo systemctl reload input-lock.service
+python3 /usr/lib/input-lock/input_lock_gnome.py install
+input-lock doctor
+```
+
+## Warning: the running daemon reports another protocol
+
+The CLI and the running daemon come from different releases, usually because the daemon was not restarted after an update. Restart it while input is released:
+
+```bash
+sudo systemctl restart input-lock.service
+input-lock doctor
+```
+
+## Installer refused the source tree, or restored the backup
+
+`unsafe source: …` means another account could modify the checkout (other-writable files, a shared writable group, a foreign owner or a symbolic link). Fix the permissions (for example `chmod -R go-w <checkout>`) or install from a copy you own.
+
+If the installer prints `Restoring the previous installation from the backup`, a step failed after it started replacing files. The previous files were restored from `/var/backups/input-lock/<timestamp>` and the previous service was started again if it had been running. Read the error above that line, fix it, and run `sudo ./update.sh` again.
+
+`post-install:` warnings are printed after the new daemon is running. The installation succeeded; resolve the named item (often a doctor FAIL item, or a GNOME session that was not available) before the first lock test.
+
+## Lid-ignore turned itself off
+
+```bash
+input-lock status
+journalctl -u input-lock.service -b --no-pager | grep LID_IGNORE_DISABLED
+```
+
+`Last lid-ignore off:` and the journal show the reason and whether you requested it. A disable you did not cause also produced a critical notification with a "Re-enable…" action. A side effect of your own action (the emergency shortcut, the TTY recovery chord, the tray's Unlock/Quit) only shows an informational note, and turning it off yourself or changing settings shows nothing. If the tray first said that the connection to the service was lost, it shows one corrected notice with the real reason after it reconnects. Lid-ignore is never re-armed automatically; re-enable it with the lid open after checking the reason.
+
+Typical reasons: `controller-lease-expired` (the tray did not check in in time, for example around a long suspend or resume), `controller-disconnected` (the tray's connection closed: it was stopped, restarted or crashed), `session-inactive` (logout, user switch), `supervision-logind-unavailable` (logind failed for about 15 s), `emergency-unlock`, `settings-reset`, `thermal-*`, `battery-critical`, `telemetry-lost`, `supervision-journal-unwritable` (`/var/lib/input-lock` full or read-only). A manual Power Mode change does **not** turn it off: the tray restores the power-saver hold and notifies you; only a hold that is still ineffective after one retry ends lid-ignore.
+
+## A protective suspend was deferred
+
+```bash
+journalctl -u input-lock.service -u input-lock-protect.service -u input-lock-failsafe.service -b --no-pager | grep -E 'PROTECTIVE_ACTION_DEFERRED|SLEEP_WINDOW'
+```
+
+`event=PROTECTIVE_ACTION_DEFERRED` means the root helper found the OS sleep path busy (logind `preparing`, `systemd-suspend.service` running, or it ran within the last 180 seconds and failed; in recovery also a recent success or a daemon that ended by watchdog). It requested nothing and wrote no latch, to avoid driving a second attempt into a stuck freezer. The daemon leaves `PROTECTIVE_ACTION_PENDING` (safety reason `PROTECTIVE_ACTION_DEFERRED`), lid-ignore stays off and logind's own lid policy applies. Nothing is re-armed. Open the lid, check why the OS suspend did not complete (`journalctl -u systemd-suspend.service -b`), and re-enable lid-ignore if you still need it.
+
+While a suspend is being prepared, `input-lock status` shows `OS sleep: in progress`; supervision takes no protective action until resume plus 35 s.
+
+## Arming refused: previous emergency suspend failed
+
+A failure latch is written only when InputLock's own suspend request was accepted and the kernel transition then failed or was never confirmed. While it is active, arming stays blocked until an administrator reviews and acknowledges it:
+
+```bash
+input-lock doctor
+/usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py check
+journalctl -u input-lock-failsafe.service -b --no-pager
+sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure
+```
+
+`doctor` shows an active latch as `FAIL` (`Protection failure latch`) and a stale one as `INFO`. A latch is stale after a reboot or after a later successful suspend; it no longer blocks arming and needs no action, although acknowledging it archives it. `check` prints `{"ready": …, "errors": […], "info": […]}`. Later failures are appended to the latch, never overwritten. `acknowledge-failure` refuses while a protect, failsafe or system suspend unit is still running; it copies the latch to `/root/ARCHIVE/InputLock/` and renames it to `failure-acknowledged-<sha256>.json`, never deleting it.
+
 ## GNOME binding is not created or collides
 
 Diagnosis:
@@ -355,7 +438,7 @@ input-lock logs -n 100
 
 Expected: at least one node named `Lid Switch` with class `lid-switch`. If none exists, the menu item stays disabled and the daemon safely refuses `input-lock lid-ignore on`. Do not substitute an arbitrary power-button or tablet-mode node.
 
-When enabled, status must report an active lid inhibitor, a connected controller and a supervised safety state with fresh telemetry. `input-lock doctor` checks the installed AAG adapter and dependencies. There is no tray policy-repair writer. If monitoring is unavailable, reopen the lid and inspect the journals. Return to normal OS behavior with:
+When enabled, status must report an active lid inhibitor, a connected controller and a supervised safety state with fresh telemetry. `input-lock doctor` checks the installed InputLock units, dependencies, the daemon protocol version, the GNOME emergency binding and the native protection readiness (unit contracts, unit drop-ins and the failure latch). There is no tray policy-repair writer. If monitoring is unavailable, reopen the lid and inspect the journals. Return to normal OS behavior with:
 
 ```bash
 input-lock lid-ignore off

@@ -27,6 +27,7 @@ jobs:
       - run: python3 tools/publication_scan.py
       - run: sudo apt-get update && sudo apt-get install -y python3-gi python3-dbus python3-evdev python3-pyudev gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 shellcheck
       - run: /usr/bin/python3 tools/run_tests.py linux
+      - run: PYTHONPATH=src:tests /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py'
       - run: /usr/bin/python3 -S -B -m unittest discover -s tests -p test_daemon_logic.py
       - run: bash tests/test_config.sh
       - run: shellcheck install.sh update.sh uninstall.sh integration/input-lock-system-sleep src/input-lock-launch

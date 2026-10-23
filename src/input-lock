@@ -6,9 +6,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# Prefer the modules next to this script: in a source checkout that is the
+# checkout itself, and /usr/lib/input-lock/input-lock-daemon finds its own
+# directory. /usr/bin/input-lock has no sibling modules and uses the
+# installed tree.
+here = Path(__file__).resolve().parent
 installed = Path("/usr/lib/input-lock")
-source_tree = Path(__file__).resolve().parent
-sys.path.insert(0, str(installed if installed.is_dir() else source_tree))
+sys.path.insert(0, str(here if (here / "input_lock_common.py").is_file() else installed))
 
 from input_lock_cli import main  # noqa: E402
 

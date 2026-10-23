@@ -1,43 +1,63 @@
 #!/usr/bin/env python3
-"""Explicit public test groups; no host-specific production evidence."""
+"""Run the public test groups; no host-specific production evidence.
+
+The shared and Windows-native groups are explicit because they must import
+without Linux dependencies. Every other ``tests/test_*.py`` module is
+discovered automatically into the Linux group, so a new test file can never be
+skipped silently.
+"""
+from __future__ import annotations
+
 import logging
 import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
-logging.disable(logging.CRITICAL)
+TESTS = ROOT / "tests"
 
-group = sys.argv[1] if len(sys.argv) > 1 else "all"
-shared = [
+SHARED = [
     "test_core",
     "test_version_consistency",
     "test_windows_state",
     "test_windows_power",
     "test_windows_remediation",
 ]
-linux = [
-    "test_common",
-    "test_daemon_logic",
-    "test_gnome",
-    "test_notifier_settings",
-    "test_lid_policy",
-    "test_remediation_linux",
-    "test_safety",
-    "test_native_protection",
-    "test_boot_repair_install",
-    "test_aag_adapter_contract",
-    "test_thermal_status",
-]
-groups = {
-    "shared": shared,
-    "linux": linux,
-    "windows-native": ["test_windows_native"],
-    "all": shared + linux,
-}
-if group not in groups:
-    raise SystemExit("Choose shared, linux, windows-native or all")
-suite = unittest.defaultTestLoader.loadTestsFromNames(groups[group])
-result = unittest.TextTestRunner(verbosity=1).run(suite)
-raise SystemExit(0 if result.wasSuccessful() else 1)
+WINDOWS_NATIVE = ["test_windows_native"]
+
+
+def discovered() -> list[str]:
+    """Every test module under tests/, as importable module names."""
+    return sorted(path.stem for path in TESTS.glob("test_*.py"))
+
+
+def groups() -> dict[str, list[str]]:
+    every = discovered()
+    explicit = set(SHARED) | set(WINDOWS_NATIVE)
+    linux = [name for name in every if name not in explicit]
+    return {
+        "shared": list(SHARED),
+        "linux": linux,
+        "windows-native": list(WINDOWS_NATIVE),
+        # Windows-native tests skip themselves outside Windows.
+        "all": every,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    group = args[0] if args else "all"
+    available = groups()
+    if group not in available:
+        raise SystemExit("Choose shared, linux, windows-native or all")
+    sys.path[:0] = [str(ROOT / "src"), str(TESTS)]
+    # Keep output quiet without disabling logging: assertLogs-based tests
+    # need records to flow. Records without a handler are simply dropped.
+    logging.lastResort = None
+    suite = unittest.defaultTestLoader.loadTestsFromNames(available[group])
+    result = unittest.TextTestRunner(verbosity=1).run(suite)
+    return 0 if result.wasSuccessful() else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

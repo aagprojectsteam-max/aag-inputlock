@@ -9,6 +9,7 @@ recognize the unlock chords.  It never stores, transmits, or logs key content.
 from __future__ import annotations
 
 import errno
+import fcntl
 import fnmatch
 import json
 import logging
@@ -18,6 +19,7 @@ import secrets
 import selectors
 import signal
 import socket
+import stat
 import struct
 import tempfile
 import threading
@@ -28,7 +30,8 @@ from typing import Callable, Final
 
 import evdev
 import pyudev
-from input_lock_safety import (BREADCRUMB, SafetyPolicy, Sample, Sensor, Telemetry, atomic_json, protection_errors, request_service)
+from input_lock_safety import (BREADCRUMB, DEFERRED_OS_SLEEP, RESULT_NAME, ROOT_RECEIPT, SafetyPolicy, Sample, Sensor,
+                               Telemetry, atomic_json, protection_errors, request_service)
 from evdev import ecodes
 from locklock_core.allowed_keys import ALLOWED_KEY_CATALOG, validate_allowed_keys
 
@@ -54,10 +57,196 @@ MAX_SUBSCRIBERS: Final = 8
 REQUEST_TIMEOUT: Final = 5.0
 CONTROLLER_TIMEOUT: Final = 35.0
 RESTART_REQUIRED_CONFIG: Final = ("authorized_uid", "authorized_user", "socket_path", "state_path", "default_mode", "lock_touchscreen")
+PROTOCOL: Final = 3  # == input_lock_common.PROTOCOL_VERSION
+# The unit has WatchdogSec=60s (P1-1): longer than one 20 s kernel freezer
+# timeout, so a single freeze outside a sleep window is not fatal. Between
+# PrepareForSleep(true) and the end of logind's PreparingForSleep the freezer
+# may stop this process for 20 s per failed attempt, and one suspend can make
+# several attempts, so the watchdog is extended for that time only (A3). It is
+# never restored while logind still reports PreparingForSleep=true.
+WATCHDOG_NORMAL_USEC: Final = 60_000_000
+WATCHDOG_SLEEP_USEC: Final = 300_000_000
+# A sleep window that never sees its resume signal is closed after a cap
+# derived at runtime (P1-1): InhibitDelayMaxSec + 60 s + 3 x pm_freeze_timeout,
+# clamped to [SLEEP_WINDOW_MIN_SECONDS, SLEEP_WINDOW_MAX_SECONDS] (150 s with
+# logind's 30 s and the kernel's 20 s). CLOCK_MONOTONIC stops while the machine
+# is suspended, so this is awake time spent preparing (or failing) to sleep.
+SLEEP_WINDOW_MIN_SECONDS: Final = 150.0
+SLEEP_WINDOW_MAX_SECONDS: Final = 300.0
+SLEEP_WINDOW_MARGIN_SECONDS: Final = 60.0
+SLEEP_WINDOW_FREEZE_ATTEMPTS: Final = 3
+# Fallbacks when logind or the kernel value cannot be read.
+INHIBIT_DELAY_MAX_FALLBACK_SECONDS: Final = 30.0
+PM_FREEZE_TIMEOUT_FALLBACK_SECONDS: Final = 20.0
+PM_FREEZE_TIMEOUT_PATH: Final = Path("/sys/power/pm_freeze_timeout")
+# A PreparingForSleep=true reading counts as current for this long: longer
+# than one freezer stop (20 s) plus the 2 s telemetry interval. Telemetry
+# that stops altogether leaves the state unknown (P1-1).
+LOGIND_PREPARING_FRESH_SECONDS: Final = 30.0
+# Kernel suspend counters. They change after every completed or failed
+# attempt, and one suspend may make several failing attempts while logind is
+# still preparing, so a change is resume evidence only together with logind
+# PreparingForSleep=false (S-R1, P1-1).
+SUSPEND_STATS_DIR: Final = Path("/sys/power/suspend_stats")
+# EVIOCGSW: the switch-state bitmap (P2-1). python3-evdev 1.9 has no
+# InputDevice.switches(), so the daemon reads it with the ioctl itself.
+_IOC_READ: Final = 2
+SW_LID_BIT: Final = 0x00
+SW_BITMAP_BYTES: Final = (0x10 + 1 + 7) // 8  # SW_CNT = SW_MAX + 1 = 0x11 bits
+# Distinct telemetry samples with logind PreparingForSleep=false that close the
+# window early (S-R1 resume evidence).
+SLEEP_RESUME_EVIDENCE_SAMPLES: Final = 2
+# The readiness probe runs on its own thread (S-R2). A result older than this
+# is treated as "probe pending" for arming; it never affects supervision.
+PROTECTION_PROBE_INTERVAL_SECONDS: Final = 30.0
+PROTECTION_PROBE_STALE_SECONDS: Final = 150.0
+# Consecutive logind D-Bus failures tolerated before acting as session loss (A6).
+LOGIND_ERROR_GRACE_SECONDS: Final = 15.0
+LOGIND_RESTART_BACKOFF: Final = (2.0, 5.0, 10.0, 30.0, 60.0)
+# IPC lock requests are refused this long after a physical emergency unlock (L3).
+EMERGENCY_LOCK_COOLDOWN_SECONDS: Final = 60.0
+PHYSICAL_EMERGENCY_SOURCES: Final = frozenset(
+    {"emergency-hotkey", "gnome-emergency-hotkey", "tty-recovery-hotkey"}
+)
+# Unsent responses a non-controller client may accumulate before it is dropped.
+CLIENT_OUTPUT_LIMIT: Final = 1 << 20
+
+
+def _ioc(direction: int, kind: str, number: int, size: int) -> int:
+    """The kernel's _IOC() request encoding (asm-generic/ioctl.h)."""
+    return (direction << 30) | (size << 16) | (ord(kind) << 8) | number
+
+
+def eviocgsw(length: int) -> int:
+    """EVIOCGSW(len) = _IOC(_IOC_READ, 'E', 0x1b, len)."""
+    return _ioc(_IOC_READ, "E", 0x1B, length)
+
+
+def read_lid_switch(device: object) -> bool:
+    """The SW_LID state of an evdev device, read with EVIOCGSW (P2-1).
+
+    Raises OSError when the device does not answer and AttributeError when
+    the object has no descriptor; callers treat either as "unreadable".
+    """
+    fd = device.fd
+    buffer = bytearray(SW_BITMAP_BYTES)
+    fcntl.ioctl(fd, eviocgsw(len(buffer)), buffer, True)
+    return bool(buffer[SW_LID_BIT // 8] & (1 << (SW_LID_BIT % 8)))
+
+
+def _read_seconds(path: Path, scale: float) -> float | None:
+    """A positive number from a sysfs file, divided by ``scale``, or None."""
+    try:
+        value = float(path.read_text().strip()) / scale
+    except (OSError, ValueError):
+        return None
+    return value if 0 < value < 86_400 else None
+
+
+class _LogindEvent(str):
+    """A control event tagged with the LogindMonitor generation that posted
+    it, so a retired monitor's late refresh round is dropped (P3-2)."""
+
+    logind_generation: int
+
+    def __new__(cls, text: str, generation: int) -> "_LogindEvent":
+        event = super().__new__(cls, text)
+        event.logind_generation = generation
+        return event
 
 
 class TransitionError(RuntimeError):
     """A requested lock transition could not be completed transactionally."""
+
+
+class RecoveryRequired(TransitionError):
+    """The daemon must terminate so that systemd runs InputLock recovery.
+
+    A subclass of TransitionError for compatibility, but never swallowed by a
+    handler that refuses an ordinary transition: those re-raise it (S-R7).
+    """
+
+
+# Interface 3: the tray maps these keys (or reasons containing thermal,
+# battery, telemetry, supervision or sleep) to plain text.
+_PROTECTION_LID_KEYS: Final = {
+    "CONTROLLER_LOST": "controller-disconnected",
+    "SUPERVISION_LOST": "supervision-lost",
+    "TELEMETRY_LOST": "telemetry-lost",
+    "LID_TELEMETRY_LOST": "telemetry-lid-switch-lost",
+    "LID_DEVICE_LOST": "telemetry-lid-switch-lost",
+    "BATTERY_CRITICAL": "battery-critical",
+    "THERMAL_HIGH_RISK": "thermal-high-risk",
+    "THERMAL_EMERGENCY": "thermal-emergency",
+    "DAEMON_FAILED": "daemon-shutdown",
+}
+_LID_DISABLE_KEYS: Final = {
+    "emergency-hotkey": "emergency-unlock",
+    "gnome-emergency-hotkey": "emergency-unlock",
+    "tty-recovery-hotkey": "emergency-unlock",
+    "ipc-emergency-unlock": "emergency-unlock",
+    "authorized-session-inactive": "session-inactive",
+    "user-session-ended": "session-inactive",
+    "logind-unavailable": "supervision-logind-unavailable",
+    "safety-journal-failed": "supervision-journal-unwritable",
+    "hotkey-change": "settings-reset",
+    "lock-kinds-change": "settings-reset",
+    "allowed-keys-change": "settings-reset",
+    "configuration-reload": "settings-reset",
+    "invalid-config-reload": "settings-reset",
+    "system-suspend": "sleep-input-release-failed",
+    "system-sleep-hook": "sleep-input-release-failed",
+    "controller-lost": "controller-disconnected",
+    "lid-device-lost": "telemetry-lid-switch-lost",
+}
+# U-R1: the tray did not heartbeat within CONTROLLER_TIMEOUT. A closed or
+# broken connection keeps "controller-disconnected".
+CONTROLLER_LEASE_EXPIRED_KEY: Final = "controller-lease-expired"
+# U-R5 (interface 2): lid-ignore ends because of something the user did. The
+# tray shows an informational notice for these, a critical one otherwise.
+# Settings reloads are user-initiated only when requested over IPC.
+USER_INITIATED_LID_REASONS: Final = frozenset({
+    "lid-ignore-disabled",
+    "emergency-hotkey",
+    "gnome-emergency-hotkey",
+    "tty-recovery-hotkey",
+    "ipc-emergency-unlock",
+    "hotkey-change",
+    "lock-kinds-change",
+    "allowed-keys-change",
+})
+
+
+def lid_disable_key(reason: str) -> str:
+    """Normalize an internal reason to the readable key reported to the tray."""
+    text = reason.strip()
+    if text.startswith("protective-suspend:"):
+        text = text.partition(":")[2]
+    if text in _PROTECTION_LID_KEYS:
+        return _PROTECTION_LID_KEYS[text]
+    text = text.lower().replace("_", "-")
+    return _LID_DISABLE_KEYS.get(text, text)
+
+
+def sd_notify(message: str, environ: dict[str, str] | None = None) -> bool:
+    """Send one sd_notify(3) datagram without libsystemd.
+
+    Supports filesystem and abstract-namespace ('@' prefix) sockets. Returns
+    False when not supervised by systemd or when the send fails; callers never
+    depend on delivery.
+    """
+    address = (os.environ if environ is None else environ).get("NOTIFY_SOCKET", "")
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    elif not address.startswith("/"):
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC) as notify:
+            notify.sendto(message.encode("utf-8"), address)
+        return True
+    except OSError as exc:
+        LOG.debug("sd_notify %r failed: %s", message, exc)
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,14 +306,30 @@ class ClientState:
     buffer: bytearray = field(default_factory=bytearray)
     subscribed: bool = False
     deadline: float = field(default_factory=lambda: time.monotonic() + REQUEST_TIMEOUT)
+    pid: int = 0
+    # Per-client output queue (B2). A slow reader is never treated as a lost
+    # client: unsent bytes wait for EVENT_WRITE, and only the newest state
+    # event is kept while older output is still pending.
+    outbuf: bytearray = field(default_factory=bytearray)
+    pending_state: bytes | None = None
+    close_after_flush: bool = False
+    watching_write: bool = False
+    # Set while _close_client runs, so a failed final flush never re-enters it.
+    closing: bool = False
 
 
 def session_is_eligible(properties: dict[str, object]) -> bool:
     """Only an active local graphical user on a real seat may control locking."""
+    return session_is_locked_local(properties, require_unlocked=True)
+
+
+def session_is_locked_local(properties: dict[str, object], *, require_unlocked: bool = False) -> bool:
+    """The active local graphical session of the user, optionally only if unlocked."""
     seat = properties.get("Seat", ())
+    locked = bool(properties.get("LockedHint", False))
     return (
         bool(properties.get("Active")) and not bool(properties.get("Remote", True))
-        and not bool(properties.get("LockedHint", False))
+        and (not locked if require_unlocked else True)
         and properties.get("Class") == "user"
         and properties.get("Type") in {"wayland", "x11"}
         and isinstance(seat, (tuple, list)) and len(seat) == 2 and bool(seat[0])
@@ -170,7 +375,14 @@ def parse_hotkey(text: str) -> HotkeySpec:
 
 
 class LogindMonitor(threading.Thread):
-    """Listen for suspend and authorized-session deactivation via system D-Bus."""
+    """Listen for suspend and authorized-session deactivation via system D-Bus.
+
+    Signals arrive on a private connection with a GLib main loop and are only
+    dispatched there; the synchronous refresh calls run on a separate thread
+    and connection (S-R3). Each run uses fresh connections (S-R5).
+    """
+
+    REFRESH_SECONDS = 5.0
 
     def __init__(self, authorized_uid: int, callback: Callable[[str], None]) -> None:
         super().__init__(name="input-lock-logind", daemon=True)
@@ -179,157 +391,425 @@ class LogindMonitor(threading.Thread):
         self._loop: object | None = None
         self._authorized_paths: set[str] = set()
         self._authorized_active_paths: set[str] = set()
+        # logind session IDs of the user's local graphical sessions (active or
+        # locked), or None before the first successful refresh (L6).
+        self.graphical_session_ids: frozenset[str] | None = None
+        self._session_error_reported = False
+        self._power_error_reported = False
+        # logind "sleep" delay inhibitor descriptor (S-R3).
+        self._delay_lock = threading.Lock()
+        self._delay_fd: int | None = None
+        self._delay_error_reported = False
+        self._sleeping = False
+        # Monotonic time of the last PrepareForSleep(true) (P3-2).
+        self._sleep_started_at: float | None = None
+        # logind InhibitDelayMaxUSec in seconds, read by the refresh thread
+        # for the daemon's sleep-window cap (P1-1); None until read.
+        self.inhibit_delay_max_seconds: float | None = None
+        self._refresh_wanted = threading.Event()
+        self._stopping = threading.Event()
+
+    def refresh_sessions_with(
+        self,
+        list_sessions: Callable[[], object],
+        session_properties: Callable[[str], dict[str, object]],
+    ) -> None:
+        """Run one complete session refresh and report the result.
+
+        A D-Bus failure is reported only as "logind-error"; it says nothing
+        about the session. The daemon acts only after failures persist (A6).
+        logind supervision counts as healthy whenever the calls succeed and
+        the user has an active or a locked local graphical session (A5).
+        """
+        paths: set[str] = set()
+        active_paths: set[str] = set()
+        locked_paths: set[str] = set()
+        graphical: set[str] = set()
+        try:
+            for row in list_sessions():
+                if int(row[1]) != self.authorized_uid:
+                    continue
+                path = str(row[4])
+                paths.add(path)
+                values = session_properties(path)
+                if session_is_eligible(values):
+                    active_paths.add(path)
+                elif session_is_locked_local(values):
+                    locked_paths.add(path)
+                else:
+                    continue
+                graphical.add(str(values.get("Id", row[0])))
+        except Exception as exc:
+            if not self._session_error_reported:
+                LOG.warning("event=LOGIND_UNAVAILABLE error=%s", exc)
+            self._session_error_reported = True
+            self.callback("logind-error")
+            return
+        if self._session_error_reported:
+            LOG.info("event=LOGIND_RESTORED")
+        self._session_error_reported = False
+        self._authorized_paths = paths
+        self._authorized_active_paths = active_paths
+        self.graphical_session_ids = frozenset(graphical)
+        if active_paths or locked_paths:
+            self.callback("logind-healthy")
+        self.callback("session-active" if active_paths else
+                      "session-locked" if locked_paths else "session-inactive")
+
+    # ------------------------------------------------ sleep delay lock (S-R3)
+
+    def acquire_delay_inhibitor(self, inhibit: Callable[[], object]) -> bool:
+        """Hold a logind "sleep" inhibitor in mode "delay".
+
+        logind then waits (at most InhibitDelayMaxSec, 5 s by default) until
+        this monitor has extended the daemon's watchdog in its
+        PrepareForSleep(true) handler and released the lock. Delay mode never
+        blocks a suspend. Failure is logged and tolerated: the hook and the
+        signal still extend the watchdog, only possibly later.
+        """
+        with self._delay_lock:
+            if self._delay_fd is not None or self._sleeping or self._stopping.is_set():
+                return self._delay_fd is not None
+        try:
+            descriptor = inhibit()
+            fd = descriptor.take() if hasattr(descriptor, "take") else int(descriptor)
+        except Exception as exc:
+            if not self._delay_error_reported:
+                LOG.warning("event=SLEEP_DELAY_INHIBITOR_UNAVAILABLE error=%s", exc)
+            self._delay_error_reported = True
+            return False
+        with self._delay_lock:
+            # A sleep (or a monitor stop) that began during the call must not
+            # be delayed by a lock nobody would release.
+            if self._delay_fd is None and not self._sleeping and not self._stopping.is_set():
+                self._delay_fd, fd = fd, None
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            return False
+        if self._delay_error_reported:
+            LOG.info("event=SLEEP_DELAY_INHIBITOR_RESTORED")
+        self._delay_error_reported = False
+        return True
+
+    def release_delay_inhibitor(self) -> None:
+        with self._delay_lock:
+            fd, self._delay_fd = self._delay_fd, None
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def prepare_for_sleep(self, starting: object) -> None:
+        """PrepareForSleep handler on the signal connection; never blocks."""
+        if bool(starting):
+            self._sleep_started_at = time.monotonic()
+            self._sleeping = True
+            # Extend the watchdog from this thread at once, before the main
+            # loop runs and before the kernel freezer can stop the process,
+            # and only then let logind proceed (S-R3).
+            sd_notify("WATCHDOG=1")
+            sd_notify(f"WATCHDOG_USEC={WATCHDOG_SLEEP_USEC}")
+            self.release_delay_inhibitor()
+            self.callback("prepare-sleep")
+        else:
+            self._sleeping = False
+            self.callback("resume-sleep")
+            # The refresh thread re-acquires the delay lock (off this path).
+            self._refresh_wanted.set()
+
+    def sleep_finished(self, observed_at: float) -> None:
+        """The daemon saw logind PreparingForSleep=false at ``observed_at``
+        (monotonic) after its sleep window closed (P3-2).
+
+        If PrepareForSleep(false) was missed while this monitor kept running,
+        _sleeping would stay True and the delay inhibitor would never be
+        re-acquired. A reading taken before the latest PrepareForSleep(true)
+        says nothing about that newer sleep and is ignored.
+        """
+        started = self._sleep_started_at
+        if started is not None and observed_at <= started:
+            return
+        if self._sleeping:
+            LOG.info("event=SLEEP_DELAY_INHIBITOR_REARM reason=resume-signal-missed")
+        self._sleeping = False
+        self._refresh_wanted.set()
+
+    def refresh_inhibit_delay_with(self, api: object) -> None:
+        """Remember logind's InhibitDelayMaxUSec for the window cap (P1-1)."""
+        read = getattr(api, "inhibit_delay_max_usec", None)
+        if not callable(read):
+            return
+        try:
+            seconds = int(read()) / 1_000_000
+        except Exception:
+            return
+        if 0 <= seconds <= 3600:
+            self.inhibit_delay_max_seconds = seconds
+
+    def request_refresh(self, *_args: object, **_kwargs: object) -> None:
+        """Signal handlers only ask for a refresh; the calls run elsewhere."""
+        self._refresh_wanted.set()
+
+    def properties_changed(
+        self,
+        interface: object,
+        changed: object = None,
+        *signal_args: object,
+        path: object | None = None,
+        **_signal_kwargs: object,
+    ) -> None:
+        # dbus-python has emitted both two- and three-positional-argument
+        # variants of PropertiesChanged in supported Ubuntu releases. The
+        # invalidated-properties array is irrelevant here, so accept either
+        # shape instead of allowing a callback TypeError to stop monitoring.
+        del changed, signal_args
+        interface_text = str(interface)
+        if interface_text in {"org.freedesktop.UPower", "org.freedesktop.UPower.Device"}:
+            self.request_refresh()
+        elif interface_text == "org.freedesktop.login1.Session" and str(path or "") in self._authorized_paths:
+            self.request_refresh()
+
+    # ------------------------------------------- refresh thread (S-R3, S-R5)
+
+    def refresh_power_with(self, api: object) -> bool:
+        try:
+            values = api.power_state()
+            if self._power_error_reported:
+                LOG.info("event=UPOWER_RESTORED")
+            self._power_error_reported = False
+            self.callback("power-state:" + json.dumps(values))
+            return True
+        except Exception as exc:
+            self.callback("power-unavailable")
+            if not self._power_error_reported:
+                LOG.warning("event=UPOWER_UNAVAILABLE error=%s", exc)
+            self._power_error_reported = True
+            return False
+
+    def refresh_loop(self, connect: Callable[[], object]) -> None:
+        """Periodic and on-demand refresh on its own thread and connection.
+
+        ListSessions, GetAll per session and the UPower calls are synchronous
+        (up to 3 s each). They run here, on a private connection without a
+        main loop, so a PrepareForSleep signal on the monitor's own connection
+        is never queued behind them. A failing connection is closed and
+        reopened on the next cycle (after a dbus-broker restart, for example).
+        """
+        api = None
+        while not self._stopping.is_set():
+            if api is None:
+                try:
+                    api = connect()
+                except Exception as exc:
+                    if not self._session_error_reported:
+                        LOG.warning("event=LOGIND_UNAVAILABLE error=%s", exc)
+                    self._session_error_reported = True
+                    self.callback("logind-error")
+                    self.callback("power-unavailable")
+            if api is not None:
+                self.acquire_delay_inhibitor(api.inhibit_sleep_delay)
+                if self.inhibit_delay_max_seconds is None:
+                    self.refresh_inhibit_delay_with(api)
+                self.refresh_sessions_with(api.list_sessions, api.session_properties)
+                power_ok = self.refresh_power_with(api)
+                if self._session_error_reported or not power_ok:
+                    _close_quietly(api)
+                    api = None
+            self._refresh_wanted.wait(self.REFRESH_SECONDS)
+            self._refresh_wanted.clear()
+        if api is not None:
+            _close_quietly(api)
+
+    def stop(self) -> None:
+        self._stopping.set()
+        self._refresh_wanted.set()
+        loop = self._loop
+        if loop is not None:
+            try:
+                loop.quit()
+            except Exception:
+                pass
 
     def run(self) -> None:
+        bus = None
+        worker = None
         try:
             import dbus
             from dbus.mainloop.glib import DBusGMainLoop
             from gi.repository import GLib
 
             loop_adapter = DBusGMainLoop(set_as_default=False)
-            bus = dbus.SystemBus(mainloop=loop_adapter)
-            manager_object = bus.get_object(
-                "org.freedesktop.login1", "/org/freedesktop/login1", follow_name_owner_changes=True
-            )
-            manager = dbus.Interface(manager_object, "org.freedesktop.login1.Manager")
-            upower_object = bus.get_object(
-                "org.freedesktop.UPower",
-                "/org/freedesktop/UPower",
-                follow_name_owner_changes=True,
-            )
-            upower_properties = dbus.Interface(
-                upower_object, "org.freedesktop.DBus.Properties"
-            )
-            battery_object = bus.get_object(
-                "org.freedesktop.UPower",
-                "/org/freedesktop/UPower/devices/DisplayDevice",
-                follow_name_owner_changes=True,
-            )
-            battery_properties = dbus.Interface(
-                battery_object, "org.freedesktop.DBus.Properties"
-            )
+            # Each monitor run has its own private connection (S-R5). The
+            # process-shared SystemBus() would survive a dbus-broker restart
+            # as a dead connection and be handed to every later run.
+            bus = dbus.bus.BusConnection(dbus.bus.BUS_SYSTEM, mainloop=loop_adapter)
+            set_exit = getattr(bus, "set_exit_on_disconnect", None)
+            if callable(set_exit):
+                set_exit(False)
+            self._loop = GLib.MainLoop()
 
-            session_error_reported = False
-            power_error_reported = False
+            def disconnected(*_args: object) -> None:
+                LOG.warning("event=LOGIND_BUS_DISCONNECTED")
+                self.stop()
 
-            def refresh_sessions(*_args: object) -> None:
-                nonlocal session_error_reported
-                paths: set[str] = set()
-                active_paths: set[str] = set()
-                try:
-                    for row in manager.ListSessions(timeout=3):
-                        if int(row[1]) == self.authorized_uid:
-                            path = str(row[4])
-                            paths.add(path)
-                            session_object = bus.get_object(
-                                "org.freedesktop.login1", path
-                            )
-                            properties = dbus.Interface(
-                                session_object, "org.freedesktop.DBus.Properties"
-                            )
-                            values = dict(properties.GetAll("org.freedesktop.login1.Session", timeout=3))
-                            if session_is_eligible(values):
-                                active_paths.add(path)
-                except Exception as exc:  # D-Bus failures must remove eligibility.
-                    if not session_error_reported:
-                        LOG.warning("event=LOGIND_UNAVAILABLE error=%s", exc)
-                    session_error_reported = True
-                    active_paths.clear()
-                if active_paths:
-                    if session_error_reported:
-                        LOG.info("event=LOGIND_RESTORED")
-                    session_error_reported = False
-                    self.callback("logind-healthy")
-                self._authorized_paths = paths
-                self._authorized_active_paths = active_paths
-                self.callback("session-active" if active_paths else "session-inactive")
-
-            def prepare_for_sleep(starting: object) -> None:
-                if bool(starting):
-                    self.callback("prepare-sleep")
-
-            def refresh_power(*_args: object) -> None:
-                nonlocal power_error_reported
-                try:
-                    values = dict(upower_properties.GetAll("org.freedesktop.UPower", timeout=3))
-                    battery = dict(battery_properties.GetAll("org.freedesktop.UPower.Device", timeout=3))
-                    action = str(dbus.Interface(upower_object, "org.freedesktop.UPower").GetCriticalAction(timeout=3))
-                    if power_error_reported:
-                        LOG.info("event=UPOWER_RESTORED")
-                    power_error_reported = False
-                    self.callback("power-state:" + json.dumps({
-                        "on_battery": bool(values["OnBattery"]),
-                        "lid_closed": bool(values["LidIsClosed"]),
-                        "percentage": float(battery["Percentage"]),
-                        "warning_level": int(battery["WarningLevel"]),
-                        "critical_action": action,
-                    }))
-                except Exception as exc:
-                    self.callback("power-unavailable")
-                    if not power_error_reported:
-                        LOG.warning("event=UPOWER_UNAVAILABLE error=%s", exc)
-                    power_error_reported = True
-
-            def properties_changed(
-                interface: object,
-                changed: object,
-                *signal_args: object,
-                path: object | None = None,
-                **_signal_kwargs: object,
-            ) -> None:
-                # dbus-python has emitted both two- and three-positional-argument
-                # variants of PropertiesChanged in supported Ubuntu releases.
-                # The invalidated-properties array is irrelevant here, so accept
-                # either shape instead of allowing a callback TypeError to stop
-                # session monitoring.
-                del signal_args
-                interface_text = str(interface)
-                if interface_text in {
-                    "org.freedesktop.UPower",
-                    "org.freedesktop.UPower.Device",
-                }:
-                    refresh_power()
-                    return
-                if interface_text != "org.freedesktop.login1.Session":
-                    return
-                path_text = str(path or "")
-                if path_text in self._authorized_paths:
-                    refresh_sessions()
-
-            refresh_sessions()
-            refresh_power()
-            # Revalidate complete session properties even after invalidated
-            # signals or a logind owner change. Failure removes eligibility.
-            GLib.timeout_add_seconds(5, lambda: (refresh_sessions(), refresh_power(), True)[2])
+            bus.call_on_disconnection(disconnected)
             bus.add_signal_receiver(
-                prepare_for_sleep,
+                self.prepare_for_sleep,
                 signal_name="PrepareForSleep",
                 dbus_interface="org.freedesktop.login1.Manager",
             )
             bus.add_signal_receiver(
-                properties_changed,
+                self.properties_changed,
                 signal_name="PropertiesChanged",
                 dbus_interface="org.freedesktop.DBus.Properties",
                 path_keyword="path",
             )
-            bus.add_signal_receiver(
-                refresh_sessions,
-                signal_name="SessionNew",
-                dbus_interface="org.freedesktop.login1.Manager",
+            for name in ("SessionNew", "SessionRemoved"):
+                bus.add_signal_receiver(
+                    self.request_refresh,
+                    signal_name=name,
+                    dbus_interface="org.freedesktop.login1.Manager",
+                )
+            worker = threading.Thread(
+                target=self.refresh_loop, args=(lambda: _LogindBusApi(dbus),),
+                name="input-lock-logind-refresh", daemon=True,
             )
-            bus.add_signal_receiver(
-                refresh_sessions,
-                signal_name="SessionRemoved",
-                dbus_interface="org.freedesktop.login1.Manager",
-            )
-            self._loop = GLib.MainLoop()
-            self._loop.run()
+            worker.start()
+            if not self._stopping.is_set():
+                self._loop.run()
+            LOG.warning("event=LOGIND_MONITOR_STOPPED")
         except Exception as exc:
-            self.callback("session-inactive")
-            LOG.warning("logind monitor unavailable; sleep hook remains active: %s", exc)
+            LOG.warning("event=LOGIND_MONITOR_STOPPED error=%s; sleep hook remains active", exc)
+        finally:
+            self.stop()
+            self.release_delay_inhibitor()
+            if worker is not None:
+                worker.join(1.0)
+            if bus is not None:
+                _close_quietly(bus)
+        # The daemon restarts the monitor with backoff and treats only a
+        # sustained outage as session loss.
+        self.callback("logind-monitor-stopped")
+
+
+def _close_quietly(resource: object) -> None:
+    try:
+        resource.close()
+    except Exception:
+        pass
+
+
+class _LogindBusApi:
+    """Synchronous logind/UPower calls on one private connection (no main loop)."""
+
+    def __init__(self, dbus: object) -> None:
+        self._dbus = dbus
+        self.bus = dbus.bus.BusConnection(dbus.bus.BUS_SYSTEM)
+        try:
+            login = self.bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1", introspect=False)
+            self.manager = dbus.Interface(login, "org.freedesktop.login1.Manager")
+            upower = self.bus.get_object("org.freedesktop.UPower", "/org/freedesktop/UPower", introspect=False)
+            self.upower_properties = dbus.Interface(upower, "org.freedesktop.DBus.Properties")
+            self.upower = dbus.Interface(upower, "org.freedesktop.UPower")
+            battery = self.bus.get_object(
+                "org.freedesktop.UPower", "/org/freedesktop/UPower/devices/DisplayDevice", introspect=False)
+            self.battery_properties = dbus.Interface(battery, "org.freedesktop.DBus.Properties")
+        except Exception:
+            _close_quietly(self.bus)
+            raise
+
+    def list_sessions(self) -> object:
+        return self.manager.ListSessions(timeout=3)
+
+    def session_properties(self, path: str) -> dict[str, object]:
+        properties = self._dbus.Interface(
+            self.bus.get_object("org.freedesktop.login1", path, introspect=False),
+            "org.freedesktop.DBus.Properties",
+        )
+        return dict(properties.GetAll("org.freedesktop.login1.Session", timeout=3))
+
+    def power_state(self) -> dict[str, object]:
+        values = dict(self.upower_properties.GetAll("org.freedesktop.UPower", timeout=3))
+        battery = dict(self.battery_properties.GetAll("org.freedesktop.UPower.Device", timeout=3))
+        return {
+            "on_battery": bool(values["OnBattery"]),
+            "lid_closed": bool(values["LidIsClosed"]),
+            "percentage": float(battery["Percentage"]),
+            "warning_level": int(battery["WarningLevel"]),
+            "critical_action": str(self.upower.GetCriticalAction(timeout=3)),
+        }
+
+    def inhibit_delay_max_usec(self) -> int:
+        properties = self._dbus.Interface(
+            self.bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1", introspect=False),
+            "org.freedesktop.DBus.Properties",
+        )
+        return int(properties.Get("org.freedesktop.login1.Manager", "InhibitDelayMaxUSec", timeout=3))
+
+    def inhibit_sleep_delay(self) -> object:
+        return self.manager.Inhibit(
+            "sleep", "Input Lock",
+            "Extend the service watchdog before the system sleeps", "delay", timeout=3,
+        )
+
+    def close(self) -> None:
+        self.bus.close()
 
 
 class InputLockDaemon:
+    # Scalar defaults for state added in the 2026-10-22 overhaul. They are
+    # class attributes so partially constructed fixtures keep working.
+    logind_monitor: LogindMonitor | None = None
+    authorized_session_locked = False
+    # Sleep window (A3/A4/A10): monotonic start of PrepareForSleep(true), or None.
+    sleep_window_since: float | None = None
+    # End of the post-resume grace period (resume + CONTROLLER_TIMEOUT).
+    sleep_grace_until: float | None = None
+    # Protection reason that arrived while a system sleep was in progress.
+    deferred_protection: str | None = None
+    # Consecutive logind failures (A6) and monitor restarts.
+    logind_error_since: float | None = None
+    logind_error_handled = False
+    logind_restart_at: float | None = None
+    logind_restart_attempts = 0
+    # IPC lock requests are refused until this monotonic time (L3).
+    lock_cooldown_until = 0.0
+    # Last time lid-ignore was turned off, for the tray (A8).
+    last_lid_disable: dict[str, object] | None = None
+    safety_write_failed = False
+    # Kernel suspend counters when the sleep window opened, and the sample
+    # times that showed logind no longer preparing a sleep (S-R1).
+    sleep_stats_at_open: tuple[int, int] | None = None
+    sleep_not_preparing: tuple[float, ...] = ()
+    # Cap of the current sleep window, fixed when it opens (P1-1).
+    sleep_window_cap: float = SLEEP_WINDOW_MIN_SECONDS
+    # Latest known logind PreparingForSleep (True/False/None = unknown) and
+    # the monotonic time it was observed: from PrepareForSleep signals, the
+    # sleep hook and telemetry samples, whichever is newest (P1-1).
+    logind_preparing: bool | None = None
+    logind_preparing_at = float("-inf")
+    # Monotonic time the watchdog was extended for a sleep, until restored
+    # (P1-1). It outlives the window while logind is still preparing.
+    watchdog_extended_since: float | None = None
+    watchdog_extended_cap: float = SLEEP_WINDOW_MIN_SECONDS
+    # The window closed but the monitor has not yet been told that logind
+    # stopped preparing (P3-2).
+    sleep_monitor_reset_pending = False
+    # Generation of the live LogindMonitor; events of older ones are dropped.
+    logind_generation = 0
+    # Latest readiness-probe result, written by its own thread (S-R2).
+    protection_probe_errors: tuple[str, ...] = ("native protection probe pending",)
+    protection_probe_at: float | None = None
+    # A pending reload was requested over IPC by the user (U-R5).
+    reload_user_initiated = False
+    # Incremented by every state event, so a closing controller gets a final
+    # event only when none was just emitted (U-R1).
+    state_event_seq = 0
+
     def __init__(self, config_path: Path) -> None:
         self.config_path = config_path
         self.config = load_config(config_path)
@@ -349,14 +829,7 @@ class InputLockDaemon:
         self.lid_lease_deadline: float | None = None
         self.release_errors: list[str] = []
         self.lid_inhibitor_fd: int | None = None
-        (
-            self.lid_power_policy_enabled,
-            self.lid_battery_threshold,
-        ) = self._load_lid_power_policy_setting()
-        # Legacy values are read for migration only. No automatic-sleep or
-        # critical-battery overrides are created by this version.
         self.lid_policy_healthy = False
-        self.sleep_inhibitor_fd: int | None = None
         self.on_battery = False
         self.lid_is_closed = False
         self.lid_state_from_evdev = False
@@ -432,10 +905,10 @@ class InputLockDaemon:
                 LOG.error("Saved lid-ignore setting could not be activated: %s", exc)
                 self.ignore_lid_close = False
         self._write_state()
-        self.logind_monitor = LogindMonitor(
-            self.config.authorized_uid, self._post_control
-        )
-        self.logind_monitor.start()
+        # Type=notify (B1): the socket exists, devices are known and the state
+        # file is written, so CLI clients started after this can connect.
+        sd_notify("READY=1")
+        self._start_logind_monitor()
         threading.Thread(target=self._sample_safety, name="input-lock-telemetry", daemon=True).start()
         LOG.info(
             "Input Lock %s started unlocked; authorized UID=%d; devices=%d",
@@ -447,12 +920,15 @@ class InputLockDaemon:
         try:
             while self.running:
                 timeout = self._next_timeout()
-                for key, _mask in self.selector.select(timeout):
+                for key, mask in self.selector.select(timeout):
                     category, identifier = key.data
                     if category == "server":
                         self._accept_clients()
                     elif category == "client":
-                        self._read_client(int(identifier))
+                        if mask & selectors.EVENT_WRITE:
+                            self._flush_client(int(identifier))
+                        if mask & selectors.EVENT_READ:
+                            self._read_client(int(identifier))
                     elif category == "device":
                         self._read_device(str(identifier))
                     elif category == "udev":
@@ -486,42 +962,113 @@ class InputLockDaemon:
             self.safety.transition("RECOVERY", "UNREADABLE_PREVIOUS_RUN")
         self._write_safety(force=True)
 
-    def _write_safety(self, *, force: bool = False) -> None:
+    def _write_safety(self, *, force: bool = False, raise_errors: bool = False) -> None:
+        """Write the safety journal (breadcrumb).
+
+        A write failure (full or read-only /var/lib) is not fatal (B3): it is
+        logged once, an armed lid-ignore is disarmed because its evidence can
+        no longer be recorded, and the daemon keeps running. Arming passes
+        raise_errors=True so it can refuse instead.
+        """
         snapshot = self.safety.snapshot()
-        measured = snapshot["thermal_measurement"]
-        measurement_signature = (measured["state"], measured["fresh"], measured["complete"], self.safety.armed)
-        if measurement_signature != getattr(self, "thermal_measurement_signature", None):
-            LOG.info("event=THERMAL_MEASUREMENT_CHANGED condition=%s protection=%s fresh=%s complete=%s",
-                     measured["state"], snapshot["thermal_protection"], measured["fresh"], measured["complete"])
-            self.thermal_measurement_signature = measurement_signature
-        signature = (self.safety.state, self.safety.reason, self.safety.thermal_level, measurement_signature,
+        InputLockDaemon._note_thermal_measurement(self, snapshot)
+        # The thermal measurement is deliberately not part of the signature:
+        # every flap would otherwise force an fsync on the main loop (B3).
+        signature = (self.safety.state, self.safety.reason, self.safety.thermal_level, self.safety.armed,
                      self.ignore_lid_close, self._saved_lid_ignore_close, str(self.protective_result))
         now = time.monotonic()
         if not force and signature == self.safety_signature and now - self.safety_last_write < 30:
             return
-        atomic_json(BREADCRUMB, {
-            "schema": 1, "version": VERSION, "boot_id": self.boot_id,
-            "invocation_id": os.environ.get("INVOCATION_ID"),
-            "daemon_started_at": self.daemon_started_at, "updated_at": time.time(),
-            "requested": self._saved_lid_ignore_close, "effective": self.ignore_lid_close,
-            "generation": self.lid_generation, "clean_shutdown": self.clean_shutdown,
-            "restrictions_released": (self.lid_inhibitor_fd is None and self.sleep_inhibitor_fd is None
-                                      and not any(r.grabbed for r in self.devices.values())),
-            "safety": snapshot, "protective_result": self.protective_result,
-            "previous_run": self.safety_previous_run,
-            "events": self.safety.events[-24:],
-        })
+        try:
+            atomic_json(BREADCRUMB, {
+                "schema": 1, "version": VERSION, "boot_id": self.boot_id,
+                "invocation_id": os.environ.get("INVOCATION_ID"),
+                "daemon_started_at": self.daemon_started_at, "updated_at": time.time(),
+                "requested": self._saved_lid_ignore_close, "effective": self.ignore_lid_close,
+                "generation": self.lid_generation, "clean_shutdown": self.clean_shutdown,
+                "restrictions_released": (self.lid_inhibitor_fd is None
+                                          and not any(r.grabbed for r in self.devices.values())),
+                "safety": snapshot, "protective_result": self.protective_result,
+                "previous_run": self.safety_previous_run,
+                "events": self.safety.events[-24:],
+            })
+        except OSError as exc:
+            if raise_errors:
+                raise
+            if not getattr(self, "safety_write_failed", False):
+                LOG.error("event=SAFETY_JOURNAL_WRITE_FAILED path=%s error=%s", BREADCRUMB, exc)
+            self.safety_write_failed = True
+            # Retry on the next change, or after 30 s, not on every tick.
+            self.safety_signature, self.safety_last_write = signature, now
+            if self.safety.armed or self.ignore_lid_close:
+                self._disable_lid("safety-journal-failed")
+            return
+        if getattr(self, "safety_write_failed", False):
+            LOG.info("event=SAFETY_JOURNAL_RESTORED")
+            self.safety_write_failed = False
         self.safety.events = self.safety.events[-24:]
         self.safety_signature, self.safety_last_write = signature, now
 
+    def _note_thermal_measurement(self, snapshot: dict) -> None:
+        """Log THERMAL_MEASUREMENT_CHANGED for transitions only (G1).
+
+        A new condition is logged once it has been seen in at least two
+        distinct samples (or for 5 s when samples stop arriving), so a single
+        noisy reading does not produce a log line. While disarmed the line is
+        DEBUG. A change of the armed state is logged at once.
+        """
+        measured = snapshot["thermal_measurement"]
+        signature = (measured["state"], measured["fresh"], measured["complete"], self.safety.armed)
+        logged = getattr(self, "thermal_measurement_signature", None)
+        if signature == logged:
+            self.thermal_log_candidate = None
+            return
+        if logged is not None and logged[3] == signature[3]:
+            sample = self.safety.sample
+            sample_at = sample.at if sample is not None else None
+            now = time.monotonic()
+            candidate = getattr(self, "thermal_log_candidate", None)
+            if candidate is None or candidate[0] != signature:
+                self.thermal_log_candidate = (signature, {sample_at}, now)
+                return
+            candidate[1].add(sample_at)
+            if len(candidate[1]) < 2 and now - candidate[2] < 5:
+                return
+        self.thermal_log_candidate = None
+        LOG.log(logging.INFO if self.safety.armed else logging.DEBUG,
+                "event=THERMAL_MEASUREMENT_CHANGED condition=%s protection=%s fresh=%s complete=%s",
+                measured["state"], snapshot["thermal_protection"], measured["fresh"], measured["complete"])
+        self.thermal_measurement_signature = signature
+
+    def _probe_protection(self) -> None:
+        """Readiness probe loop on its own thread (S-R2).
+
+        protection_errors() talks to systemd and logind and can take many
+        seconds on a sluggish bus. Its result is cached here; telemetry
+        sampling never waits for it. The probe gates arming only.
+        """
+        while not self.safety_stop.is_set():
+            try:
+                errors = tuple(protection_errors())
+            except Exception as exc:  # protection_errors() normally never raises
+                errors = ("native protection probe failed: " + str(exc),)
+            self.protection_probe_errors, self.protection_probe_at = errors, time.monotonic()
+            self.safety_stop.wait(PROTECTION_PROBE_INTERVAL_SECONDS)
+
+    def _cached_protection_errors(self) -> list[str]:
+        at = self.protection_probe_at
+        if at is None:
+            return ["native protection probe pending"]
+        if time.monotonic() - at > PROTECTION_PROBE_STALE_SECONDS:
+            return ["native protection probe has not answered recently"]
+        return list(self.protection_probe_errors)
+
     def _sample_safety(self) -> None:
         telemetry = Telemetry()
-        errors, probe_at = ["native protection probe pending"], 0.0
+        threading.Thread(target=self._probe_protection, name="input-lock-readiness", daemon=True).start()
         telemetry_failed = False
         while not self.safety_stop.is_set():
-            now = time.monotonic()
-            if now - probe_at >= 30:
-                errors, probe_at = protection_errors(), now
+            errors = self._cached_protection_errors()
             try:
                 sample = telemetry.read(stack_ready=not errors)
                 sample.protection_errors = errors
@@ -535,16 +1082,43 @@ class InputLockDaemon:
                 telemetry_failed = True
             self.safety_stop.wait(2)
 
+    def _read_protective_receipt(self) -> dict | None:
+        """This boot's receipt for the pending protective generation, or None.
+
+        The helper writes the authoritative receipt into the root-owned
+        /var/lib/input-lock-protection first and a copy next to the daemon
+        journal (the pre-overhaul location). Read the root-owned one first and
+        fall back to the copy, e.g. when the root write failed or an older
+        helper is still installed. Raises ValueError when a present receipt
+        is unreadable and no usable one was found.
+        """
+        unreadable = None
+        for path in (ROOT_RECEIPT, BREADCRUMB.with_name(RESULT_NAME)):
+            try:
+                receipt = json.loads(path.read_text())
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as exc:
+                unreadable = exc
+                continue
+            if not isinstance(receipt, dict):
+                unreadable = ValueError("invalid protective receipt")
+                continue
+            if (receipt.get("boot_id") == self.boot_id
+                    and receipt.get("generation") == self.protective_result.get("generation")):
+                return receipt
+        if unreadable is not None:
+            raise ValueError(f"invalid protective receipt: {unreadable}")
+        return None
+
     def _safety_tick(self) -> None:
         now = time.monotonic()
         self.next_safety_tick = now + 1
         if self.protective_result is not None:
             try:
-                receipt = json.loads(BREADCRUMB.with_name("safety-action-result.json").read_text())
-                if not isinstance(receipt, dict):
-                    raise ValueError("invalid protective receipt")
+                receipt = self._read_protective_receipt()
                 self.safety_receipt_error = False
-                if receipt.get("boot_id") == self.boot_id and receipt.get("generation") == self.protective_result.get("generation") and receipt.get("result") != self.protective_result.get("result"):
+                if receipt is not None and receipt.get("result") != self.protective_result.get("result"):
                     self.protective_result.update(receipt)
                     if receipt["result"] == "suspend-transition-confirmed" and receipt.get("transition_confirmed") is True and not self.ignore_lid_close:
                         self.safety.transition("PROTECTIVE_ACTION_EXECUTED", "PROTECTIVE_ACTION_SUCCEEDED")
@@ -552,14 +1126,38 @@ class InputLockDaemon:
                         self.safety.transition("PROTECTIVE_ACTION_FAILED", "OPEN_LID_OPERATOR_RECOVERY_REQUIRED")
                     elif receipt["result"].startswith("cancelled") and not self.ignore_lid_close:
                         self.safety.release()
+                    elif ((receipt["result"] == DEFERRED_OS_SLEEP or receipt.get("transition_status") == "DEFERRED")
+                          and not self.ignore_lid_close):
+                        # The helper found the OS sleep path busy (or it just
+                        # failed) and requested nothing. Like a cancellation,
+                        # this ends the protective decision: lid-ignore is
+                        # already off, so logind's own lid policy owns the
+                        # closed lid. Supervision resumes normally once any
+                        # sleep window and its grace end; lid-ignore is never
+                        # re-armed automatically.
+                        LOG.warning("event=PROTECTIVE_ACTION_DEFERRED reason=%s detail=%s",
+                                    self.protective_result.get("reason"), receipt.get("detail", ""))
+                        self.deferred_protection = None
+                        self.safety.release("PROTECTIVE_ACTION_DEFERRED")
                     self._write_safety(force=True)
-            except FileNotFoundError:
-                pass
-            except (OSError, ValueError, TypeError):
+            except (OSError, ValueError, TypeError, KeyError):
                 if not self.safety_receipt_error:
                     LOG.warning("event=PROTECTIVE_RESULT_UNAVAILABLE")
                 self.safety_receipt_error = True
         sample = self.safety_sample
+        if self.sleep_window_since is not None:
+            evidence = self._sleep_resume_evidence()
+            if evidence:
+                self._leave_sleep_window("resume-evidence:" + evidence)
+        else:
+            self._observe_sample_preparing()
+            self._after_sleep_window()
+        # While logind prepares a system sleep, the OS is already suspending.
+        # The policy is still updated in the window (S-R1): it gathers
+        # evidence but takes no action while it knows a sleep is being
+        # prepared (bounded by its own 300 s cap), and _start_protection()
+        # defers anything that does come up until the window closes (A10).
+        sleeping = self.sleep_window_since is not None
         if sample is not None:
             sample.dependencies_ok = now - self.last_power_at <= 12 and now - self.last_logind_at <= 12
             sample.warning_level = self.upower_warning
@@ -568,7 +1166,7 @@ class InputLockDaemon:
             reason = self.safety.update(sample)
             if reason:
                 self._start_protection(reason)
-        elif self.ignore_lid_close:
+        elif self.ignore_lid_close and not sleeping:
             self._start_protection("TELEMETRY_LOST")
         self._write_safety()
         self._write_state()
@@ -577,22 +1175,34 @@ class InputLockDaemon:
             self._emit_state_event("safety-status")
         # A wedged main event loop loses its watchdog. InputLock recovery stops
         # the daemon before one final ordinary suspend attempt.
-        address = os.environ.get("NOTIFY_SOCKET")
-        if address:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
-                notify.sendto(b"WATCHDOG=1", "\0" + address[1:] if address.startswith("@") else address)
+        sd_notify("WATCHDOG=1")
 
     def _lid_may_be_closed(self) -> bool:
         return self.lid_is_closed or self.safety_sample is None or self.safety_sample.lid_closed is not False
 
-    def _start_protection(self, reason: str) -> None:
+    def _start_protection(self, reason: str, *, lid_reason: str | None = None) -> None:
+        """Release everything and ask the root helper for one ordinary suspend.
+
+        ``lid_reason`` overrides the key reported in last_lid_disable (for
+        example "controller-lease-expired" for CONTROLLER_LOST, U-R1).
+        """
+        if self.sleep_window_since is not None:
+            # logind is already preparing a sleep (A10). A protective suspend
+            # now would be refused as "already in progress" and latch the
+            # failsafe. Re-evaluate once the sleep window and its grace end.
+            if self.deferred_protection is None:
+                self.deferred_protection = reason
+            LOG.warning("event=PROTECTION_DEFERRED reason=%s detail=system-sleep-in-progress", reason)
+            return
         # SafetyPolicy.update() already made the decision and recorded the
         # original evidence. Do not overwrite it or log a second decision.
         if self.safety.armed or self.safety.state != "PROTECTIVE_ACTION_PENDING" or self.safety.reason != reason:
             self.safety.decide(reason)
-        self._emergency_unlock("safety-protection", preserve_safety=True)
+        self._emergency_unlock("safety-protection", preserve_safety=True,
+                               lid_reason=lid_reason or "protective-suspend:" + reason,
+                               user_initiated=False)
         if any(r.grabbed for r in self.devices.values()):
-            raise TransitionError("device release failed; terminating for InputLock recovery")
+            raise RecoveryRequired("device release failed; terminating for InputLock recovery")
         self.protective_result = {"reason": reason, "attempted_at": time.time(),
                                   "generation": self.lid_generation, "result": "pending",
                                   "decision_evidence": self.safety.last_decision}
@@ -644,6 +1254,7 @@ class InputLockDaemon:
         self.selector.register(monitor.fileno(), selectors.EVENT_READ, ("udev", None))
 
     def _cleanup(self) -> None:
+        sd_notify("STOPPING=1")
         try:
             preserve = (not self.clean_shutdown and
                         (self.ignore_lid_close or self.safety.state == "PROTECTIVE_ACTION_PENDING"))
@@ -673,7 +1284,6 @@ class InputLockDaemon:
         self.wakeup_write.close()
         self.selector.close()
         self._release_lid_inhibitor()
-        self._release_sleep_inhibitor()
         self._close_allowed_uinput()
         self.safety_stop.set()
         self._write_safety(force=True)
@@ -694,6 +1304,258 @@ class InputLockDaemon:
         except (BlockingIOError, OSError):
             pass
 
+    # ---------------------------- sleep window ----------------------------
+
+    def _enter_sleep_window(self, source: str) -> None:
+        """PrepareForSleep(true) or the system-sleep 'pre' hook (A3, A4, A10).
+
+        The kernel freezer may stop this process (20 s per failed attempt) and
+        systemd-sleep may freeze user.slice, and with it the tray, for longer.
+        Extend the systemd watchdog and pause controller/lease deadlines until
+        the resume signal plus CONTROLLER_TIMEOUT. Idempotent.
+        """
+        now = time.monotonic()
+        # Both sources mean logind is preparing a sleep right now.
+        self._note_logind_preparing(True, now)
+        sd_notify("WATCHDOG=1")
+        sd_notify(f"WATCHDOG_USEC={WATCHDOG_SLEEP_USEC}")
+        if self.sleep_window_since is None:
+            self.sleep_window_since = now
+            self.sleep_window_cap = self._sleep_window_cap()
+            self.sleep_stats_at_open = self._suspend_stats()
+            self.sleep_not_preparing = ()
+            LOG.info("event=SLEEP_WINDOW_OPENED source=%s watchdog_usec=%d cap=%.0fs",
+                     source, WATCHDOG_SLEEP_USEC, self.sleep_window_cap)
+        if self.watchdog_extended_since is None:
+            self.watchdog_extended_since = now
+        self.watchdog_extended_cap = self.sleep_window_cap
+        self.sleep_monitor_reset_pending = False
+        self.sleep_grace_until = None
+        self._note_safety_sleep_window(True)
+
+    def _sleep_window_cap(self) -> float:
+        """InhibitDelayMax + 60 s + 3 x pm_freeze_timeout, clamped (P1-1).
+
+        A failing suspend can make several freeze attempts (20 s each by
+        default) after logind's delay, all inside one PrepareForSleep window.
+        """
+        inhibit = getattr(self.logind_monitor, "inhibit_delay_max_seconds", None)
+        if not isinstance(inhibit, (int, float)) or isinstance(inhibit, bool) or not 0 <= inhibit <= 3600:
+            inhibit = INHIBIT_DELAY_MAX_FALLBACK_SECONDS
+        freeze = _read_seconds(PM_FREEZE_TIMEOUT_PATH, 1000.0)
+        if freeze is None:
+            freeze = PM_FREEZE_TIMEOUT_FALLBACK_SECONDS
+        cap = inhibit + SLEEP_WINDOW_MARGIN_SECONDS + SLEEP_WINDOW_FREEZE_ATTEMPTS * freeze
+        return min(SLEEP_WINDOW_MAX_SECONDS, max(SLEEP_WINDOW_MIN_SECONDS, cap))
+
+    def _note_logind_preparing(self, value: bool | None, at: float, *, strict: bool = False) -> None:
+        """Record logind PreparingForSleep as observed at ``at``; an older
+        observation never overrides a newer one (P1-1). Signals and the hook
+        are processed in order, so one at the same instant wins; a telemetry
+        sample must be strictly newer (``strict``)."""
+        if at > self.logind_preparing_at or (not strict and at == self.logind_preparing_at):
+            self.logind_preparing = value
+            self.logind_preparing_at = at
+
+    def _observe_sample_preparing(self) -> None:
+        sample = self.safety_sample
+        if sample is not None:
+            self._note_logind_preparing(sample.preparing, sample.at, strict=True)
+
+    def _logind_stopped_preparing_since(self, since: float) -> bool:
+        """logind's latest reported PreparingForSleep is false, observed no
+        earlier than ``since``."""
+        return self.logind_preparing is False and self.logind_preparing_at >= since
+
+    @staticmethod
+    def _suspend_stats() -> tuple[int, int] | None:
+        """The kernel's (success, fail) suspend counters, or None if unreadable."""
+        try:
+            return (int((SUSPEND_STATS_DIR / "success").read_text().strip()),
+                    int((SUSPEND_STATS_DIR / "fail").read_text().strip()))
+        except (OSError, ValueError):
+            return None
+
+    def _sleep_resume_evidence(self) -> str | None:
+        """Evidence that the machine is awake again although no resume signal
+        arrived (S-R1): logind reported PreparingForSleep=false in
+        SLEEP_RESUME_EVIDENCE_SAMPLES consecutive distinct samples taken after
+        the window opened, or a kernel suspend counter changed and logind's
+        latest reading is PreparingForSleep=false.
+
+        The counters change after each failed freeze attempt, and one suspend
+        can make several attempts while logind is still preparing (P1-1), so
+        a counter change alone is never resume evidence.
+        """
+        since = self.sleep_window_since
+        if since is None:
+            return None
+        self._observe_sample_preparing()
+        sample = self.safety_sample
+        if sample is not None and sample.at > since:
+            if sample.preparing is True:
+                self.sleep_not_preparing = ()
+            elif sample.preparing is False and sample.at not in self.sleep_not_preparing:
+                self.sleep_not_preparing = (*self.sleep_not_preparing, sample.at)
+        opened = self.sleep_stats_at_open
+        if opened is not None and self._logind_stopped_preparing_since(since):
+            current = self._suspend_stats()
+            if current is not None and current != opened:
+                return "suspend-stats"
+        if len(self.sleep_not_preparing) >= SLEEP_RESUME_EVIDENCE_SAMPLES:
+            return "logind-not-preparing"
+        return None
+
+    def _after_sleep_window(self) -> None:
+        """Finish a closed sleep window once logind has stopped preparing.
+
+        The watchdog stays extended while logind reports PreparingForSleep=
+        true, however the window closed: a failing suspend's next freeze
+        attempt would otherwise kill the daemon (P1-1). With PreparingForSleep
+        unknown (no reading, or the last "true" is older than
+        LOGIND_PREPARING_FRESH_SECONDS because telemetry stopped) it stays
+        extended until the window cap. Only a reading of false also tells the
+        logind monitor that the sleep is over, so it re-acquires its delay
+        inhibitor if PrepareForSleep(false) was missed (P3-2).
+        """
+        if self.sleep_window_since is not None:
+            return
+        now = time.monotonic()
+        since = self.watchdog_extended_since
+        stopped = since is not None and self._logind_stopped_preparing_since(since)
+        if since is not None:
+            expired = now - since >= self.watchdog_extended_cap
+            preparing = (self.logind_preparing is True
+                         and now - self.logind_preparing_at <= LOGIND_PREPARING_FRESH_SECONDS)
+            if stopped or (expired and not preparing):
+                self.watchdog_extended_since = None
+                sd_notify(f"WATCHDOG_USEC={WATCHDOG_NORMAL_USEC}")
+                sd_notify("WATCHDOG=1")
+                LOG.info("event=WATCHDOG_RESTORED watchdog_usec=%d reason=%s", WATCHDOG_NORMAL_USEC,
+                         "logind-not-preparing" if stopped else "cap-preparing-unknown")
+        if self.sleep_monitor_reset_pending and self.logind_preparing is False:
+            self.sleep_monitor_reset_pending = False
+            finished = getattr(self.logind_monitor, "sleep_finished", None)
+            if callable(finished):
+                finished(self.logind_preparing_at)
+
+    def _note_safety_sleep_window(self, active: bool) -> None:
+        """Tell the safety policy that an OS sleep is (no longer) in progress.
+
+        SafetyPolicy.note_sleep_window() is idempotent and bounded in time on
+        its side; it only marks the window, so supervision takes no action
+        while it is open and the status reports os_sleep_in_progress. The
+        daemon keeps calling SafetyPolicy.update() in its window, so evidence
+        is still collected (S-R1).
+        """
+        note = getattr(self.safety, "note_sleep_window", None)
+        if callable(note):
+            note(active)
+
+    def _leave_sleep_window(self, source: str) -> None:
+        """PrepareForSleep(false), the 'post' hook, resume evidence or the
+        window cap. Supervision resumes now; the watchdog is restored only
+        once logind has stopped preparing (_after_sleep_window, P1-1)."""
+        self._note_safety_sleep_window(False)
+        if self.sleep_window_since is None:
+            self._after_sleep_window()
+            return
+        now = time.monotonic()
+        self.sleep_window_since = None
+        self.sleep_stats_at_open = None
+        self.sleep_not_preparing = ()
+        self.sleep_monitor_reset_pending = True
+        self.sleep_grace_until = now + CONTROLLER_TIMEOUT
+        for client in self.clients.values():
+            if client.subscribed:
+                client.deadline = max(client.deadline, self.sleep_grace_until)
+        if self.lid_lease_deadline is not None:
+            self.lid_lease_deadline = max(self.lid_lease_deadline, self.sleep_grace_until)
+        LOG.info("event=SLEEP_WINDOW_CLOSED source=%s grace=%.0fs logind_preparing=%s",
+                 source, CONTROLLER_TIMEOUT, self.logind_preparing)
+        self._after_sleep_window()
+        if self.deferred_protection is not None and self.safety.state == "PROTECTIVE_ACTION_PENDING":
+            # The policy itself already decided (and disarmed); nothing else
+            # would act on that decision, so do not wait for the grace end.
+            self._recheck_deferred_protection()
+
+    def _lid_switch_readable(self) -> bool:
+        """At least one lid-switch device still answers EVIOCGSW (S-R8b).
+
+        Read with the ioctl directly (P2-1): python3-evdev 1.9 has no
+        InputDevice.switches(). Any failure counts as unreadable.
+        """
+        for record in self.devices.values():
+            if "lid-switch" not in record.kinds:
+                continue
+            try:
+                read_lid_switch(record.device)
+                return True
+            except (OSError, AttributeError, TypeError, ValueError):
+                continue
+        return False
+
+    def _recheck_deferred_protection(self) -> None:
+        """At the end of the post-resume grace, act on a deferred reason only
+        if its cause still holds; thermal/telemetry causes are left to the
+        safety policy, which resumed supervising when the window closed,
+        unless the policy had already decided on them."""
+        reason, self.deferred_protection = self.deferred_protection, None
+        if reason is None or not self.ignore_lid_close:
+            return
+        if self.safety.state == "PROTECTIVE_ACTION_PENDING":
+            # The policy decided (possibly on a later reason than the first
+            # deferred one) and disarmed itself: act on its decision.
+            reason, persists = self.safety.reason, True
+        else:
+            persists = {
+                "CONTROLLER_LOST": self.controller_fd not in self.clients,
+                "SUPERVISION_LOST": not (self.authorized_session_active or self.authorized_session_locked),
+                "LID_DEVICE_LOST": not any("lid-switch" in r.kinds for r in self.devices.values()),
+                "LID_TELEMETRY_LOST": not self._lid_switch_readable(),
+            }.get(reason, False)
+        if not persists:
+            LOG.info("event=DEFERRED_PROTECTION_RESOLVED reason=%s", reason)
+            return
+        if self._lid_may_be_closed():
+            self._start_protection(reason)
+        else:
+            self._disable_lid(lid_disable_key(reason))
+
+    # ------------------------------ logind -------------------------------
+
+    def _start_logind_monitor(self) -> None:
+        # Each monitor run tags its events with its own generation, so a
+        # retired monitor's late refresh round is dropped (P3-2).
+        self.logind_generation += 1
+        generation = self.logind_generation
+
+        def post(event: str) -> None:
+            self._post_control(_LogindEvent(event, generation))
+
+        self.logind_monitor = LogindMonitor(self.config.authorized_uid, post)
+        self.logind_monitor.start()
+
+    def _logind_succeeded(self) -> None:
+        if self.logind_error_since is not None and self.logind_error_handled:
+            LOG.info("event=LOGIND_SUPERVISION_RESTORED")
+        self.logind_error_since = None
+        self.logind_error_handled = False
+        self.logind_restart_attempts = 0
+
+    def _on_session_lost(self, disable_reason: str) -> None:
+        """The authorized user has no active or locked local session (or logind
+        has failed for LOGIND_ERROR_GRACE_SECONDS)."""
+        was_active = self.authorized_session_active
+        self.authorized_session_active = False
+        self.authorized_session_locked = False
+        if self.ignore_lid_close and self._lid_may_be_closed():
+            self._start_protection("SUPERVISION_LOST")
+        elif self.ignore_lid_close:
+            self._disable_lid(disable_reason)
+        if self.config.unlock_on_session_switch and was_active:
+            self._emergency_unlock("authorized-session-inactive", preserve_safety=self.safety.state == "PROTECTIVE_ACTION_PENDING")
+
     def _drain_wakeup(self) -> None:
         try:
             while self.wakeup_read.recv(256):
@@ -705,24 +1567,62 @@ class InputLockDaemon:
                 event = self.control_queue.get_nowait()
             except queue.Empty:
                 break
-            if event == "prepare-sleep" and self.config.unlock_on_suspend:
-                self._emergency_unlock("system-suspend")
+            generation = getattr(event, "logind_generation", None)
+            if generation is not None and generation != self.logind_generation:
+                # A retired monitor's refresh worker (joined for only 1 s)
+                # finished one more round after the restart (P3-2).
+                LOG.debug("event=LOGIND_STALE_EVENT_DROPPED generation=%s", generation)
+                continue
+            if event == "prepare-sleep":
+                self._enter_sleep_window("logind")
+                if self.config.unlock_on_suspend:
+                    self._release_inputs_keep_lid("system-suspend")
+            elif event == "resume-sleep":
+                # PrepareForSleep(false): logind has stopped preparing.
+                self._note_logind_preparing(False, time.monotonic())
+                self._leave_sleep_window("logind")
             elif event == "session-active":
+                self._logind_succeeded()
                 if not self.authorized_session_active:
                     self.last_input_activity = time.monotonic()
                 self.authorized_session_active = True
+                self.authorized_session_locked = False
                 self._write_state()
-            elif event == "session-inactive":
+            elif event == "session-locked":
+                # The user's own local session with the screen locked (GNOME
+                # also locks on every suspend). New locks/lid changes still need
+                # an unlocked session, but continuous lid-ignore is kept.
+                self._logind_succeeded()
                 was_active = self.authorized_session_active
                 self.authorized_session_active = False
-                if self.ignore_lid_close and self._lid_may_be_closed():
-                    self._start_protection("SUPERVISION_LOST")
-                elif self.ignore_lid_close:
-                    self._disable_lid("session-inactive")
+                self.authorized_session_locked = True
                 if self.config.unlock_on_session_switch and was_active:
-                    self._emergency_unlock("authorized-session-inactive", preserve_safety=self.safety.state == "PROTECTIVE_ACTION_PENDING")
+                    self._release_inputs_keep_lid(
+                        "authorized-session-locked",
+                        preserve_safety=self.safety.state == "PROTECTIVE_ACTION_PENDING")
+            elif event == "session-inactive":
+                self._logind_succeeded()
+                self._on_session_lost("session-inactive")
             elif event == "logind-healthy":
+                self._logind_succeeded()
                 self.last_logind_at = time.monotonic()
+            elif event == "logind-error":
+                # One failed or timed-out D-Bus call says nothing about the
+                # session. Act only if failures persist (see _handle_timers).
+                if self.logind_error_since is None:
+                    self.logind_error_since = time.monotonic()
+            elif event == "logind-monitor-stopped":
+                # Retire the stopped monitor: anything its worker posts from
+                # now on belongs to an older generation (P3-2).
+                self.logind_generation += 1
+                now = time.monotonic()
+                if self.logind_error_since is None:
+                    self.logind_error_since = now
+                delay = LOGIND_RESTART_BACKOFF[min(self.logind_restart_attempts, len(LOGIND_RESTART_BACKOFF) - 1)]
+                self.logind_restart_attempts += 1
+                self.logind_restart_at = now + delay
+                LOG.warning("event=LOGIND_MONITOR_RESTART_SCHEDULED delay=%.0fs attempt=%d",
+                            delay, self.logind_restart_attempts)
             elif event == "power-unavailable":
                 self.last_power_at = 0
             elif event.startswith("safety-sample:"):
@@ -731,6 +1631,8 @@ class InputLockDaemon:
                 self.safety_sample = Sample(**payload)
                 if self.safety_sample.at < self.last_lid_event_at:
                     self.safety_sample.lid_closed = self.lid_is_closed
+                self._observe_sample_preparing()
+                self._after_sleep_window()
             elif event.startswith("protective-result:"):
                 result = json.loads(event.partition(":")[2])
                 if (self.protective_result is None or self.ignore_lid_close or
@@ -743,7 +1645,7 @@ class InputLockDaemon:
                 if result["result"] == "request-failed" and self.safety.state == "PROTECTIVE_ACTION_PENDING":
                     # Exit failure so systemd invokes InputLock recovery,
                     # independently of the failed D-Bus request.
-                    raise TransitionError("protective service dispatch failed")
+                    raise RecoveryRequired("protective service dispatch failed")
             elif event.startswith("power-state:"):
                 try:
                     payload = json.loads(event.partition(":")[2])
@@ -759,6 +1661,9 @@ class InputLockDaemon:
 
     def _reload_config(self) -> None:
         self.reload_requested = False
+        # U-R5: an IPC "reload" from the tray or CLI is the user's own
+        # settings change; a SIGHUP (systemctl reload, updates) is not.
+        by_user, self.reload_user_initiated = self.reload_user_initiated, False
         try:
             new_config = load_config(self.config_path)
             changed = [name for name in RESTART_REQUIRED_CONFIG if getattr(new_config, name) != getattr(self.config, name)]
@@ -772,11 +1677,11 @@ class InputLockDaemon:
             if new_primary.signature == new_emergency.signature:
                 raise ConfigError("primary and emergency hotkeys must be different")
         except ConfigError as exc:
-            self._emergency_unlock("invalid-config-reload")
+            self._emergency_unlock("invalid-config-reload", user_initiated=by_user)
             LOG.error("Configuration reload rejected; input remains unlocked: %s", exc)
             return
 
-        self._emergency_unlock("configuration-reload")
+        self._emergency_unlock("configuration-reload", user_initiated=by_user)
         self.config = new_config
         self.primary_hotkey = new_primary
         self.emergency_hotkey = new_emergency
@@ -865,27 +1770,6 @@ class InputLockDaemon:
             return False, 600
 
     @staticmethod
-    def _load_lid_power_policy_setting() -> tuple[bool, int]:
-        try:
-            payload = json.loads(USER_SETTINGS_PATH.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("settings root must be an object")
-            enabled = payload.get("lid_power_policy_enabled", False)
-            threshold = payload.get("lid_battery_threshold", 20)
-            if not isinstance(enabled, bool):
-                raise ValueError("lid_power_policy_enabled must be a boolean")
-            if isinstance(threshold, bool) or not isinstance(threshold, int):
-                raise ValueError("lid_battery_threshold must be an integer")
-            if not 1 <= threshold <= 99:
-                raise ValueError("lid_battery_threshold must be between 1 and 99")
-            return enabled, threshold
-        except FileNotFoundError:
-            return False, 20
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            LOG.warning("Ignoring invalid lid power-policy settings: %s", exc)
-            return False, 20
-
-    @staticmethod
     def _load_allowed_keys_setting() -> tuple[str, ...]:
         try:
             payload = json.loads(USER_SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -917,8 +1801,6 @@ class InputLockDaemon:
         lock_kinds: set[str] | None = None,
         idle_lock_enabled: bool | None = None,
         idle_lock_seconds: int | None = None,
-        lid_power_policy_enabled: bool | None = None,
-        lid_battery_threshold: int | None = None,
         allowed_keys: tuple[str, ...] | None = None,
     ) -> None:
         saved_hotkey = primary_hotkey or self.primary_hotkey
@@ -943,16 +1825,6 @@ class InputLockDaemon:
                     self.idle_lock_seconds
                     if idle_lock_seconds is None
                     else idle_lock_seconds
-                ),
-                "lid_power_policy_enabled": (
-                    self.lid_power_policy_enabled
-                    if lid_power_policy_enabled is None
-                    else lid_power_policy_enabled
-                ),
-                "lid_battery_threshold": (
-                    self.lid_battery_threshold
-                    if lid_battery_threshold is None
-                    else lid_battery_threshold
                 ),
                 "allowed_keys": list(
                     self.allowed_keys if allowed_keys is None else allowed_keys
@@ -1024,10 +1896,6 @@ class InputLockDaemon:
         self._write_state()
         self._emit_state_event("idle-lock-settings-changed")
         LOG.info("Idle auto-lock changed: enabled=%s seconds=%d", enabled, seconds)
-
-    def _set_lid_power_policy(self, enabled: bool, threshold: int) -> None:
-        raise TransitionError("Linux does not override idle sleep or battery safety; legacy power settings are unsupported")
-
 
     def _set_allowed_keys(self, keys: tuple[str, ...]) -> None:
         if "COPILOT" in keys and "F23" in keys:
@@ -1168,7 +2036,9 @@ class InputLockDaemon:
 
     def _set_ignore_lid_close(self, enabled: bool, *, generation: int | None = None) -> None:
         if not enabled:
-            self._disable_lid("lid-ignore-disabled")
+            # The only user-requested disable: the controller's or the CLI's
+            # "set-lid-ignore false" (interface 3).
+            self._disable_lid("lid-ignore-disabled", requested_by_user=True)
             self._persist_user_settings(ignore_lid_close=False)
             self._saved_lid_ignore_close = False
             self._write_safety(force=True)
@@ -1189,42 +2059,81 @@ class InputLockDaemon:
             self.safety.arm(self.safety_sample)
         except ValueError as exc:
             raise TransitionError(str(exc)) from exc
+        try:
+            # The journal must be writable before anything is armed (B3).
+            self._write_safety(force=True, raise_errors=True)
+        except OSError as exc:
+            self.safety.release("ARM_FAILED")
+            raise TransitionError(f"safety journal is not writable: {exc}") from exc
+        previous_saved = self._saved_lid_ignore_close
         acquired = []
         try:
-            self._persist_user_settings(ignore_lid_close=True)
-            self._saved_lid_ignore_close = True
-            self._write_safety(force=True)
             self._acquire_lid_inhibitor()
             for record in records:
                 if not record.grabbed:
                     record.device.grab()
                     record.grabbed = True
                     acquired.append(record)
+            # Persist the preference only once arming has succeeded (B5).
+            self._persist_user_settings(ignore_lid_close=True)
         except Exception:
             self._release_records(acquired)
             self._release_lid_inhibitor()
             self.safety.release("ARM_FAILED")
             raise
+        self._saved_lid_ignore_close = True
         self.ignore_lid_close = True
         self.lid_policy_healthy = True
         self.lid_generation += 1
         self.lid_lease_deadline = self.clients[self.controller_fd].deadline
         try:
-            self._write_safety(force=True)
-        except OSError:
+            self._write_safety(force=True, raise_errors=True)
+        except OSError as exc:
             self._emergency_unlock("safety-journal-failed")
-            raise
+            self._revert_saved_lid_ignore(previous_saved)
+            raise TransitionError(f"safety journal is not writable: {exc}") from exc
         self.last_action = "lid-ignore-enabled"
         self._write_state()
         self._emit_state_event(self.last_action)
 
-    def _disable_lid(self, reason: str) -> None:
+    def _revert_saved_lid_ignore(self, previous: bool) -> None:
+        if self._saved_lid_ignore_close == previous:
+            return
+        try:
+            self._persist_user_settings(ignore_lid_close=previous)
+            self._saved_lid_ignore_close = previous
+        except TransitionError as exc:
+            LOG.error("Could not revert the saved lid-ignore preference: %s", exc)
+
+    def _record_lid_disable(self, reason: str, *, requested_by_user: bool,
+                            user_initiated: bool | None = None) -> None:
+        """Interface 3 (A8): every end of an active lid-ignore is logged with its
+        reason and reported to the tray in the state snapshot. Only a
+        "set-lid-ignore false" request is user-requested. ``user_initiated``
+        (U-R5) is also true for the user's own emergency unlocks and IPC
+        settings changes; by default it is derived from the reason."""
+        key = lid_disable_key(reason)
+        if user_initiated is None:
+            user_initiated = requested_by_user or reason in USER_INITIATED_LID_REASONS
+        self.last_lid_disable = {
+            "reason": key,
+            "requested_by_user": bool(requested_by_user),
+            "user_initiated": bool(user_initiated or requested_by_user),
+            "at": time.time(),
+        }
+        LOG.info("event=LID_IGNORE_DISABLED reason=%s requested_by_user=%s user_initiated=%s detail=%s",
+                 key, bool(requested_by_user), bool(user_initiated or requested_by_user), reason)
+
+    def _disable_lid(self, reason: str, *, requested_by_user: bool = False,
+                     user_initiated: bool | None = None) -> None:
+        if self.ignore_lid_close:
+            self._record_lid_disable(reason, requested_by_user=requested_by_user,
+                                     user_initiated=user_initiated)
         self.ignore_lid_close = False
         self.lid_policy_healthy = False
         self.lid_lease_deadline = None
         self.lid_generation += 1
         self._release_lid_inhibitor()
-        self._release_sleep_inhibitor()
         records = [r for r in self.devices.values() if r.grabbed and "lid-switch" in r.kinds and not r.wants_grab(self.locked_kinds)]
         self.release_errors = self._release_records(records)
         self.safety.release()
@@ -1233,14 +2142,10 @@ class InputLockDaemon:
         self._write_state()
         self._emit_state_event(reason)
 
-
-    def _set_lid_policy_health(self, healthy: bool) -> None:
-        raise TransitionError("external power-policy repair is no longer supported")
-
-
     def _acquire_lid_inhibitor(self) -> None:
         if self.lid_inhibitor_fd is not None:
             return
+        bus = None
         try:
             import dbus
 
@@ -1249,19 +2154,30 @@ class InputLockDaemon:
             # GLib main loop, preventing that monitor from receiving signals.
             bus = dbus.bus.BusConnection(dbus.bus.BUS_SYSTEM)
             manager = dbus.Interface(
-                bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1"),
+                bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1", introspect=False),
                 "org.freedesktop.login1.Manager",
             )
+            # This runs on the main loop: bound the call well below the
+            # 60 s watchdog instead of the ~25 s D-Bus default (B4).
             descriptor = manager.Inhibit(
                 "handle-lid-switch",
                 "Input Lock",
                 "Keep the computer running while its lid is closed",
                 "block",
+                timeout=5,
             )
             self.lid_inhibitor_fd = descriptor.take()
             LOG.info("logind lid-switch inhibitor acquired")
         except Exception as exc:
             raise TransitionError(f"cannot acquire logind lid inhibitor: {exc}") from exc
+        finally:
+            # The descriptor is ours after take(); the private connection is
+            # no longer needed and must not leak one bus connection per arm.
+            if bus is not None:
+                try:
+                    bus.close()
+                except Exception:
+                    pass
 
     def _release_lid_inhibitor(self) -> None:
         if self.lid_inhibitor_fd is None:
@@ -1273,34 +2189,39 @@ class InputLockDaemon:
         self.lid_inhibitor_fd = None
         LOG.info("logind lid-switch inhibitor released")
 
-    def _sleep_should_be_inhibited(self) -> bool:
-        return False
-
-
-    def _reconcile_sleep_inhibitor(self) -> None:
-        if self._sleep_should_be_inhibited():
-            self._acquire_sleep_inhibitor()
-        else:
-            self._release_sleep_inhibitor()
-
-    def _acquire_sleep_inhibitor(self) -> None:
-        raise TransitionError("blocking sleep inhibitors are not supported")
-
-
-    def _release_sleep_inhibitor(self) -> None:
-        if self.sleep_inhibitor_fd is None:
-            return
-        try:
-            os.close(self.sleep_inhibitor_fd)
-        except OSError:
-            pass
-        self.sleep_inhibitor_fd = None
-        LOG.info("Fallback logind sleep inhibitor released")
-
     # ------------------------- device handling -------------------------
 
+    @staticmethod
+    def _list_event_devices() -> set[str]:
+        """evdev.list_devices(), tolerating nodes that vanish mid-scan.
+
+        evdev lists /dev/input and then stat()s each entry; a device removed in
+        between (e.g. a Bluetooth mouse disconnecting on lid close) raises
+        FileNotFoundError.  Fall back to a scan that skips such entries.
+        """
+        try:
+            return set(evdev.list_devices())
+        except OSError:
+            pass
+        paths: set[str] = set()
+        try:
+            names = os.listdir("/dev/input")
+        except FileNotFoundError:
+            return paths
+        for name in names:
+            if not name.startswith("event"):
+                continue
+            path = os.path.join("/dev/input", name)
+            try:
+                mode = os.stat(path).st_mode
+            except OSError:
+                continue
+            if stat.S_ISCHR(mode) and os.access(path, os.R_OK | os.W_OK):
+                paths.add(path)
+        return paths
+
     def _rescan_devices(self, *, reclassify: bool = False) -> None:
-        current_paths = set(evdev.list_devices())
+        current_paths = self._list_event_devices()
         known_paths = set(self.devices)
         for path in sorted(known_paths - current_paths):
             self._detach_device(path)
@@ -1408,7 +2329,10 @@ class InputLockDaemon:
                 break
             saw_event = True
         if saw_event:
-            self._rescan_devices()
+            try:
+                self._rescan_devices()
+            except OSError:
+                LOG.warning("Transient error during device rescan; will retry on next udev event", exc_info=True)
 
     def _read_device(self, path: str) -> None:
         record = self.devices.get(path)
@@ -1441,11 +2365,15 @@ class InputLockDaemon:
                         from types import SimpleNamespace
                         self._forward_allowed_event(record, SimpleNamespace(code=code, value=1))
                     if "lid-switch" in record.kinds:
+                        # Re-read SW_LID after SYN_DROPPED with EVIOCGSW (P2-1).
+                        # Unreadable is treated as telemetry loss (fail safe).
                         try:
-                            self._handle_lid_switch_event(ecodes.SW_LID in record.device.switches())
-                        except OSError:
+                            closed = read_lid_switch(record.device)
+                        except (OSError, AttributeError, TypeError, ValueError):
                             if self.ignore_lid_close:
                                 self._start_protection("LID_TELEMETRY_LOST")
+                        else:
+                            self._handle_lid_switch_event(closed)
                     self._evaluate_hotkeys()
                     continue
                 if (
@@ -1481,14 +2409,12 @@ class InputLockDaemon:
         self.last_lid_event_at = time.monotonic()
         if self.safety_sample is not None:
             self.safety_sample.lid_closed = closed
+            # In a sleep window the policy takes no action and
+            # _start_protection() defers; evidence is still recorded (S-R1).
             reason = self.safety.update(self.safety_sample)
             if reason:
                 self._start_protection(reason)
             self._write_safety()
-        try:
-            self._reconcile_sleep_inhibitor()
-        except TransitionError as exc:
-            LOG.error("Conditional sleep prevention unavailable: %s", exc)
         if changed:
             self.last_action = "lid-closed" if closed else "lid-opened"
             self._write_state()
@@ -1673,7 +2599,9 @@ class InputLockDaemon:
                     LOG.warning("Could not refresh key state for %s: %s", record.path, exc)
         now = time.monotonic()
         debounce = self.config.debounce_ms / 1000.0
-        if now - self.last_hotkey_at < debounce:
+        # The emergency unlock is never debounced (L2): pressed right after
+        # the primary hotkey, it must still release everything.
+        if action != "emergency-unlock" and now - self.last_hotkey_at < debounce:
             return "ignored-debounce"
         if self.pending_hotkey is not None:
             if action == "emergency-unlock":
@@ -1700,6 +2628,9 @@ class InputLockDaemon:
         self.last_hotkey_at = time.monotonic()
         try:
             if pending.action == "emergency-unlock":
+                if pending.source in PHYSICAL_EMERGENCY_SOURCES:
+                    # Same-UID code must not re-lock straight away (L3).
+                    self.lock_cooldown_until = time.monotonic() + EMERGENCY_LOCK_COOLDOWN_SECONDS
                 self._emergency_unlock(pending.source)
             elif pending.action == "toggle-default":
                 self._toggle_default_kinds(reason=pending.source)
@@ -1707,6 +2638,8 @@ class InputLockDaemon:
                 self._apply_action(
                     pending.action, pending.mode, timeout=None, reason=pending.source
                 )
+        except RecoveryRequired:
+            raise
         except TransitionError as exc:
             LOG.error("Hotkey transition rejected safely: %s", exc)
 
@@ -1865,14 +2798,54 @@ class InputLockDaemon:
             else:
                 LOG.info("Input unlocked: all; reason=%s", reason)
 
-    def _release_all_grabs(self) -> None:
-        self._emergency_unlock("release-all")
+    def _release_inputs_keep_lid(self, reason: str, *, preserve_safety: bool = False) -> None:
+        """Release keyboard/mouse locks without dropping the user's lid-ignore.
 
+        User decision 2026-10-22: continuous lid-ignore means "never sleep on
+        lid close". A suspend from another source (menu, idle, another power
+        manager) or a locked screen must not silently turn it off. Input locks
+        are still released, so the user can type at the lock screen or after
+        resume. The lid-switch grab, the logind lid inhibitor and the armed
+        thermal and battery safety stay in place; only that safety, a lost
+        tray controller, logout, or the user ends lid-ignore. A protective
+        (safety) suspend releases lid-ignore itself before it requests sleep.
 
-    def _emergency_unlock(self, reason: str, *, preserve_safety: bool = False) -> None:
+        Our own protective suspend also arrives here (PrepareForSleep). Its
+        PROTECTIVE_ACTION_PENDING state must survive in the journal and the
+        status (S-R8a), so a pending protective action is always preserved.
+        """
+        preserve_safety = preserve_safety or self.safety.state == "PROTECTIVE_ACTION_PENDING"
+        if not self.ignore_lid_close:
+            self._emergency_unlock(reason, preserve_safety=preserve_safety)
+            return
+        try:
+            self.pending_hotkey = None
+            self.auto_unlock_deadline = None
+            # Records state and emits the event itself.
+            self._set_locked_kinds(set(), reason=reason + "-lid-ignore-kept", timeout=None)
+        except RecoveryRequired:
+            raise
+        except Exception:
+            LOG.exception("Input release before suspend failed; using the full emergency unlock")
+            self._emergency_unlock(reason, preserve_safety=preserve_safety)
+            return
+        LOG.info("Input locks released before suspend; continuous lid-ignore kept; reason=%s", reason)
+
+    def _emergency_unlock(
+        self, reason: str, *, preserve_safety: bool = False, lid_reason: str | None = None,
+        user_initiated: bool | None = None,
+    ) -> None:
         # No acquisition, device reopening, persistence prerequisite, or policy
         # reconciliation may precede release. Each restriction is independent.
         self.pending_hotkey = None
+        if self.ignore_lid_close:
+            try:
+                if user_initiated is None:
+                    user_initiated = reason in USER_INITIATED_LID_REASONS
+                self._record_lid_disable(lid_reason or reason, requested_by_user=False,
+                                         user_initiated=user_initiated)
+            except Exception:
+                pass
         self.ignore_lid_close = False
         self.lid_policy_healthy = False
         self.lid_lease_deadline = None
@@ -1881,7 +2854,6 @@ class InputLockDaemon:
         self.auto_unlock_deadline = None
         self.release_errors = self._release_records(list(self.devices.values()))
         self._release_lid_inhibitor()
-        self._release_sleep_inhibitor()
         self._close_allowed_uinput()
         if not preserve_safety:
             self.safety.release()
@@ -1929,9 +2901,17 @@ class InputLockDaemon:
         deadlines: list[float] = [self.next_safety_tick]
         if self.accept_retry_at is not None:
             deadlines.append(self.accept_retry_at)
-        deadlines.extend(client.deadline for client in self.clients.values())
-        if self.lid_lease_deadline is not None:
-            deadlines.append(self.lid_lease_deadline)
+        paused = self.sleep_window_since is not None
+        deadlines.extend(client.deadline for client in self.clients.values()
+                         if not (paused and client.subscribed))
+        if paused:
+            deadlines.append(self.sleep_window_since + self.sleep_window_cap)
+        if self.sleep_grace_until is not None:
+            deadlines.append(self.sleep_grace_until)
+        if self.logind_error_since is not None and not self.logind_error_handled:
+            deadlines.append(self.logind_error_since + LOGIND_ERROR_GRACE_SECONDS)
+        if self.logind_restart_at is not None:
+            deadlines.append(self.logind_restart_at)
         if self.auto_unlock_deadline is not None:
             deadlines.append(self.auto_unlock_deadline)
         if (
@@ -1951,11 +2931,35 @@ class InputLockDaemon:
         if self.accept_retry_at is not None and now >= self.accept_retry_at:
             self.accept_retry_at = None
             self.selector.register(self.server, selectors.EVENT_READ, ("server", None))
+        if (self.sleep_window_since is not None
+                and now - self.sleep_window_since >= self.sleep_window_cap):
+            LOG.warning("event=SLEEP_WINDOW_TIMEOUT seconds=%.0f logind_preparing=%s; resume signal missing",
+                        now - self.sleep_window_since, self.logind_preparing)
+            self._leave_sleep_window("timeout")
+        # Controller and lid-lease deadlines are paused during a system sleep
+        # window and extended to resume + CONTROLLER_TIMEOUT (A4). The lease
+        # always mirrors the controller deadline, so controller expiry below
+        # also ends the lease (_close_client).
+        paused = self.sleep_window_since is not None
         for fd, client in list(self.clients.items()):
-            if now >= client.deadline:
-                self._close_client(fd)
-        if self.lid_lease_deadline is not None and now >= self.lid_lease_deadline:
-            self._disable_lid("controller-lease-expired")
+            if paused and client.subscribed:
+                continue
+            if now >= client.deadline and fd in self.clients:
+                # The controller's heartbeat lease ran out (U-R1).
+                self._close_client(fd, lease_expired=fd == self.controller_fd)
+        if self.sleep_grace_until is not None and now >= self.sleep_grace_until:
+            self.sleep_grace_until = None
+            self._recheck_deferred_protection()
+        if (self.logind_error_since is not None and not self.logind_error_handled
+                and now - self.logind_error_since >= LOGIND_ERROR_GRACE_SECONDS):
+            self.logind_error_handled = True
+            LOG.warning("event=LOGIND_ERROR_PERSISTENT seconds=%.0f; treating as session loss",
+                        now - self.logind_error_since)
+            self._on_session_lost("logind-unavailable")
+        if self.logind_restart_at is not None and now >= self.logind_restart_at:
+            self.logind_restart_at = None
+            LOG.info("event=LOGIND_MONITOR_RESTART attempt=%d", self.logind_restart_attempts)
+            self._start_logind_monitor()
         if (
             self.auto_unlock_deadline is not None
             and time.monotonic() >= self.auto_unlock_deadline
@@ -1974,6 +2978,8 @@ class InputLockDaemon:
                     reason="idle-auto-lock",
                     timeout=None,
                 )
+            except RecoveryRequired:
+                raise
             except TransitionError as exc:
                 self.last_input_activity = time.monotonic()
                 LOG.warning("Idle auto-lock rejected safely: %s", exc)
@@ -1995,6 +3001,7 @@ class InputLockDaemon:
         ]
         return {
             "version": VERSION,
+            "protocol": PROTOCOL,  # == input_lock_common.PROTOCOL_VERSION
             "daemon": "running",
             "locked": {
                 "keyboard": "keyboard" in self.locked_kinds,
@@ -2031,7 +3038,8 @@ class InputLockDaemon:
             "lid_controller_connected": self.controller_fd in self.clients,
             "lid_lease_deadline": self.lid_lease_deadline,
             "release_errors": self.release_errors,
-            "sleep_inhibitor_active": self.sleep_inhibitor_fd is not None,
+            "last_lid_disable": self.last_lid_disable,
+            "system_sleep_in_progress": self.sleep_window_since is not None,
             "on_battery": self.on_battery,
             "lid_is_closed": self.lid_is_closed,
             "battery_percentage": self.battery_percentage,
@@ -2088,7 +3096,7 @@ class InputLockDaemon:
                 raise
             client.setblocking(False)
             try:
-                _pid, uid, _gid = struct.unpack(
+                pid, uid, _gid = struct.unpack(
                     PEERCRED_FORMAT,
                     client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, PEERCRED_SIZE),
                 )
@@ -2098,14 +3106,14 @@ class InputLockDaemon:
             if uid not in {0, self.config.authorized_uid} or len(self.clients) >= MAX_CLIENTS:
                 client.close()
                 continue
-            state = ClientState(sock=client, uid=uid)
+            state = ClientState(sock=client, uid=uid, pid=pid)
             fd = client.fileno()
             self.clients[fd] = state
             self.selector.register(client, selectors.EVENT_READ, ("client", fd))
 
     def _read_client(self, fd: int) -> None:
         state = self.clients.get(fd)
-        if state is None:
+        if state is None or state.close_after_flush:
             return
         try:
             data = state.sock.recv(4096)
@@ -2155,6 +3163,11 @@ class InputLockDaemon:
                 if request.get("controller") is True:
                     if self.controller_fd is not None and self.controller_fd != fd:
                         raise ValueError("a tray controller is already connected")
+                    problem = self._controller_claim_problem(state)
+                    if problem:
+                        LOG.warning("event=CONTROLLER_CLAIM_REFUSED pid=%d uid=%d reason=%s",
+                                    state.pid, state.uid, problem)
+                        raise ValueError(problem)
                     self.controller_fd = fd
                 state.subscribed = True
                 state.deadline = time.monotonic() + CONTROLLER_TIMEOUT
@@ -2171,8 +3184,14 @@ class InputLockDaemon:
                     self.lid_lease_deadline = state.deadline
                 self._send(fd, {"ok": True, "heartbeat": True})
                 return
+            if cmd in {"lock", "lock-default", "toggle", "toggle-default", "gnome-hotkey"}:
+                self._check_lock_cooldown(fd, cmd)
             if cmd == "status":
-                response: dict[str, object] = {"ok": True, "state": self._state_payload()}
+                response: dict[str, object] = {
+                    "ok": True,
+                    "protocol": PROTOCOL,  # == input_lock_common.PROTOCOL_VERSION
+                    "state": self._state_payload(),
+                }
             elif cmd == "list-devices":
                 response = {"ok": True, "devices": self._device_payloads()}
             elif cmd in {"lock", "unlock", "toggle"}:
@@ -2207,15 +3226,26 @@ class InputLockDaemon:
                 self._emergency_unlock("user-session-ended")
                 response = {"ok": True, "state": self._state_payload()}
             elif cmd == "prepare-sleep":
+                # Called synchronously by the system-sleep "pre" hook, before
+                # the kernel freezer runs (A3/A4). Root only (S-R1): the
+                # window pauses deadlines and extends the watchdog.
+                self._require_root_peer(fd, cmd)
+                self._enter_sleep_window("sleep-hook")
                 if self.config.unlock_on_suspend:
-                    self._emergency_unlock("system-sleep-hook")
+                    self._release_inputs_keep_lid("system-sleep-hook")
+                response = {"ok": True, "state": self._state_payload()}
+            elif cmd == "resume-sleep":
+                # The system-sleep "post" hook (interface 4). Root only (S-R1).
+                self._require_root_peer(fd, cmd)
+                self._leave_sleep_window("sleep-hook")
                 response = {"ok": True, "state": self._state_payload()}
             elif cmd == "reload":
                 self.reload_requested = True
+                self.reload_user_initiated = True
                 response = {"ok": True, "message": "reload scheduled"}
             elif cmd == "quit":
-                # A clean exit is intentionally not restarted by the systemd unit's
-                # Restart=on-failure policy. Cleanup releases every managed grab.
+                # The unit has Restart=no, so a clean exit stays stopped.
+                # Cleanup releases every managed grab.
                 LOG.info("Authorized Quit request received; shutting down safely")
                 response = {"ok": True, "message": "shutdown scheduled"}
                 self._send_and_close(fd, response)
@@ -2231,7 +3261,11 @@ class InputLockDaemon:
                     or any(character in hotkey for character in "\x00\r\n")
                 ):
                     raise ValueError("hotkey must be a non-empty shortcut string")
-                self._set_primary_hotkey(hotkey)
+                # The same validation as the config and the UI (L4,
+                # interface 2): >=2 modifiers plus one A-Z, 0-9 or F1-F12 key.
+                # ConfigError is a ValueError and is reported to the client.
+                from input_lock_common import canonical_hotkey
+                self._set_primary_hotkey(canonical_hotkey(hotkey))
                 response = {"ok": True, "state": self._state_payload()}
             elif cmd == "set-lid-ignore":
                 enabled = request.get("enabled")
@@ -2241,12 +3275,6 @@ class InputLockDaemon:
                 if enabled and (isinstance(generation, bool) or not isinstance(generation, int)):
                     raise ValueError("enable requires the current lid generation")
                 self._set_ignore_lid_close(enabled, generation=generation)
-                response = {"ok": True, "state": self._state_payload()}
-            elif cmd == "set-lid-policy-health":
-                healthy = request.get("healthy")
-                if not isinstance(healthy, bool):
-                    raise ValueError("healthy must be a boolean")
-                self._set_lid_policy_health(healthy)
                 response = {"ok": True, "state": self._state_payload()}
             elif cmd == "set-lock-kinds":
                 kinds = self._validated_lock_kinds(request.get("kinds"))
@@ -2267,30 +3295,33 @@ class InputLockDaemon:
                 keys = validate_allowed_keys(request.get("keys"))
                 self._set_allowed_keys(keys)
                 response = {"ok": True, "state": self._state_payload()}
-            elif cmd == "set-lid-power-policy":
-                enabled = request.get("enabled")
-                threshold = request.get("threshold")
-                if not isinstance(enabled, bool):
-                    raise ValueError("enabled must be a boolean")
-                if isinstance(threshold, bool) or not isinstance(threshold, int):
-                    raise ValueError("threshold must be an integer")
-                if not 1 <= threshold <= 99:
-                    raise ValueError("threshold must be between 1 and 99")
-                self._set_lid_power_policy(enabled, threshold)
-                response = {"ok": True, "state": self._state_payload()}
             elif cmd == "toggle-default":
                 self._toggle_default_kinds(reason="ipc-toggle-default")
                 response = {"ok": True, "state": self._state_payload()}
             elif cmd == "ping":
-                response = {"ok": True, "version": VERSION}
+                response = {"ok": True, "version": VERSION, "protocol": PROTOCOL}
             else:
                 raise ValueError("unsupported command")
             self._send_and_close(fd, response)
+        except RecoveryRequired:
+            # S-R7: e.g. a protective release that failed while a client was
+            # being closed. Terminate so that systemd runs InputLock recovery.
+            raise
         except (TransitionError, ValueError) as exc:
             self._send_and_close(fd, {"ok": False, "error": str(exc)})
         except Exception as exc:
             LOG.exception("Unexpected control request failure for %s", cmd)
             self._send_and_close(fd, {"ok": False, "error": f"internal error: {exc}"})
+
+    def _require_root_peer(self, fd: int, cmd: str) -> None:
+        """Only root (the system-sleep hook) may open or close the sleep
+        window (S-R1). The authorized user's CLI gets a clear refusal."""
+        state = self.clients.get(fd)
+        if state is not None and state.uid == 0:
+            return
+        LOG.warning("event=SLEEP_WINDOW_REQUEST_REFUSED cmd=%s pid=%s uid=%s",
+                    cmd, state.pid if state else "?", state.uid if state else "?")
+        raise ValueError(f"{cmd} is accepted only from root (the system-sleep hook)")
 
     @staticmethod
     def _validated_mode(value: object) -> str:
@@ -2346,43 +3377,208 @@ class InputLockDaemon:
             for record in sorted(self.devices.values(), key=lambda item: item.path)
         ]
 
-    def _send(self, fd: int, payload: dict[str, object]) -> bool:
+    def _check_lock_cooldown(self, fd: int, cmd: str) -> None:
+        """Refuse IPC requests that could lock right after a physical emergency
+        or TTY-recovery unlock (L3), so same-UID code cannot defeat the
+        emergency hotkey by re-locking at once. Unlocking is never refused."""
+        remaining = self.lock_cooldown_until - time.monotonic()
+        if remaining <= 0:
+            return
+        if cmd in {"toggle", "toggle-default", "gnome-hotkey"} and self.locked_kinds:
+            return  # With something locked these toggle towards unlocked.
+        state = self.clients.get(fd)
+        LOG.warning("event=LOCK_REFUSED_COOLDOWN cmd=%s pid=%s uid=%s remaining=%.0fs",
+                    cmd, state.pid if state else "?", state.uid if state else "?", remaining)
+        raise TransitionError(
+            f"locking is paused for {int(remaining) + 1} s after an emergency unlock"
+        )
+
+    @staticmethod
+    def _peer_session_scope(pid: int, uid: int) -> tuple[str | None, str | None]:
+        """Classify a peer process by its cgroup: ("session", id) for a logind
+        session scope, ("user-manager", None) for the user's systemd --user
+        services (where the tray runs), or (None, None) when unknown."""
+        if pid <= 0:
+            return None, None
+        try:
+            text = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None, None
+        for line in text.splitlines():
+            cgroup = line.rpartition(":")[2]
+            for part in cgroup.split("/"):
+                if part.startswith("session-") and part.endswith(".scope"):
+                    return "session", part[len("session-"):-len(".scope")]
+            if f"/user@{uid}.service/" in cgroup + "/":
+                return "user-manager", None
+        return None, None
+
+    def _controller_claim_problem(self, state: ClientState) -> str | None:
+        """L6: the tray controller must come from the authorized user's local
+        graphical session. Returns a refusal reason, or None to accept.
+
+        A peer in a session scope must be in one of the user's local graphical
+        sessions. A peer in the user's service manager is accepted while that
+        user has an active or locked local session. Anything that cannot be
+        verified keeps the previous first-come behaviour and is logged.
+        """
+        if state.uid != self.config.authorized_uid:
+            return "the tray controller must run as the authorized user"
+        kind, session_id = self._peer_session_scope(state.pid, state.uid)
+        graphical = getattr(self.logind_monitor, "graphical_session_ids", None)
+        if kind == "session" and graphical is not None:
+            if session_id in graphical:
+                LOG.info("event=CONTROLLER_CLAIMED pid=%d session=%s", state.pid, session_id)
+                return None
+            return "the tray controller must run in the local graphical session"
+        if kind == "user-manager" and (self.authorized_session_active or self.authorized_session_locked):
+            LOG.info("event=CONTROLLER_CLAIMED pid=%d scope=user-manager", state.pid)
+            return None
+        LOG.warning("event=CONTROLLER_CLAIM_UNVERIFIED pid=%d scope=%s session_active=%s; accepting first come",
+                    state.pid, kind or "unknown", self.authorized_session_active)
+        return None
+
+    def _send(self, fd: int, payload: dict[str, object], *, coalesce: bool = False) -> bool:
+        """Queue one message for a client and write what the socket accepts.
+
+        Backpressure is never a reason to drop a client (B2): unsent bytes
+        wait for EVENT_WRITE. With coalesce=True (state events) a newer event
+        replaces an older one that has not started sending yet.
+        """
         state = self.clients.get(fd)
         if state is None:
             return False
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
-        try:
-            state.sock.sendall(encoded)
-            return True
-        except (BlockingIOError, BrokenPipeError, OSError):
-            self._close_client(fd)
+        if coalesce and (state.outbuf or state.pending_state is not None):
+            state.pending_state = encoded
+            return self._flush_client(fd)
+        if state.pending_state is not None:
+            # Keep order: the queued state event goes before this message.
+            state.outbuf.extend(state.pending_state)
+            state.pending_state = None
+        state.outbuf.extend(encoded)
+        return self._flush_client(fd)
+
+    def _flush_client(self, fd: int) -> bool:
+        state = self.clients.get(fd)
+        if state is None:
             return False
+        while True:
+            if not state.outbuf and state.pending_state is not None:
+                state.outbuf.extend(state.pending_state)
+                state.pending_state = None
+            if not state.outbuf:
+                break
+            try:
+                sent = state.sock.send(state.outbuf)
+            except (BlockingIOError, InterruptedError):
+                break
+            except OSError:
+                if not state.closing:
+                    self._close_client(fd)
+                return False
+            if not isinstance(sent, int) or sent <= 0:
+                break
+            del state.outbuf[:sent]
+        if state.closing:
+            # Final best-effort flush from _close_client: never wait.
+            return not (state.outbuf or state.pending_state is not None)
+        if state.outbuf or state.pending_state is not None:
+            if len(state.outbuf) > CLIENT_OUTPUT_LIMIT and fd != self.controller_fd:
+                LOG.warning("Dropping IPC client pid=%d: %d unsent bytes", state.pid, len(state.outbuf))
+                self._close_client(fd)
+                return False
+            self._watch_client(fd, state, write=True)
+            return True
+        if state.close_after_flush:
+            self._close_client(fd)
+            return True
+        self._watch_client(fd, state, write=False)
+        return True
+
+    def _watch_client(self, fd: int, state: ClientState, *, write: bool) -> None:
+        if state.watching_write == write and not (write and state.close_after_flush):
+            return
+        events = 0 if state.close_after_flush else selectors.EVENT_READ
+        if write:
+            events |= selectors.EVENT_WRITE
+        try:
+            self.selector.modify(state.sock, events, ("client", fd))
+            state.watching_write = write
+        except (KeyError, ValueError, OSError):
+            pass
 
     def _send_and_close(self, fd: int, payload: dict[str, object]) -> None:
-        self._send(fd, payload)
-        self._close_client(fd)
-
-    def _close_client(self, fd: int) -> None:
-        state = self.clients.pop(fd, None)
-        self.subscribers.discard(fd)
+        state = self.clients.get(fd)
         if state is None:
             return
+        # Stop reading; close once the response has been written (or when the
+        # client's deadline expires).
+        state.close_after_flush = True
+        self._send(fd, payload)
+
+    def _close_client(self, fd: int, *, lease_expired: bool = False) -> None:
+        """Close one client. For the tray controller, end lid-ignore first
+        (protective suspend with a possibly closed lid) and send the final
+        state event, with last_lid_disable, before the socket closes (U-R1):
+        the tray must learn why it lost lid-ignore, not just see EOF.
+
+        ``lease_expired``: the controller missed its heartbeat lease; it is
+        reported as "controller-lease-expired". A closed or broken connection
+        stays "controller-disconnected".
+        """
+        state = self.clients.get(fd)
+        if state is None:
+            self.subscribers.discard(fd)
+            return
+        if state.closing:
+            return
+        state.closing = True
         try:
-            self.selector.unregister(state.sock)
+            if fd == self.controller_fd:
+                self.controller_fd = None
+                emitted = self.state_event_seq
+                lid_key = CONTROLLER_LEASE_EXPIRED_KEY if lease_expired else "controller-disconnected"
+                try:
+                    if self.ignore_lid_close and self._lid_may_be_closed() and self.running:
+                        if lease_expired:
+                            self._start_protection("CONTROLLER_LOST", lid_reason=CONTROLLER_LEASE_EXPIRED_KEY)
+                        else:
+                            self._start_protection("CONTROLLER_LOST")
+                    elif self.ignore_lid_close:
+                        self._disable_lid(lid_key)
+                finally:
+                    self._final_flush(fd, state, lid_key, send_event=self.state_event_seq == emitted)
+        finally:
+            self.clients.pop(fd, None)
+            self.subscribers.discard(fd)
+            try:
+                self.selector.unregister(state.sock)
+            except Exception:
+                pass
+            try:
+                state.sock.close()
+            except OSError:
+                pass
+
+    def _final_flush(self, fd: int, state: ClientState, reason: str, *, send_event: bool) -> None:
+        """Best effort and non-blocking: queue the final state event (unless
+        one was just emitted) and write what the socket accepts now."""
+        if not state.subscribed:
+            return
+        try:
+            if send_event:
+                self._send(fd, {"type": "event", "event": "state-changed", "reason": reason,
+                                "state": self._state_payload()}, coalesce=True)
+            else:
+                self._flush_client(fd)
+        except RecoveryRequired:
+            raise
         except Exception:
-            pass
-        try:
-            state.sock.close()
-        except OSError:
-            pass
-        if fd == self.controller_fd:
-            self.controller_fd = None
-            if self.ignore_lid_close and self._lid_may_be_closed() and self.running:
-                self._start_protection("CONTROLLER_LOST")
-            elif self.ignore_lid_close:
-                self._disable_lid("controller-disconnected")
+            LOG.debug("Final state event to the closing controller failed", exc_info=True)
 
     def _emit_state_event(self, reason: str) -> None:
+        self.state_event_seq += 1
         payload = {
             "type": "event",
             "event": "state-changed",
@@ -2390,7 +3586,7 @@ class InputLockDaemon:
             "state": self._state_payload(),
         }
         for fd in list(self.subscribers):
-            self._send(fd, payload)
+            self._send(fd, payload, coalesce=True)
 
 
 def main() -> int:

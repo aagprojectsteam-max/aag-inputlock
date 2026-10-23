@@ -1,0 +1,1769 @@
+# Hebrew translation of the Input Lock user interface.
+# This file is distributed under the same license as the Input Lock package.
+# Latin words and values inside Hebrew text are wrapped in Unicode isolates
+# (U+2068 ... U+2069) so they keep their direction. Commands, paths and
+# shortcuts are NEVER wrapped: they are copied into a shell or a settings
+# field. A command stands on a line of its own; a left-to-right mark
+# (U+200E) may precede a path that starts with '/', outside the path.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: input-lock 2.0.0-beta.5\n"
+"Report-Msgid-Bugs-To: AAG.Projects.Team@gmail.com\n"
+"PO-Revision-Date: 2026-10-22 12:00+0300\n"
+"Last-Translator: AAG Projects Team <AAG.Projects.Team@gmail.com>\n"
+"Language-Team: Hebrew\n"
+"Language: he\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: src/input_lock_cli.py:80
+#, python-brace-format
+msgid "input-lock: configuration cannot be parsed ({error}); using the default socket {path}"
+msgstr "input-lock: לא ניתן לקרוא את קובץ ההגדרות ({error}); נעשה שימוש בשקע ברירת המחדל {path}"
+
+#: src/input_lock_cli.py:125
+#, python-brace-format
+msgid "cannot connect to the Input Lock daemon at {path} ({error}; {unit} is {state}). Check: systemctl status {unit}"
+msgstr ""
+"אין חיבור לשירות הרקע של נעילת הקלט בכתובת:\n"
+"{path}\n"
+"שגיאה: {error}; מצב {unit}: ⁨{state}⁩. לבדיקה:\n"
+"systemctl status {unit}"
+
+#: src/input_lock_cli.py:148
+#, python-brace-format
+msgid "input-lock: warning: the running daemon does not report a protocol version (it is probably older than this CLI); this CLI uses protocol {protocol}. Restart {unit} after an update."
+msgstr "input-lock: אזהרה: שירות הרקע הפועל אינו מדווח על גרסת פרוטוקול (כנראה שהוא ישן יותר משורת הפקודה הזו); שורת הפקודה משתמשת בפרוטוקול ⁨{protocol}⁩. יש להפעיל מחדש את {unit} לאחר עדכון."
+
+#: src/input_lock_cli.py:152
+#, python-brace-format
+msgid "input-lock: warning: the running daemon reports protocol {reported}; this CLI uses protocol {protocol}. Restart {unit} after an update."
+msgstr "input-lock: אזהרה: שירות הרקע הפועל מדווח על פרוטוקול ⁨{reported}⁩; שורת הפקודה משתמשת בפרוטוקול ⁨{protocol}⁩. יש להפעיל מחדש את {unit} לאחר עדכון."
+
+#: src/input_lock_cli.py:178
+msgid "daemon response does not contain state"
+msgstr "תשובת שירות הרקע אינה כוללת מצב"
+
+#: src/input_lock_cli.py:182
+msgid "Locked"
+msgstr "נעול"
+
+#: src/input_lock_cli.py:182
+msgid "Unlocked"
+msgstr "לא נעול"
+
+#: src/input_lock_cli.py:187 src/input_lock_messages.py:199
+msgid "review 'journalctl -u input-lock-failsafe.service', then run: sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure"
+msgstr ""
+"יש לעיין בפלט של הפקודה:\n"
+"journalctl -u input-lock-failsafe.service\n"
+"ולאחר מכן להריץ:\n"
+"sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure"
+
+#: src/input_lock_cli.py:229
+msgid "Input Lock Status"
+msgstr "מצב נעילת הקלט"
+
+#: src/input_lock_cli.py:232
+#, python-brace-format
+msgid "Keyboard:    {state}"
+msgstr "מקלדת:               ⁨{state}⁩"
+
+#: src/input_lock_cli.py:233
+#, python-brace-format
+msgid "Mouse:       {state}"
+msgstr "עכבר:                ⁨{state}⁩"
+
+#: src/input_lock_cli.py:234
+#, python-brace-format
+msgid "Touchpad:    {state}"
+msgstr "משטח מגע:            ⁨{state}⁩"
+
+#: src/input_lock_cli.py:235
+#, python-brace-format
+msgid "Touchscreen: {state}"
+msgstr "מסך מגע:             ⁨{state}⁩"
+
+#: src/input_lock_cli.py:236
+#, python-brace-format
+msgid "Active devices:   {value}"
+msgstr "התקנים פעילים:       ⁨{value}⁩"
+
+#: src/input_lock_cli.py:237
+#, python-brace-format
+msgid "Grabbed devices:  {value}"
+msgstr "התקנים תפוסים:       ⁨{value}⁩"
+
+#: src/input_lock_cli.py:238
+#, python-brace-format
+msgid "Primary hotkey:   {value}"
+msgstr "קיצור ראשי:          {value}"
+
+#: src/input_lock_cli.py:239
+#, python-brace-format
+msgid "Emergency hotkey: {value}"
+msgstr "קיצור חירום:         {value}"
+
+#: src/input_lock_cli.py:240
+#, python-brace-format
+msgid "Lid close:       {value}"
+msgstr "סגירת מכסה:          ⁨{value}⁩"
+
+#: src/input_lock_cli.py:241
+msgid "Keep running"
+msgstr "המחשב ממשיך לפעול"
+
+#: src/input_lock_cli.py:241
+msgid "Normal action"
+msgstr "פעולה רגילה"
+
+#: src/input_lock_cli.py:242
+#, python-brace-format
+msgid "Lid inhibitor:   {value}"
+msgstr "חסימת סגירת מכסה:    ⁨{value}⁩"
+
+#: src/input_lock_cli.py:243
+msgid "Active"
+msgstr "פעילה"
+
+#: src/input_lock_cli.py:243
+msgid "Inactive"
+msgstr "לא פעילה"
+
+#: src/input_lock_cli.py:244
+#, python-brace-format
+msgid "Lid supervision:  {value}"
+msgstr "פיקוח על המכסה:      ⁨{value}⁩"
+
+#: src/input_lock_cli.py:246
+msgid "Verified"
+msgstr "מאומת"
+
+#: src/input_lock_cli.py:248
+msgid "Safety unavailable"
+msgstr "הבטיחות אינה זמינה"
+
+#: src/input_lock_cli.py:250
+msgid "Normal policy"
+msgstr "מדיניות רגילה"
+
+#: src/input_lock_cli.py:255
+#, python-brace-format
+msgid "Safety state:     {value}"
+msgstr "מצב בטיחות:          ⁨{value}⁩"
+
+#: src/input_lock_cli.py:255 src/input_lock_cli.py:259 src/input_lock_cli.py:289
+msgid "unknown"
+msgstr "לא ידוע"
+
+#: src/input_lock_cli.py:256
+#, python-brace-format
+msgid "Measured thermal: {value}"
+msgstr "טמפרטורה נמדדת:      ⁨{value}⁩"
+
+#: src/input_lock_cli.py:257
+#, python-brace-format
+msgid "Lid protection:   {value}"
+msgstr "הגנת מכסה:           ⁨{value}⁩"
+
+#: src/input_lock_cli.py:259
+#, python-brace-format
+msgid "Safety reason:    {value}"
+msgstr "סיבת בטיחות:         ⁨{value}⁩"
+
+#: src/input_lock_cli.py:262
+#, python-brace-format
+msgid "Missing telemetry: {value}"
+msgstr "נתוני חיישנים חסרים: ⁨{value}⁩"
+
+#: src/input_lock_cli.py:266
+msgid "OS sleep:         in progress (no protective action meanwhile)"
+msgstr "שינה של המערכת: מתבצעת כעת (בינתיים לא תינקט פעולת הגנה)"
+
+#: src/input_lock_cli.py:269
+msgid "Lid-ignore ready: yes"
+msgstr "התעלמות מסגירת מכסה מוכנה: כן"
+
+#: src/input_lock_cli.py:271
+#, python-brace-format
+msgid "Lid-ignore ready: no: {reason}"
+msgstr "התעלמות מסגירת מכסה מוכנה: לא: {reason}"
+
+#: src/input_lock_cli.py:278
+msgid "by user"
+msgstr "על ידי המשתמש"
+
+#: src/input_lock_cli.py:280
+msgid "side effect of a user action"
+msgstr "תוצאה של פעולת משתמש"
+
+#: src/input_lock_cli.py:282
+msgid "automatic"
+msgstr "אוטומטי"
+
+#: src/input_lock_cli.py:283
+#, python-brace-format
+msgid "Last lid-ignore off: {reason} ({who})"
+msgstr "כיבוי אחרון של ההתעלמות מסגירת מכסה: {reason} ({who})"
+
+#: src/input_lock_cli.py:287
+#, python-brace-format
+msgid "Lid switches:     {value}"
+msgstr "מתגי מכסה:           ⁨{value}⁩"
+
+#: src/input_lock_cli.py:288
+#, python-brace-format
+msgid "Auto-unlock:      {value}"
+msgstr "שחרור אוטומטי:       ⁨{value}⁩"
+
+#: src/input_lock_cli.py:289
+#, python-brace-format
+msgid "Daemon:           {value}"
+msgstr "שירות הרקע:          ⁨{value}⁩"
+
+#: src/input_lock_cli.py:292
+msgid "WARNING: requested lock is incomplete for:"
+msgstr "אזהרה: הנעילה המבוקשת אינה מלאה עבור:"
+
+#: src/input_lock_cli.py:299
+msgid "daemon response does not contain a device list"
+msgstr "תשובת שירות הרקע אינה כוללת רשימת התקנים"
+
+#: src/input_lock_cli.py:301
+msgid "No lockable keyboard, mouse, touchpad, or touchscreen was detected."
+msgstr "לא זוהו מקלדת, עכבר, משטח מגע או מסך מגע שניתן לנעול."
+
+#: src/input_lock_cli.py:314
+#, python-brace-format
+msgid "  Classes: {value}"
+msgstr "  סוגים: ⁨{value}⁩"
+
+#: src/input_lock_cli.py:315
+#, python-brace-format
+msgid "  Vendor:Product: {value}"
+msgstr "  יצרן:מוצר: ⁨{value}⁩"
+
+#: src/input_lock_cli.py:317
+#, python-brace-format
+msgid "  Stable path: {value}"
+msgstr "  נתיב קבוע: {value}"
+
+#: src/input_lock_cli.py:319
+#, python-brace-format
+msgid "  Exclusion: {value}"
+msgstr "  החרגה: ⁨{value}⁩"
+
+#: src/input_lock_cli.py:437 src/input_lock_cli.py:441 src/input_lock_cli.py:444 src/input_lock_cli.py:448
+msgid "Native protection"
+msgstr "הגנה מובנית"
+
+#: src/input_lock_cli.py:438
+#, python-brace-format
+msgid "readiness probe unavailable: {error}"
+msgstr "בדיקת המוכנות אינה זמינה: {error}"
+
+#: src/input_lock_cli.py:444
+msgid "ordinary suspend and the protect/failsafe units are ready"
+msgstr "שינה רגילה ויחידות ההגנה והגיבוי (⁨protect/failsafe⁩) מוכנות"
+
+#: src/input_lock_cli.py:446
+msgid "Protection failure latch"
+msgstr "סימון כשל הגנה"
+
+#: src/input_lock_cli.py:460 src/input_lock_cli.py:462
+msgid "Operating system"
+msgstr "מערכת הפעלה"
+
+#: src/input_lock_cli.py:463
+#, python-brace-format
+msgid "Designed for Ubuntu 26.04; found {name}"
+msgstr "התוכנה מיועדת ל־⁨Ubuntu 26.04⁩; נמצאה ⁨{name}⁩"
+
+#: src/input_lock_cli.py:466
+msgid "Session"
+msgstr "הפעלה"
+
+#: src/input_lock_cli.py:471 src/input_lock_cli.py:473
+msgid "GNOME Shell"
+msgstr "מעטפת ⁨GNOME⁩"
+
+#: src/input_lock_cli.py:473
+msgid "gnome-shell command not found"
+msgstr "הפקודה gnome-shell לא נמצאה"
+
+#: src/input_lock_cli.py:477 src/input_lock_cli.py:481
+msgid "Configuration"
+msgstr "הגדרות"
+
+#: src/input_lock_cli.py:478 src/input_lock_cli.py:483
+msgid "Emergency hotkey"
+msgstr "קיצור חירום"
+
+#: src/input_lock_cli.py:484
+msgid "invalid or equal to HOTKEY; the emergency unlock shortcut may not work"
+msgstr "לא תקין או זהה ל־HOTKEY; ייתכן שקיצור שחרור החירום לא יפעל"
+
+#: src/input_lock_cli.py:489 src/input_lock_cli.py:491
+msgid "Python dependencies"
+msgstr "תלויות ⁨Python⁩"
+
+#: src/input_lock_cli.py:489
+#, python-brace-format
+msgid "missing: {modules}"
+msgstr "חסרים: ⁨{modules}⁩"
+
+#: src/input_lock_cli.py:491
+msgid "all required modules available"
+msgstr "כל המודולים הנדרשים זמינים"
+
+#: src/input_lock_cli.py:501 src/input_lock_cli.py:503
+msgid "Tray dependencies"
+msgstr "תלויות של סמל המגש"
+
+#: src/input_lock_cli.py:501
+msgid "GTK 3 and Ayatana AppIndicator available"
+msgstr "⁨GTK 3⁩ ו־⁨Ayatana AppIndicator⁩ זמינים"
+
+#: src/input_lock_cli.py:507
+msgid "System service"
+msgstr "שירות מערכת"
+
+#: src/input_lock_cli.py:516 src/input_lock_cli.py:520 src/input_lock_cli.py:541
+msgid "Daemon protocol"
+msgstr "פרוטוקול שירות הרקע"
+
+#: src/input_lock_cli.py:517
+#, python-brace-format
+msgid "version {version}, protocol {protocol}"
+msgstr "גרסה ⁨{version}⁩, פרוטוקול ⁨{protocol}⁩"
+
+#: src/input_lock_cli.py:521
+#, python-brace-format
+msgid "daemon version {version} reports protocol {protocol}; this CLI uses {expected}. Restart {unit}."
+msgstr "שירות הרקע בגרסה ⁨{version}⁩ מדווח על פרוטוקול ⁨{protocol}⁩; שורת הפקודה משתמשת בפרוטוקול ⁨{expected}⁩. יש להפעיל מחדש את {unit}."
+
+#: src/input_lock_cli.py:524
+msgid "none"
+msgstr "אין"
+
+#: src/input_lock_cli.py:527 src/input_lock_cli.py:529
+msgid "Lock completeness"
+msgstr "שלמות הנעילה"
+
+#: src/input_lock_cli.py:527
+msgid "one or more devices are not grabbed"
+msgstr "התקן אחד או יותר אינם תפוסים"
+
+#: src/input_lock_cli.py:529
+msgid "no incomplete lock currently reported"
+msgstr "כרגע לא מדווחת נעילה חלקית"
+
+#: src/input_lock_cli.py:531
+msgid "Input detection"
+msgstr "זיהוי התקני קלט"
+
+#: src/input_lock_cli.py:532
+#, python-brace-format
+msgid "{count} managed event nodes"
+msgid_plural "{count} managed event nodes"
+msgstr[0] "⁨{count}⁩ צומת אירועים מנוהל"
+msgstr[1] "⁨{count}⁩ צומתי אירועים מנוהלים"
+
+#: src/input_lock_cli.py:536
+msgid "Lid switch detection"
+msgstr "זיהוי מתג המכסה"
+
+#: src/input_lock_cli.py:537
+#, python-brace-format
+msgid "{count} lid switch event node(s)"
+msgid_plural "{count} lid switch event node(s)"
+msgstr[0] "⁨{count}⁩ צומת אירועים של מתג מכסה"
+msgstr[1] "⁨{count}⁩ צומתי אירועים של מתג מכסה"
+
+#: src/input_lock_cli.py:544 src/input_lock_cli.py:546
+msgid "Notifications"
+msgstr "התראות"
+
+#: src/input_lock_cli.py:544
+msgid "notify-send is installed"
+msgstr "הפקודה notify-send מותקנת"
+
+#: src/input_lock_cli.py:546
+msgid "notify-send is missing; locking still works"
+msgstr "הפקודה notify-send חסרה; הנעילה עדיין פועלת"
+
+#: src/input_lock_cli.py:549
+msgid "Session D-Bus"
+msgstr "⁨D-Bus⁩ של ההפעלה"
+
+#: src/input_lock_cli.py:550
+msgid "available"
+msgstr "זמין"
+
+#: src/input_lock_cli.py:550
+msgid "not present in this shell"
+msgstr "לא קיים במסוף הזה"
+
+#: src/input_lock_cli.py:557
+msgid "Tray service"
+msgstr "שירות סמל המגש"
+
+#: src/input_lock_cli.py:566 src/input_lock_cli.py:575 src/input_lock_cli.py:577
+msgid "GNOME shortcuts"
+msgstr "קיצורי ⁨GNOME⁩"
+
+#: src/input_lock_cli.py:566
+msgid "gsettings unavailable outside the graphical session"
+msgstr "הפקודה gsettings אינה זמינה מחוץ להפעלה הגרפית"
+
+#: src/input_lock_cli.py:575
+msgid "one or both fallback bindings are absent"
+msgstr "אחד מקיצורי הגיבוי או שניהם חסרים"
+
+#: src/input_lock_cli.py:577
+msgid "primary and emergency fallback bindings installed"
+msgstr "קיצורי הגיבוי הראשי ושל החירום מותקנים"
+
+#: src/input_lock_cli.py:585 src/input_lock_cli.py:591
+msgid "GNOME emergency binding"
+msgstr "קיצור החירום ב־⁨GNOME⁩"
+
+#: src/input_lock_cli.py:586
+#, python-brace-format
+msgid "{binding} does not match EMERGENCY_HOTKEY={hotkey}; re-run 'python3 /usr/lib/input-lock/input_lock_gnome.py install' (or ./update.sh) while logged in"
+msgstr ""
+"הקיצור המותקן {binding} אינו תואם ל־EMERGENCY_HOTKEY={hotkey}. בזמן שהמשתמש מחובר, יש להריץ שוב:\n"
+"python3 /usr/lib/input-lock/input_lock_gnome.py install\n"
+"או:\n"
+"./update.sh"
+
+#: src/input_lock_cli.py:589
+msgid "unreadable"
+msgstr "לא קריא"
+
+#: src/input_lock_cli.py:591
+#, python-brace-format
+msgid "matches {hotkey}"
+msgstr "תואם ל־{hotkey}"
+
+#: src/input_lock_cli.py:604 src/input_lock_cli.py:608 src/input_lock_cli.py:611
+msgid "Emergency device"
+msgstr "התקן חירום"
+
+#: src/input_lock_cli.py:605
+#, python-brace-format
+msgid "{count} excluded keyboard node(s)"
+msgid_plural "{count} excluded keyboard node(s)"
+msgstr[0] "⁨{count}⁩ צומת מקלדת מוחרג"
+msgstr[1] "⁨{count}⁩ צומתי מקלדת מוחרגים"
+
+#: src/input_lock_cli.py:609
+msgid "none configured; hotkeys and auto-unlock remain available"
+msgstr "לא הוגדר התקן; קיצורי המקשים והשחרור האוטומטי נשארים זמינים"
+
+#: src/input_lock_cli.py:614
+msgid "Default auto-unlock"
+msgstr "שחרור אוטומטי כברירת מחדל"
+
+#: src/input_lock_cli.py:615
+#, python-brace-format
+msgid "{seconds}s"
+msgstr "⁨{seconds}⁩ שניות"
+
+#: src/input_lock_cli.py:616
+msgid "disabled (enable for first test)"
+msgstr "כבוי (מומלץ להפעיל לבדיקה הראשונה)"
+
+#: src/input_lock_cli.py:621
+msgid "Supervised lid readiness"
+msgstr "מוכנות להתעלמות מפוקחת מסגירת מכסה"
+
+#: src/input_lock_cli.py:622
+msgid "native protection and telemetry available"
+msgstr "ההגנה המובנית ונתוני החיישנים זמינים"
+
+#: src/input_lock_cli.py:623
+#, python-brace-format
+msgid "lid-ignore cannot be armed: {reason}"
+msgstr "לא ניתן להפעיל התעלמות מסגירת מכסה: {reason}"
+
+#: src/input_lock_cli.py:626
+msgid "Lid supervision"
+msgstr "פיקוח על המכסה"
+
+#: src/input_lock_cli.py:627
+msgid "Critical battery policy"
+msgstr "מדיניות סוללה קריטית"
+
+#: src/input_lock_cli.py:628
+msgid "LockLock does not suppress UPower; platform critical-action acceptance is separate"
+msgstr "⁨LockLock⁩ אינו משבית את ⁨UPower⁩; הפעולה של המערכת בסוללה קריטית נקבעת בנפרד"
+
+#: src/input_lock_cli.py:634
+msgid "Input Lock Doctor"
+msgstr "בדיקת התקינות של נעילת הקלט"
+
+#: src/input_lock_cli.py:642
+#, python-brace-format
+msgid "Summary: {passed} PASS, {warnings} WARNING, {failures} FAIL"
+msgstr "סיכום: ⁨{passed} PASS⁩, ⁨{warnings} WARNING⁩, ⁨{failures} FAIL⁩"
+
+#: src/input_lock_cli.py:657
+#, python-brace-format
+msgid "Daemon unlock failed: {error}"
+msgstr "שחרור הנעילה דרך שירות הרקע נכשל: {error}"
+
+#: src/input_lock_cli.py:658
+#, python-brace-format
+msgid "Recovery: {command}"
+msgstr ""
+"לשחזור:\n"
+"{command}"
+
+#: src/input_lock_cli.py:661
+#, python-brace-format
+msgid "Daemon did not respond ({error}); stopping the service to close all grabs."
+msgstr ""
+"שירות הרקע לא הגיב; השירות נעצר כדי לשחרר את כל ההתקנים. פרטים:\n"
+"{error}"
+
+#: src/input_lock_cli.py:667
+msgid "Input Lock service stopped; kernel file descriptors were released."
+msgstr "שירות נעילת הקלט נעצר; ההתקנים שוחררו ברמת הליבה."
+
+#: src/input_lock_cli.py:675
+msgid "Safely lock and unlock local evdev input devices."
+msgstr "נעילה ושחרור בטוחים של התקני הקלט המקומיים (⁨evdev⁩)."
+
+#: src/input_lock_cli.py:680
+msgid "show lock state"
+msgstr "הצגת מצב הנעילה"
+
+#: src/input_lock_cli.py:682
+msgid "show classified input devices"
+msgstr "הצגת התקני הקלט שזוהו"
+
+#: src/input_lock_cli.py:684
+msgid "lock an input class"
+msgstr "נעילת סוג קלט"
+
+#: src/input_lock_cli.py:685
+msgid "unlock an input class"
+msgstr "שחרור סוג קלט"
+
+#: src/input_lock_cli.py:686
+msgid "toggle an input class"
+msgstr "החלפת מצב הנעילה של סוג קלט"
+
+#: src/input_lock_cli.py:706
+msgid "auto-unlock after 0..86400 seconds (0 disables)"
+msgstr "שחרור אוטומטי לאחר ⁨0..86400⁩ שניות (⁨0⁩ מבטל)"
+
+#: src/input_lock_cli.py:708
+msgid "release every input class"
+msgstr "שחרור כל סוגי הקלט"
+
+#: src/input_lock_cli.py:709
+msgid "change the primary shortcut"
+msgstr "שינוי קיצור המקשים הראשי"
+
+#: src/input_lock_cli.py:710
+#, python-brace-format
+msgid "for example {shortcut}"
+msgstr "לדוגמה {shortcut}"
+
+#: src/input_lock_cli.py:711
+msgid "ignore or restore lid-close events"
+msgstr "התעלמות מסגירת המכסה או החזרת הפעולה הרגילה"
+
+#: src/input_lock_cli.py:713
+msgid "run installation and safety checks"
+msgstr "הרצת בדיקות התקנה ובטיחות"
+
+#: src/input_lock_cli.py:714
+msgid "show recent daemon journal"
+msgstr "הצגת היומן האחרון של שירות הרקע"
+
+#: src/input_lock_cli.py:716
+msgid "validate and reload configuration"
+msgstr "בדיקה וטעינה מחדש של ההגדרות"
+
+#: src/input_lock_cli.py:745
+msgid "--timeout must be between 0 and 86400"
+msgstr "הערך של --timeout חייב להיות בין ⁨0⁩ ל־⁨86400⁩"
+
+#: src/input_lock_cli.py:760
+msgid "the shortcut conflicts with another GNOME binding"
+msgstr "קיצור המקשים מתנגש בקיצור אחר של ⁨GNOME⁩"
+
+#: src/input_lock_cli.py:791
+#, python-brace-format
+msgid "{name} is used only by the system sleep hook, which runs as root; it cannot be run by hand"
+msgstr "הפקודה {name} מיועדת רק לרכיב השינה של המערכת, שפועל בהרשאות ⁨root⁩; אי אפשר להריץ אותה ידנית"
+
+#: src/input_lock_cli.py:806
+#, python-brace-format
+msgid "input-lock: {error}"
+msgstr "input-lock: {error}"
+
+#: src/input_lock_gnome.py:133
+#, python-brace-format
+msgid "Using the default emergency shortcut {binding}: {error}"
+msgstr "נעשה שימוש בקיצור החירום המוגדר כברירת מחדל, {binding}: {error}"
+
+#: src/input_lock_gnome.py:174
+#, python-brace-format
+msgid "Collision: {binding} is already assigned at {path}"
+msgstr "התנגשות: הקיצור {binding} כבר מוקצה ב־{path}"
+
+#: src/input_lock_gnome.py:184 src/input_lock_gnome.py:216
+msgid "the primary shortcut must differ from the emergency shortcut"
+msgstr "קיצור המקשים הראשי חייב להיות שונה מקיצור החירום"
+
+#: src/input_lock_gnome.py:193
+msgid "Input Lock — toggle keyboard and mouse"
+msgstr "נעילת קלט — נעילה או שחרור של המקלדת והעכבר"
+
+#: src/input_lock_gnome.py:199
+msgid "Input Lock — emergency unlock"
+msgstr "נעילת קלט — שחרור חירום"
+
+#: src/input_lock_gnome.py:208
+msgid "GNOME fallback shortcuts installed."
+msgstr "קיצורי הגיבוי של ⁨GNOME⁩ הותקנו."
+
+#: src/input_lock_gnome.py:219
+msgid "the Input Lock GNOME shortcuts are not installed; run 'input_lock_gnome.py install' (or reinstall Input Lock) first"
+msgstr ""
+"קיצורי ⁨GNOME⁩ של נעילת הקלט אינם מותקנים. יש להתקין מחדש את נעילת הקלט, או להריץ קודם:\n"
+"input_lock_gnome.py install"
+
+#: src/input_lock_gnome.py:225
+#, python-brace-format
+msgid "GNOME primary shortcut set to {binding}."
+msgstr "קיצור המקשים הראשי ב־⁨GNOME⁩ הוגדר ל־{binding}."
+
+#: src/input_lock_gnome.py:239
+msgid "GNOME fallback shortcuts removed."
+msgstr "קיצורי הגיבוי של ⁨GNOME⁩ הוסרו."
+
+#: src/input_lock_gnome.py:251
+#, python-brace-format
+msgid "{path}: missing"
+msgstr "חסר: {path}"
+
+#: src/input_lock_gnome.py:266
+msgid "set-primary requires HOTKEY"
+msgstr "הפעולה set-primary דורשת HOTKEY"
+
+#: src/input_lock_gnome.py:270
+#, python-brace-format
+msgid "GNOME shortcut operation failed: {error}"
+msgstr "פעולת קיצורי ⁨GNOME⁩ נכשלה: {error}"
+
+#: src/input_lock_i18n.py:158
+#, python-brace-format
+msgid "The settings file {path} cannot be read ({error}), so it was left unchanged. Fix or remove it, then save again."
+msgstr "לא ניתן לקרוא את קובץ ההגדרות {path} ({error}), ולכן הוא נשאר ללא שינוי. יש לתקן או למחוק אותו ולשמור שוב."
+
+#: src/input_lock_messages.py:25
+msgid "the computer reached a dangerous temperature"
+msgstr "המחשב הגיע לטמפרטורה מסוכנת"
+
+#: src/input_lock_messages.py:26
+msgid "the computer stayed too hot for too long"
+msgstr "המחשב היה חם מדי במשך זמן רב מדי"
+
+#: src/input_lock_messages.py:27
+msgid "the computer was running hot"
+msgstr "המחשב התחמם"
+
+#: src/input_lock_messages.py:28
+msgid "the battery is critically low"
+msgstr "הסוללה כמעט ריקה"
+
+#: src/input_lock_messages.py:29
+msgid "temperature or battery readings were unavailable for too long"
+msgstr "נתוני הטמפרטורה או הסוללה לא היו זמינים במשך זמן רב מדי"
+
+#: src/input_lock_messages.py:30
+msgid "the tray lost contact with the service while the lid may have been closed"
+msgstr "סמל נעילת הקלט איבד קשר עם השירות בזמן שהמכסה אולי היה סגור"
+
+#: src/input_lock_messages.py:35
+msgid "The Input Lock tray did not check in with the background service in time (for example, the tray stopped responding, or the computer was going to sleep or waking up)."
+msgstr "סמל נעילת הקלט לא דיווח לשירות הרקע בזמן (למשל, הסמל הפסיק להגיב, או שהמחשב נכנס למצב שינה או התעורר ממנו)."
+
+#: src/input_lock_messages.py:39
+msgid "The Input Lock tray's connection to the background service was closed (the tray was stopped, restarted or crashed)."
+msgstr "החיבור של סמל נעילת הקלט לשירות הרקע נסגר (הסמל נעצר, הופעל מחדש או קרס)."
+
+#: src/input_lock_messages.py:42 src/input_lock_messages.py:43
+msgid "Your desktop session stopped being active (user switch, logout or a session problem)."
+msgstr "הפעלת שולחן העבודה שלך הפסיקה להיות פעילה (החלפת משתמש, יציאה מהמערכת או תקלה בהפעלה)."
+
+#: src/input_lock_messages.py:45
+msgid "The Input Lock tray was stopped or your desktop session ended."
+msgstr "סמל נעילת הקלט נעצר, או שהפעלת שולחן העבודה שלך הסתיימה."
+
+#: src/input_lock_messages.py:46
+msgid "The Input Lock background service was stopped or restarted."
+msgstr "שירות הרקע של נעילת הקלט נעצר או הופעל מחדש."
+
+#: src/input_lock_messages.py:47
+msgid "The connection to the Input Lock background service was lost (the service stopped or crashed)."
+msgstr "החיבור לשירות הרקע של נעילת הקלט אבד (השירות נעצר או קרס)."
+
+#: src/input_lock_messages.py:49
+msgid "The Input Lock background service restarted; Ignore Lid Close always starts off after a restart."
+msgstr "שירות הרקע של נעילת הקלט הופעל מחדש; לאחר הפעלה מחדש ההתעלמות מסגירת מכסה תמיד כבויה."
+
+#: src/input_lock_messages.py:52 src/input_lock_messages.py:66
+msgid "Input was unlocked with an emergency unlock, which also turns Ignore Lid Close off."
+msgstr "נעילת הקלט שוחררה בשחרור חירום, וזה מכבה גם את ההתעלמות מסגירת מכסה."
+
+#: src/input_lock_messages.py:54 src/input_lock_messages.py:55
+msgid "The emergency unlock shortcut was used, which also turns Ignore Lid Close off."
+msgstr "נעשה שימוש בקיצור שחרור החירום, וזה מכבה גם את ההתעלמות מסגירת מכסה."
+
+#: src/input_lock_messages.py:57
+msgid "A text-console recovery shortcut was used, which also turns Ignore Lid Close off."
+msgstr "נעשה שימוש בקיצור שחזור של מסוף טקסט, וזה מכבה גם את ההתעלמות מסגירת מכסה."
+
+#: src/input_lock_messages.py:59
+msgid "The lock shortcut was changed, which resets all locks."
+msgstr "קיצור הנעילה שונה, וכל הנעילות אופסו."
+
+#: src/input_lock_messages.py:60
+msgid "The devices to lock were changed, which resets all locks."
+msgstr "ההתקנים לנעילה שונו, וכל הנעילות אופסו."
+
+#: src/input_lock_messages.py:61
+msgid "The keys allowed while locked were changed, which resets all locks."
+msgstr "המקשים המותרים בזמן נעילה שונו, וכל הנעילות אופסו."
+
+#: src/input_lock_messages.py:62
+msgid "The Input Lock configuration was reloaded, which resets all locks."
+msgstr "ההגדרות של נעילת הקלט נטענו מחדש, וכל הנעילות אופסו."
+
+#: src/input_lock_messages.py:63
+msgid "The Input Lock configuration could not be reloaded, so all locks were reset."
+msgstr "לא ניתן היה לטעון מחדש את ההגדרות של נעילת הקלט, ולכן כל הנעילות אופסו."
+
+#: src/input_lock_messages.py:64
+msgid "All locks were released."
+msgstr "כל הנעילות שוחררו."
+
+#: src/input_lock_messages.py:68
+msgid "Input Lock settings were changed or reloaded, which resets all locks."
+msgstr "ההגדרות של נעילת הקלט שונו או נטענו מחדש, וכל הנעילות אופסו."
+
+#: src/input_lock_messages.py:69
+msgid "The auto-unlock safety timer released input, which also turns Ignore Lid Close off."
+msgstr "קוצב הזמן לשחרור אוטומטי שחרר את הקלט, וזה מכבה גם את ההתעלמות מסגירת מכסה."
+
+#: src/input_lock_messages.py:71
+msgid "Input Lock could not save its safety record, so it stopped ignoring the lid."
+msgstr "נעילת הקלט לא הצליחה לשמור את רישום הבטיחות שלה, ולכן הפסיקה להתעלם מסגירת המכסה."
+
+#: src/input_lock_messages.py:73
+msgid "The power-saver cooling hold could not be kept."
+msgstr "לא ניתן היה לשמור על מצב חיסכון בחשמל לצורך קירור."
+
+#: src/input_lock_messages.py:74
+msgid "GNOME idle protection or power-saver cooling stopped working."
+msgstr "ההגנה מפני שינה עקב חוסר פעילות ב־⁨GNOME⁩ או הקירור במצב חיסכון בחשמל הפסיקו לפעול."
+
+#: src/input_lock_messages.py:108
+#, python-brace-format
+msgid "Safety protection stepped in: {cause}."
+msgstr "הגנת הבטיחות נכנסה לפעולה: {cause}."
+
+#: src/input_lock_messages.py:111
+#, python-brace-format
+msgid "Safety protection stepped in ({cause})."
+msgstr "הגנת הבטיחות נכנסה לפעולה (⁨{cause}⁩)."
+
+#: src/input_lock_messages.py:113
+msgid "Safety protection stepped in."
+msgstr "הגנת הבטיחות נכנסה לפעולה."
+
+#: src/input_lock_messages.py:115
+msgid "Safety protection stepped in because of heat."
+msgstr "הגנת הבטיחות נכנסה לפעולה בגלל חום."
+
+#: src/input_lock_messages.py:117
+msgid "Safety protection stepped in because of the battery level."
+msgstr "הגנת הבטיחות נכנסה לפעולה בגלל מצב הסוללה."
+
+#: src/input_lock_messages.py:119
+msgid "Safety supervision could not keep monitoring the computer."
+msgstr "פיקוח הבטיחות לא הצליח להמשיך לנטר את המחשב."
+
+#: src/input_lock_messages.py:121
+msgid "It was lost around a sleep or wake-up of the computer."
+msgstr "היא כבתה סביב כניסה של המחשב למצב שינה או התעוררות ממנו."
+
+#: src/input_lock_messages.py:125
+#, python-brace-format
+msgid "The Input Lock service turned it off (reason: {reason})."
+msgstr "שירות נעילת הקלט כיבה אותה (סיבה: {reason})."
+
+#: src/input_lock_messages.py:127
+msgid "The Input Lock service turned it off without giving a reason."
+msgstr "שירות נעילת הקלט כיבה אותה בלי לציין סיבה."
+
+#: src/input_lock_messages.py:129
+#, python-brace-format
+msgid "{text} Details: {detail}"
+msgstr "{text} פרטים: {detail}"
+
+#: src/input_lock_messages.py:155
+msgctxt "thermal level"
+msgid "NORMAL"
+msgstr "תקינה"
+
+#: src/input_lock_messages.py:156
+msgctxt "thermal level"
+msgid "WARNING"
+msgstr "אזהרה"
+
+#: src/input_lock_messages.py:157
+msgctxt "thermal level"
+msgid "HIGH_RISK"
+msgstr "סיכון גבוה"
+
+#: src/input_lock_messages.py:158
+msgctxt "thermal level"
+msgid "EMERGENCY"
+msgstr "חירום"
+
+#: src/input_lock_messages.py:159
+msgctxt "thermal level"
+msgid "UNKNOWN"
+msgstr "לא ידועה"
+
+#: src/input_lock_messages.py:167
+msgctxt "lid protection"
+msgid "ARMED"
+msgstr "פעילה"
+
+#: src/input_lock_messages.py:168
+msgctxt "lid protection"
+msgid "DISARMED"
+msgstr "כבויה"
+
+#: src/input_lock_messages.py:169
+msgctxt "lid protection"
+msgid "UNKNOWN"
+msgstr "לא ידועה"
+
+#: src/input_lock_messages.py:180
+msgid "stale lid request; refresh status before enabling"
+msgstr "הבקשה לגבי המכסה אינה עדכנית; יש לרענן את המצב לפני ההפעלה"
+
+#: src/input_lock_messages.py:181
+msgid "lid-ignore requires an active graphical session and connected tray"
+msgstr "התעלמות מסגירת מכסה דורשת הפעלה גרפית פעילה וסמל נעילת קלט מחובר"
+
+#: src/input_lock_messages.py:182
+msgid "no eligible lid switch input device was detected"
+msgstr "לא זוהה התקן מתאים של מתג מכסה"
+
+#: src/input_lock_messages.py:183
+msgid "Safety telemetry is not ready"
+msgstr "נתוני הבטיחות מהחיישנים עדיין אינם מוכנים"
+
+#: src/input_lock_messages.py:184
+msgid "Open the lid and restore fresh safety telemetry before arming"
+msgstr "יש לפתוח את המכסה ולוודא שנתוני הבטיחות מהחיישנים עדכניים לפני ההפעלה"
+
+#: src/input_lock_messages.py:185
+msgid "native suspend/fail-safe readiness unavailable"
+msgstr "המוכנות של השינה המובנית ושל מנגנון הגיבוי אינה זמינה"
+
+#: src/input_lock_messages.py:186
+msgid "previous emergency suspend failed; operator recovery required (see 'input-lock doctor')"
+msgstr ""
+"שינת החירום הקודמת נכשלה; נדרש שחזור ידני. לפרטים יש להריץ:\n"
+"input-lock doctor"
+
+#: src/input_lock_messages.py:187
+msgid "ordinary suspend unavailable, blocked, or already in progress"
+msgstr "שינה רגילה אינה זמינה, חסומה או כבר מתבצעת"
+
+#: src/input_lock_messages.py:188
+msgid "unexpected recursive failure handler"
+msgstr "מטפל כשל רקורסיבי לא צפוי"
+
+#: src/input_lock_messages.py:189
+msgid "missing terminal failure recorder"
+msgstr "חסר רושם הכשל הסופי"
+
+#: src/input_lock_messages.py:190
+msgid "InputLock watchdog/restart contract changed"
+msgstr "הגדרות ה־⁨watchdog⁩ או ההפעלה מחדש של נעילת הקלט השתנו"
+
+#: src/input_lock_messages.py:191
+msgid "unreadable failure latch"
+msgstr "לא ניתן לקרוא את סימון הכשל"
+
+#: src/input_lock_messages.py:192
+msgid "failure latch from a previous boot (informational; acknowledge to archive it)"
+msgstr "סימון כשל מאתחול קודם (לידיעה בלבד; אפשר לאשר אותו כדי להעביר אותו לארכיון)"
+
+#: src/input_lock_messages.py:193
+msgid "failure latch predates a later successful suspend (informational; acknowledge to archive it)"
+msgstr "סימון הכשל קודם לשינה מוצלחת מאוחרת יותר (לידיעה בלבד; אפשר לאשר אותו כדי להעביר אותו לארכיון)"
+
+#: src/input_lock_messages.py:195
+msgid "the daemon reports lid-ignore is not ready"
+msgstr "שירות הרקע מדווח שההתעלמות מסגירת מכסה אינה מוכנה"
+
+#: src/input_lock_messages.py:196
+msgid "safety telemetry not reported yet"
+msgstr "נתוני הבטיחות מהחיישנים עדיין לא דווחו"
+
+#: src/input_lock_messages.py:197
+msgid "native suspend readiness unavailable"
+msgstr "המוכנות של השינה המובנית אינה זמינה"
+
+#: src/input_lock_messages.py:198
+msgid "power/logind supervision is not fresh"
+msgstr "הפיקוח על החשמל ועל ⁨logind⁩ אינו עדכני"
+
+#: src/input_lock_messages.py:202
+msgid "device has a pressed key or button"
+msgstr "בהתקן יש מקש או כפתור לחוץ"
+
+#: src/input_lock_messages.py:203
+msgid "locking requires the authorized active graphical session"
+msgstr "נעילה דורשת את ההפעלה הגרפית הפעילה המורשית"
+
+#: src/input_lock_messages.py:204
+msgid "primary hotkey must differ from the emergency hotkey"
+msgstr "קיצור המקשים הראשי חייב להיות שונה מקיצור החירום"
+
+#: src/input_lock_messages.py:205
+msgid "primary and emergency hotkeys must be different"
+msgstr "קיצור המקשים הראשי וקיצור החירום חייבים להיות שונים"
+
+#: src/input_lock_messages.py:206
+msgid "the shortcut key cannot also be an allowed key"
+msgstr "מקש של קיצור המקשים לא יכול להיות גם מקש מותר"
+
+#: src/input_lock_messages.py:207
+msgid "Copilot and F23 represent the same physical key"
+msgstr "המקשים Copilot ו־F23 הם אותו מקש פיזי"
+
+#: src/input_lock_messages.py:208
+msgid "recovery shortcut keys (including F1-F12) cannot be added"
+msgstr "לא ניתן להוסיף מקשים של קיצורי שחזור (כולל F1-F12)"
+
+#: src/input_lock_messages.py:209
+msgid "allowed keys need /dev/uinput; run the LockLock updater and restart"
+msgstr "מקשים מותרים דורשים את ‎/dev/uinput; יש להריץ את העדכון של ⁨LockLock⁩ ולהפעיל מחדש"
+
+#: src/input_lock_messages.py:210
+msgid "mouse and touchpad must be configured together"
+msgstr "יש להגדיר את העכבר ואת משטח המגע יחד"
+
+#: src/input_lock_messages.py:211
+msgid "mode must be all, all-input, keyboard, mouse, touchpad, or touchscreen"
+msgstr "המצב חייב להיות אחד מאלה: ⁨all, all-input, keyboard, mouse, touchpad, touchscreen⁩"
+
+#: src/input_lock_messages.py:212
+msgid "timeout must be between 0 and 86400 seconds"
+msgstr "הזמן הקצוב חייב להיות בין ⁨0⁩ ל־⁨86400⁩ שניות"
+
+#: src/input_lock_messages.py:213
+msgid "seconds must be between 60 and 86400"
+msgstr "מספר השניות חייב להיות בין ⁨60⁩ ל־⁨86400⁩"
+
+#: src/input_lock_messages.py:215
+msgid "a tray controller is already connected"
+msgstr "סמל נעילת קלט אחר כבר מחובר ושולט בשירות"
+
+#: src/input_lock_messages.py:216
+msgid "subscriber limit reached"
+msgstr "הושג המספר המרבי של מנויים"
+
+#: src/input_lock_messages.py:217
+msgid "the tray controller must run as the authorized user"
+msgstr "סמל נעילת הקלט חייב לפעול כמשתמש המורשה"
+
+#: src/input_lock_messages.py:218
+msgid "the tray controller must run in the local graphical session"
+msgstr "סמל נעילת הקלט חייב לפעול בהפעלה הגרפית המקומית"
+
+#: src/input_lock_messages.py:219
+msgid "unauthorized UID"
+msgstr "מזהה משתמש (⁨UID⁩) לא מורשה"
+
+#: src/input_lock_messages.py:220
+msgid "daemon closed the connection without a response"
+msgstr "שירות הרקע סגר את החיבור בלי לענות"
+
+#: src/input_lock_messages.py:221
+msgid "unknown daemon error"
+msgstr "שגיאה לא ידועה של שירות הרקע"
+
+#: src/input_lock_messages.py:222
+msgid "reload scheduled"
+msgstr "הטעינה מחדש תוזמנה"
+
+#: src/input_lock_messages.py:223
+msgid "shutdown scheduled"
+msgstr "הכיבוי תוזמן"
+
+#: src/input_lock_messages.py:225
+msgid "shortcut contains a duplicate key"
+msgstr "קיצור המקשים מכיל מקש כפול"
+
+#: src/input_lock_messages.py:226
+msgid "shortcut key must be A-Z, 0-9, or F1-F12"
+msgstr "המקש בקיצור חייב להיות A-Z, 0-9 או F1-F12"
+
+#: src/input_lock_messages.py:227
+msgid "shortcut contains an unsupported modifier"
+msgstr "קיצור המקשים מכיל מקש צירוף שאינו נתמך"
+
+#: src/input_lock_messages.py:228
+msgid "shortcut requires at least 2 modifiers"
+msgstr "קיצור המקשים דורש לפחות שני מקשי צירוף"
+
+#: src/input_lock_messages.py:230
+msgid "shortcut must contain at least two modifiers and one key"
+msgstr "קיצור המקשים חייב לכלול לפחות שני מקשי צירוף ומקש אחד"
+
+#: src/input_lock_messages.py:231
+msgid "GNOME custom-keybindings has an unexpected value"
+msgstr "להגדרה ⁨custom-keybindings⁩ של ⁨GNOME⁩ יש ערך לא צפוי"
+
+#: src/input_lock_messages.py:232
+msgid "gsettings failed"
+msgstr "הפקודה gsettings נכשלה"
+
+#: src/input_lock_messages.py:234
+msgid "Power Profiles service is unavailable"
+msgstr "שירות פרופילי החשמל אינו זמין"
+
+#: src/input_lock_messages.py:235
+msgid "Power Profiles service disappeared"
+msgstr "שירות פרופילי החשמל נעלם"
+
+#: src/input_lock_messages.py:236
+msgid "GNOME SessionManager is unavailable"
+msgstr "מנהל ההפעלות של ⁨GNOME⁩ אינו זמין"
+
+#: src/input_lock_messages.py:242
+#, python-brace-format
+msgid "locking is paused for {seconds} s after an emergency unlock"
+msgid_plural "locking is paused for {seconds} s after an emergency unlock"
+msgstr[0] "הנעילה מושהית לשנייה אחת לאחר שחרור חירום"
+msgstr[1] "הנעילה מושהית ל־⁨{seconds}⁩ שניות לאחר שחרור חירום"
+
+#: src/input_lock_messages.py:250
+#, python-brace-format
+msgid "Lid-ignore unavailable: {detail}"
+msgstr "התעלמות מסגירת מכסה אינה זמינה: {detail}"
+
+#: src/input_lock_messages.py:252
+#, python-brace-format
+msgid "Temperature is already too high to arm lid-ignore ({sensor} {celsius}C)"
+msgstr "הטמפרטורה כבר גבוהה מדי להפעלת התעלמות מסגירת מכסה (⁨{sensor}⁩ ⁨{celsius}°C⁩)"
+
+#: src/input_lock_messages.py:256
+#, python-brace-format
+msgid "lock refused because a key or button remained pressed on: {names}"
+msgstr "הנעילה נדחתה כי מקש או כפתור נשארו לחוצים ב: ⁨{names}⁩"
+
+#: src/input_lock_messages.py:258
+#, python-brace-format
+msgid "cannot verify released-key state for {path}: {error}"
+msgstr "לא ניתן לוודא שכל המקשים שוחררו ב־{path}: {error}"
+
+#: src/input_lock_messages.py:260
+#, python-brace-format
+msgid "safety journal is not writable: {error}"
+msgstr "לא ניתן לכתוב ליומן הבטיחות: {error}"
+
+#: src/input_lock_messages.py:262
+#, python-brace-format
+msgid "cannot acquire logind lid inhibitor: {error}"
+msgstr "לא ניתן לקבל חסימת מכסה מ־⁨logind⁩: {error}"
+
+#: src/input_lock_messages.py:264
+#, python-brace-format
+msgid "EVIOCGRAB failed; transition rolled back: {error}"
+msgstr "⁨EVIOCGRAB⁩ נכשל; השינוי בוטל: {error}"
+
+#: src/input_lock_messages.py:266
+#, python-brace-format
+msgid "cannot save user settings: {error}"
+msgstr "לא ניתן לשמור את הגדרות המשתמש: {error}"
+
+#: src/input_lock_messages.py:268
+#, python-brace-format
+msgid "restart required for: {settings}"
+msgstr "נדרשת הפעלה מחדש כדי להחיל: ⁨{settings}⁩"
+
+#: src/input_lock_messages.py:270
+#, python-brace-format
+msgid "missing or incompatible {unit}"
+msgstr "היחידה {unit} חסרה או אינה תואמת"
+
+#: src/input_lock_messages.py:272
+#, python-brace-format
+msgid "InputLock root helper/timeout contract changed: {unit}"
+msgstr "הגדרות רכיב העזר של נעילת הקלט או הזמנים הקצובים שלו השתנו: {unit}"
+
+#: src/input_lock_messages.py:274
+#, python-brace-format
+msgid "missing InputLock failure handler on {unit}"
+msgstr "חסר מטפל הכשל של נעילת הקלט ב־{unit}"
+
+#: src/input_lock_messages.py:276
+#, python-brace-format
+msgid "native protection probe failed: {error}"
+msgstr "בדיקת ההגנה המובנית נכשלה: {error}"
+
+#: src/input_lock_messages.py:278
+#, python-brace-format
+msgid "{unit} has drop-ins: {paths}"
+msgstr "ליחידה {unit} יש קובצי הרחבה (⁨drop-in⁩): {paths}"
+
+#: src/input_lock_messages.py:280
+#, python-brace-format
+msgid "telemetry errors: {errors}"
+msgstr "שגיאות בנתוני החיישנים: {errors}"
+
+#: src/input_lock_messages.py:282
+#, python-brace-format
+msgid "invalid shortcut {text}: {error}"
+msgstr "קיצור מקשים לא תקין {text}: {error}"
+
+#: src/input_lock_messages.py:284
+#, python-brace-format
+msgid "unsupported allowed key: {key}"
+msgstr "מקש מותר שאינו נתמך: {key}"
+
+#: src/input_lock_messages.py:287
+#, python-brace-format
+msgid "Power-saver hold did not become effective after one retry (active profile: {profile})"
+msgstr "מצב חיסכון בחשמל לא נכנס לתוקף גם לאחר ניסיון נוסף (הפרופיל הפעיל: ⁨{profile}⁩)"
+
+#: src/input_lock_messages.py:289
+#, python-brace-format
+msgid "internal error: {error}"
+msgstr "שגיאה פנימית: {error}"
+
+#: src/input_lock_notifier.py:55
+msgid "Input locked"
+msgstr "הקלט נעול"
+
+#: src/input_lock_notifier.py:55 src/input_lock_notifier.py:56 src/input_lock_notifier.py:57 src/input_lock_notifier.py:58
+msgid "Press the primary shortcut to unlock."
+msgstr "לשחרור הנעילה יש ללחוץ על קיצור המקשים הראשי."
+
+#: src/input_lock_notifier.py:56
+msgid "Keyboard locked"
+msgstr "המקלדת נעולה"
+
+#: src/input_lock_notifier.py:57
+msgid "Pointer locked"
+msgstr "העכבר נעול"
+
+#: src/input_lock_notifier.py:58
+msgid "Touchscreen locked"
+msgstr "מסך המגע נעול"
+
+#: src/input_lock_notifier.py:59
+msgid "Input unlocked"
+msgstr "נעילת הקלט שוחררה"
+
+#: src/input_lock_notifier.py:59
+msgid "Local input is available."
+msgstr "הקלט המקומי זמין."
+
+#: src/input_lock_notifier.py:60
+msgid "Input auto-unlocked"
+msgstr "נעילת הקלט שוחררה אוטומטית"
+
+#: src/input_lock_notifier.py:60
+msgid "The safety timer released local input."
+msgstr "קוצב הזמן לבטיחות שחרר את הקלט המקומי."
+
+#: src/input_lock_notifier.py:80
+msgid "Ignore Lid Close"
+msgstr "התעלמות מסגירת מכסה"
+
+#: src/input_lock_notifier.py:81
+msgid "Ignore Lid Close (continuous, safety-monitored)"
+msgstr "התעלמות מסגירת מכסה (רציפה, בפיקוח בטיחות)"
+
+#: src/input_lock_notifier.py:82
+msgid "Ignore Lid Close (service unavailable)"
+msgstr "התעלמות מסגירת מכסה (השירות אינו זמין)"
+
+#: src/input_lock_notifier.py:83
+msgid "Ignore Lid Close (safety unavailable)"
+msgstr "התעלמות מסגירת מכסה (הבטיחות אינה זמינה)"
+
+#: src/input_lock_notifier.py:84
+msgid "Quitting, stopping or restarting the Input Lock tray turns Ignore Lid Close off and unlocks input."
+msgstr "יציאה, עצירה או הפעלה מחדש של סמל נעילת הקלט מכבות את ההתעלמות מסגירת מכסה ומשחררות את נעילת הקלט."
+
+#: src/input_lock_notifier.py:88
+msgid "Keep running with the lid closed, under thermal, battery and telemetry supervision."
+msgstr "המחשב ממשיך לפעול כשהמכסה סגור, בפיקוח על הטמפרטורה, הסוללה ונתוני החיישנים."
+
+#: src/input_lock_notifier.py:92
+msgid "Ignore Lid Close was turned off"
+msgstr "ההתעלמות מסגירת מכסה כבתה"
+
+#: src/input_lock_notifier.py:93
+msgid "Re-enable…"
+msgstr "הפעלה מחדש…"
+
+#: src/input_lock_notifier.py:94
+msgid "It will not turn itself back on. To turn it on again, open the lid and choose “Re-enable…” or use the Input Lock tray menu."
+msgstr "היא לא תופעל שוב מעצמה. כדי להפעיל אותה שוב יש לפתוח את המכסה ולבחור \"הפעלה מחדש…\", או להשתמש בתפריט של נעילת הקלט."
+
+#: src/input_lock_notifier.py:100
+msgid "Turn it on again from the Input Lock tray menu if you still need it."
+msgstr "אם עדיין צריך אותה, אפשר להפעיל אותה שוב מהתפריט של נעילת הקלט."
+
+#: src/input_lock_notifier.py:103
+#, python-brace-format
+msgid "Correction to the previous notice: {cause}"
+msgstr "תיקון להודעה הקודמת: {cause}"
+
+#: src/input_lock_notifier.py:104
+msgid "Power mode restored"
+msgstr "מצב צריכת החשמל שוחזר"
+
+#: src/input_lock_notifier.py:105
+msgid "Unlocking input from the tray also turns Ignore Lid Close off. Turn it on again from the tray menu if you still need it."
+msgstr "שחרור נעילת הקלט מהתפריט מכבה גם את ההתעלמות מסגירת מכסה. אם עדיין צריך אותה, אפשר להפעיל אותה שוב מהתפריט של נעילת הקלט."
+
+#: src/input_lock_notifier.py:109
+msgid "Power mode was changed manually; power-saver restored while Ignore Lid Close is on."
+msgstr "מצב צריכת החשמל שונה ידנית; מצב חיסכון בחשמל הוחזר כל עוד ההתעלמות מסגירת מכסה פועלת."
+
+#: src/input_lock_notifier.py:112
+msgid "Keep running with the lid closed?"
+msgstr "להמשיך לפעול כשהמכסה סגור?"
+
+#: src/input_lock_notifier.py:113
+msgid "Lid closure will be ignored continuously, with NO 2/4-minute timeout. This stays enabled until you turn it off, or a safety/fail-safe condition intervenes. Dangerous temperature, critical battery, lost monitoring or controller/daemon failure can request regular OS suspend. GNOME idle suspend is prevented and a temporary power-saver cooling profile is held while enabled; the previous performance preference automatically returns when disabled. Manual system sleep and OS critical-battery protection remain available. The setting starts OFF after a service restart or reboot."
+msgstr "המערכת תתעלם מסגירת המכסה באופן רציף, ללא הגבלת זמן של 2 או 4 דקות. ההגדרה נשארת פעילה עד שמכבים אותה, או עד שמצב בטיחות או מנגנון גיבוי מתערבים. טמפרטורה מסוכנת, סוללה במצב קריטי, אובדן ניטור או כשל של סמל נעילת הקלט או של שירות הרקע יכולים לבקש מהמערכת להיכנס למצב שינה רגיל. בזמן שההגדרה פעילה, ⁨GNOME⁩ לא ייכנס למצב שינה עקב חוסר פעילות, ומצב חיסכון בחשמל מוחזק זמנית לצורך קירור; העדפת הביצועים הקודמת חוזרת אוטומטית כשמכבים את ההגדרה. שינה ידנית של המערכת וההגנה של מערכת ההפעלה בסוללה קריטית נשארות זמינות. לאחר הפעלה מחדש של השירות או של המחשב, ההגדרה כבויה."
+
+#: src/input_lock_notifier.py:122
+msgid "Keep the lid OPEN when enabling, keep the vents unobstructed, and NEVER put the running laptop in a bag."
+msgstr "יש להשאיר את המכסה פתוח בזמן ההפעלה, לא לחסום את פתחי האוורור, ולעולם לא להכניס מחשב נייד פועל לתיק."
+
+#: src/input_lock_notifier.py:125
+msgid "A language change takes effect the next time Input Lock starts, for example after you log in again."
+msgstr "שינוי השפה ייכנס לתוקף בפעם הבאה שנעילת הקלט תופעל, למשל לאחר כניסה מחדש למערכת."
+
+#: src/input_lock_notifier.py:133
+msgid "normal OS behavior"
+msgstr "התנהגות רגילה של המערכת"
+
+#: src/input_lock_notifier.py:133
+msgid "recovered; re-arm required"
+msgstr "שוחזר; נדרשת הפעלה מחדש"
+
+#: src/input_lock_notifier.py:134
+msgid "armed; lid open"
+msgstr "פעילה; המכסה פתוח"
+
+#: src/input_lock_notifier.py:134
+msgid "monitoring closed lid"
+msgstr "ניטור מכסה סגור"
+
+#: src/input_lock_notifier.py:135
+msgid "safety warning — inspect heat/battery/telemetry"
+msgstr "אזהרת בטיחות — יש לבדוק חום, סוללה ונתוני חיישנים"
+
+#: src/input_lock_notifier.py:136
+msgid "high risk — open the lid"
+msgstr "סיכון גבוה — יש לפתוח את המכסה"
+
+#: src/input_lock_notifier.py:137
+msgid "protection FAILED — open the lid"
+msgstr "ההגנה נכשלה — יש לפתוח את המכסה"
+
+#: src/input_lock_notifier.py:138
+msgid "protective action requested"
+msgstr "התבקשה פעולת הגנה"
+
+#: src/input_lock_notifier.py:139
+msgid "suspend transition confirmed"
+msgstr "המעבר למצב שינה אושר"
+
+#: src/input_lock_notifier.py:555 src/input_lock_notifier.py:1277 src/input_lock_notifier.py:2173 src/input_lock_notifier.py:2220 src/input_lock_notifier.py:2287 src/input-lock-launch:23
+msgid "Input Lock"
+msgstr "נעילת קלט"
+
+#: src/input_lock_notifier.py:558
+msgid "Input Lock — Connecting…"
+msgstr "נעילת קלט — מתחבר…"
+
+#: src/input_lock_notifier.py:561
+msgid "Lid safety: connecting…"
+msgstr "בטיחות המכסה: מתחבר…"
+
+#: src/input_lock_notifier.py:566 src/input_lock_notifier.py:1176
+msgid "Lock Input"
+msgstr "נעילת הקלט"
+
+#: src/input_lock_notifier.py:571 src/input_lock_notifier.py:1189 src/input_lock_notifier.py:1339 src/input_lock_notifier.py:1539
+#, python-brace-format
+msgid "Shortcut: {shortcut}"
+msgstr "קיצור מקשים: {shortcut}"
+
+#: src/input_lock_notifier.py:575
+msgid "Settings…"
+msgstr "הגדרות…"
+
+#: src/input_lock_notifier.py:586
+msgid "Start at Login"
+msgstr "הפעלה בכניסה למערכת"
+
+#: src/input_lock_notifier.py:594
+msgid "About"
+msgstr "על אודות"
+
+#: src/input_lock_notifier.py:598 src/input_lock_notifier.py:2202
+msgid "Quit"
+msgstr "יציאה"
+
+#: src/input_lock_notifier.py:810
+msgid "Safety warning: check heat, battery or missing telemetry. Open the lid if needed."
+msgstr "אזהרת בטיחות: יש לבדוק חום, סוללה או נתוני חיישנים חסרים. אם צריך, יש לפתוח את המכסה."
+
+#: src/input_lock_notifier.py:815
+msgid "unknown safety reason"
+msgstr "סיבת בטיחות לא ידועה"
+
+#: src/input_lock_notifier.py:816
+#, python-brace-format
+msgid "Safety protection requested ({cause}). Lid-ignore released."
+msgstr "התבקשה הגנת בטיחות (⁨{cause}⁩). ההתעלמות מסגירת מכסה בוטלה."
+
+#: src/input_lock_notifier.py:819
+msgid "A protective suspend was confirmed. Re-enable lid-ignore only with lid open."
+msgstr "כניסה למצב שינה לצורך הגנה אושרה. יש להפעיל מחדש את ההתעלמות מסגירת מכסה רק כשהמכסה פתוח."
+
+#: src/input_lock_notifier.py:822
+msgid "Open the lid. Automatic safety protection failed; see InputLock diagnostics."
+msgstr "יש לפתוח את המכסה. הגנת הבטיחות האוטומטית נכשלה; פרטים בבדיקת התקינות של נעילת הקלט."
+
+#: src/input_lock_notifier.py:824
+msgid "Lid safety"
+msgstr "בטיחות המכסה"
+
+#: src/input_lock_notifier.py:1128 src/input_lock_notifier.py:2003
+msgid "Lid Safety"
+msgstr "בטיחות המכסה"
+
+#: src/input_lock_notifier.py:1129
+msgid "Continuous lid safety prerequisites failed; controller released. Open the lid."
+msgstr "התנאים המקדימים לבטיחות המכסה הרציפה לא התקיימו; השליטה שוחררה. יש לפתוח את המכסה."
+
+#: src/input_lock_notifier.py:1137
+msgid "unavailable"
+msgstr "לא זמין"
+
+#: src/input_lock_notifier.py:1140
+#, python-brace-format
+msgid "{state} (continuous; power-saver cooling active)"
+msgstr "{state} (רציף; קירור במצב חיסכון בחשמל פעיל)"
+
+#: src/input_lock_notifier.py:1141
+#, python-brace-format
+msgid "{state} (continuous; power-saver cooling not confirmed)"
+msgstr "{state} (רציף; הקירור במצב חיסכון בחשמל לא אושר)"
+
+#: src/input_lock_notifier.py:1142
+#, python-brace-format
+msgid "Lid safety: {state} | Temperature: {thermal} | Protection: {protection}"
+msgstr "בטיחות המכסה: ⁨{state}⁩ | טמפרטורה: ⁨{thermal}⁩ | הגנה: ⁨{protection}⁩"
+
+#: src/input_lock_notifier.py:1162
+msgid "Input Lock — Locked"
+msgstr "נעילת קלט — נעול"
+
+#: src/input_lock_notifier.py:1163
+msgid "Unlock Input"
+msgstr "שחרור נעילת הקלט"
+
+#: src/input_lock_notifier.py:1170
+msgid "Input is locked; lid close is ignored"
+msgstr "הקלט נעול; המערכת מתעלמת מסגירת המכסה"
+
+#: src/input_lock_notifier.py:1172
+msgid "Input is locked"
+msgstr "הקלט נעול"
+
+#: src/input_lock_notifier.py:1175
+msgid "Input Lock — Unlocked"
+msgstr "נעילת קלט — לא נעול"
+
+#: src/input_lock_notifier.py:1183
+msgid "Input is unlocked; lid close is ignored"
+msgstr "הקלט לא נעול; המערכת מתעלמת מסגירת המכסה"
+
+#: src/input_lock_notifier.py:1185
+msgid "Input is unlocked"
+msgstr "הקלט לא נעול"
+
+#: src/input_lock_notifier.py:1229
+msgid "Input Lock service unavailable"
+msgstr "שירות נעילת הקלט אינו זמין"
+
+#: src/input_lock_notifier.py:1231
+msgid "Input Lock — Another tray is in control"
+msgstr "נעילת קלט — סמל אחר של נעילת הקלט שולט בשירות"
+
+#: src/input_lock_notifier.py:1232
+msgid "Lid safety: managed by the other Input Lock tray"
+msgstr "בטיחות המכסה: מנוהלת על ידי הסמל האחר של נעילת הקלט"
+
+#: src/input_lock_notifier.py:1234
+msgid "Input Lock — Service unavailable"
+msgstr "נעילת קלט — השירות אינו זמין"
+
+#: src/input_lock_notifier.py:1235
+msgid "Lid safety: disconnected — status unknown; open the lid"
+msgstr "בטיחות המכסה: מנותק — המצב לא ידוע; יש לפתוח את המכסה"
+
+#: src/input_lock_notifier.py:1243
+msgid "InputLock background service unavailable. Open the lid and check input-lock.service with systemctl status input-lock.service. After the service is repaired, the tray will reconnect automatically."
+msgstr ""
+"שירות הרקע של נעילת הקלט אינו זמין. יש לפתוח את המכסה ולבדוק את מצב השירות input-lock.service באמצעות הפקודה:\n"
+"systemctl status input-lock.service\n"
+"לאחר תיקון השירות, הסמל יתחבר מחדש אוטומטית."
+
+#: src/input_lock_notifier.py:1309
+msgid "Input Lock Settings"
+msgstr "הגדרות נעילת הקלט"
+
+#: src/input_lock_notifier.py:1313 src/input_lock_notifier.py:1667 src/input_lock_notifier.py:1718 src/input_lock_notifier.py:1837 src/input_lock_notifier.py:2201
+msgid "Cancel"
+msgstr "ביטול"
+
+#: src/input_lock_notifier.py:1314
+msgid "Save"
+msgstr "שמירה"
+
+#: src/input_lock_notifier.py:1321
+msgid "Lock these devices"
+msgstr "נעילת ההתקנים האלה"
+
+#: src/input_lock_notifier.py:1328
+msgid "Keyboard"
+msgstr "מקלדת"
+
+#: src/input_lock_notifier.py:1329
+msgid "Mouse and touchpad"
+msgstr "עכבר ומשטח מגע"
+
+#: src/input_lock_notifier.py:1330
+msgid "Touchscreen"
+msgstr "מסך מגע"
+
+#: src/input_lock_notifier.py:1346
+msgid "Change Shortcut…"
+msgstr "שינוי קיצור המקשים…"
+
+#: src/input_lock_notifier.py:1359
+#, python-brace-format
+msgid "Keys allowed while locked: {count} selected"
+msgid_plural "Keys allowed while locked: {count} selected"
+msgstr[0] "מקשים מותרים בזמן נעילה: ⁨{count}⁩ נבחר"
+msgstr[1] "מקשים מותרים בזמן נעילה: ⁨{count}⁩ נבחרו"
+
+#: src/input_lock_notifier.py:1362
+msgid "Keys allowed while locked: None"
+msgstr "מקשים מותרים בזמן נעילה: אין"
+
+#: src/input_lock_notifier.py:1367
+msgid "Manage Keys…"
+msgstr "ניהול מקשים…"
+
+#: src/input_lock_notifier.py:1372
+msgid "Start Input Lock when I log in"
+msgstr "הפעלת נעילת הקלט בכניסה למערכת"
+
+#: src/input_lock_notifier.py:1377
+msgid "Automatically lock after no activity"
+msgstr "נעילה אוטומטית לאחר חוסר פעילות"
+
+#: src/input_lock_notifier.py:1384
+msgid "No activity for"
+msgstr "חוסר פעילות במשך"
+
+#: src/input_lock_notifier.py:1413 src/input_lock_notifier.py:1495
+msgid "minutes"
+msgstr "דקות"
+
+#: src/input_lock_notifier.py:1424
+msgid "Hide cursor after no activity"
+msgstr "הסתרת הסמן לאחר חוסר פעילות"
+
+#: src/input_lock_notifier.py:1437
+msgid "Enable Extension"
+msgstr "הפעלת ההרחבה"
+
+#: src/input_lock_notifier.py:1441
+msgid "Enabling the cursor extension…"
+msgstr "הרחבת הסמן מופעלת…"
+
+#: src/input_lock_notifier.py:1454
+msgid "Hide cursor after"
+msgstr "הסתרת הסמן לאחר"
+
+#: src/input_lock_notifier.py:1500
+msgid "seconds"
+msgstr "שניות"
+
+#: src/input_lock_notifier.py:1513
+msgid "Language:"
+msgstr "שפה:"
+
+#: src/input_lock_notifier.py:1562
+msgid "Select at least one device type."
+msgstr "יש לבחור לפחות סוג התקן אחד."
+
+#: src/input_lock_notifier.py:1569
+msgid "Enter a whole number of minutes."
+msgstr "יש להזין מספר שלם של דקות."
+
+#: src/input_lock_notifier.py:1572
+msgid "Idle time must be between 1 and 1440 minutes."
+msgstr "זמן חוסר הפעילות חייב להיות בין 1 ל־1440 דקות."
+
+#: src/input_lock_notifier.py:1579
+msgid "Enter whole numbers for cursor minutes and seconds."
+msgstr "יש להזין מספרים שלמים לדקות ולשניות של הסמן."
+
+#: src/input_lock_notifier.py:1582
+msgid "Cursor time must use 0–1439 minutes and 0–59 seconds."
+msgstr "זמן הסמן חייב להיות 0–1439 דקות ו־0–59 שניות."
+
+#: src/input_lock_notifier.py:1587
+msgid "Cursor hiding time must be at least one second."
+msgstr "זמן הסתרת הסמן חייב להיות לפחות שנייה אחת."
+
+#: src/input_lock_notifier.py:1650
+msgid "Settings Failed"
+msgstr "שמירת ההגדרות נכשלה"
+
+#: src/input_lock_notifier.py:1655 src/input_lock_notifier.py:1658
+msgid "Settings Saved"
+msgstr "ההגדרות נשמרו"
+
+#: src/input_lock_notifier.py:1656 src/input_lock_notifier.py:1658
+msgid "Your settings were saved."
+msgstr "ההגדרות נשמרו."
+
+#: src/input_lock_notifier.py:1663
+msgid "Keys Allowed While Locked"
+msgstr "מקשים מותרים בזמן נעילה"
+
+#: src/input_lock_notifier.py:1668
+msgid "Done"
+msgstr "סיום"
+
+#: src/input_lock_notifier.py:1672
+msgid "System recovery shortcuts (always available)"
+msgstr "קיצורי שחזור של המערכת (זמינים תמיד)"
+
+#: src/input_lock_notifier.py:1676
+#, python-brace-format
+msgid "Primary: {shortcut}"
+msgstr "ראשי: {shortcut}"
+
+#: src/input_lock_notifier.py:1678
+#, python-brace-format
+msgid "Emergency: {shortcut}"
+msgstr "חירום: {shortcut}"
+
+#: src/input_lock_notifier.py:1680
+#, python-brace-format
+msgid "TTY recovery: {shortcut}"
+msgstr "שחזור דרך מסוף טקסט: {shortcut}"
+
+#: src/input_lock_notifier.py:1687
+msgid "These individual keys continue to reach applications while the keyboard is locked."
+msgstr "המקשים האלה ממשיכים להגיע ליישומים גם כשהמקלדת נעולה."
+
+#: src/input_lock_notifier.py:1708
+msgid "Remove"
+msgstr "הסרה"
+
+#: src/input_lock_notifier.py:1715
+msgid "Add Allowed Key"
+msgstr "הוספת מקש מותר"
+
+#: src/input_lock_notifier.py:1719
+msgid "Press one key. Modifier keys cannot be added."
+msgstr "יש ללחוץ על מקש אחד. לא ניתן להוסיף מקשי צירוף."
+
+#: src/input_lock_notifier.py:1736
+msgid "That key is not supported. Try a letter, number, function or media key."
+msgstr "המקש הזה אינו נתמך. אפשר לנסות אות, ספרה, מקש פונקציה או מקש מדיה."
+
+#: src/input_lock_notifier.py:1741
+msgid "That key belongs to a fixed recovery shortcut."
+msgstr "המקש הזה שייך לקיצור שחזור קבוע."
+
+#: src/input_lock_notifier.py:1755
+msgid "Add Key…"
+msgstr "הוספת מקש…"
+
+#: src/input_lock_notifier.py:1767 src/input_lock_notifier.py:1796
+msgid "Cursor hiding extension: enabled."
+msgstr "הרחבת הסתרת הסמן: פעילה."
+
+#: src/input_lock_notifier.py:1769
+msgid "Cursor hiding extension: disabled — the cursor will not be hidden until the Input Lock Cursor Hider GNOME extension is enabled."
+msgstr "הרחבת הסתרת הסמן: כבויה — הסמן לא יוסתר עד שתופעל ההרחבה ⁨Input Lock Cursor Hider⁩ של ⁨GNOME⁩."
+
+#: src/input_lock_notifier.py:1771
+msgid "Cursor hiding extension: status unknown (GNOME Shell settings unavailable)."
+msgstr "הרחבת הסתרת הסמן: המצב לא ידוע (ההגדרות של מעטפת ⁨GNOME⁩ אינן זמינות)."
+
+#: src/input_lock_notifier.py:1776
+msgid "Automatic (system language)"
+msgstr "אוטומטית (שפת המערכת)"
+
+#: src/input_lock_notifier.py:1784
+msgid "The gnome-extensions command is not installed."
+msgstr "הפקודה gnome-extensions אינה מותקנת."
+
+#: src/input_lock_notifier.py:1793
+msgid "gnome-extensions failed"
+msgstr "הפקודה gnome-extensions נכשלה"
+
+#: src/input_lock_notifier.py:1794
+#, python-brace-format
+msgid "{detail} If GNOME does not know the extension yet, log out and back in once, then try again."
+msgstr "אם ⁨GNOME⁩ עדיין לא מכיר את ההרחבה, יש לצאת מהמערכת ולהיכנס שוב פעם אחת, ואז לנסות שוב. פרטים: {detail}"
+
+#: src/input_lock_notifier.py:1833
+msgid "Change Shortcut"
+msgstr "שינוי קיצור המקשים"
+
+#: src/input_lock_notifier.py:1838
+msgid "Apply"
+msgstr "החלה"
+
+#: src/input_lock_notifier.py:1844
+msgid ""
+"Press a shortcut with at least two modifiers.\n"
+"Supported keys: A–Z, 0–9, and F1–F12."
+msgstr ""
+"יש ללחוץ על קיצור מקשים עם לפחות שני מקשי צירוף.\n"
+"מקשים נתמכים: A–Z, 0–9 ו־F1–F12."
+
+#: src/input_lock_notifier.py:1848
+msgid "Waiting for shortcut…"
+msgstr "ממתין לקיצור מקשים…"
+
+#: src/input_lock_notifier.py:1863
+msgid "Use at least two modifiers and one supported key."
+msgstr "יש להשתמש בלפחות שני מקשי צירוף ובמקש נתמך אחד."
+
+#: src/input_lock_notifier.py:1868
+msgid "This shortcut is reserved for emergency unlock."
+msgstr "קיצור המקשים הזה שמור לשחרור חירום."
+
+#: src/input_lock_notifier.py:1900
+msgid "Could not change the shortcut."
+msgstr "לא ניתן היה לשנות את קיצור המקשים."
+
+#: src/input_lock_notifier.py:1903
+msgid "Shortcut Changed"
+msgstr "קיצור המקשים שונה"
+
+#: src/input_lock_notifier.py:1904
+#, python-brace-format
+msgid "The new shortcut is {shortcut}."
+msgstr "קיצור המקשים החדש הוא {shortcut}."
+
+#: src/input_lock_notifier.py:1907
+msgid "Shortcut Change Failed"
+msgstr "שינוי קיצור המקשים נכשל"
+
+#: src/input_lock_notifier.py:1937
+msgid "Open the lid first, then turn Ignore Lid Close on."
+msgstr "יש לפתוח קודם את המכסה, ואז להפעיל את ההתעלמות מסגירת מכסה."
+
+#: src/input_lock_notifier.py:1964
+#, python-brace-format
+msgid "Temporary power-saver cooling unavailable: {error}"
+msgstr "קירור זמני במצב חיסכון בחשמל אינו זמין: {error}"
+
+#: src/input_lock_notifier.py:2001 src/input_lock_notifier.py:2042
+msgid "Lid Setting Failed"
+msgstr "שינוי הגדרת המכסה נכשל"
+
+#: src/input_lock_notifier.py:2003
+msgid "Ignore Lid Close could not be turned on."
+msgstr "לא ניתן היה להפעיל את ההתעלמות מסגירת מכסה."
+
+#: src/input_lock_notifier.py:2014
+msgid "The Input Lock service is not available. When the tray reconnects, turn Ignore Lid Close on from its menu."
+msgstr "שירות נעילת הקלט אינו זמין. כשהסמל יתחבר מחדש, אפשר להפעיל את ההתעלמות מסגירת מכסה מהתפריט שלו."
+
+#: src/input_lock_notifier.py:2022
+msgid "Open the lid first, then choose “Re-enable…” again or use the Input Lock tray menu."
+msgstr "יש לפתוח קודם את המכסה, ואז לבחור שוב \"הפעלה מחדש…\" או להשתמש בתפריט של נעילת הקלט."
+
+#: src/input_lock_notifier.py:2027
+msgid "No lid switch is available right now."
+msgstr "אין כרגע מתג מכסה זמין."
+
+#: src/input_lock_notifier.py:2109
+msgid "could not update the user service"
+msgstr "לא ניתן היה לעדכן את שירות המשתמש"
+
+#: src/input_lock_notifier.py:2119
+msgid "administrator authentication was cancelled or failed"
+msgstr "אימות מנהל המערכת בוטל או נכשל"
+
+#: src/input_lock_notifier.py:2154
+msgid "Startup Setting Failed"
+msgstr "שינוי הגדרת ההפעלה נכשל"
+
+#: src/input_lock_notifier.py:2175
+msgid "Safe keyboard, mouse, touchpad, and touchscreen locking for Ubuntu."
+msgstr "נעילה בטוחה של המקלדת, העכבר, משטח המגע ומסך המגע ב־⁨Ubuntu⁩."
+
+#: src/input_lock_notifier.py:2195
+msgid "Quit Input Lock?"
+msgstr "לצאת מנעילת הקלט?"
+
+#: src/input_lock_notifier.py:2197
+msgid "This will unlock all input and stop both the Input Lock service and its tray process."
+msgstr "פעולה זו תשחרר את נעילת כל הקלט ותעצור גם את שירות נעילת הקלט וגם את הסמל שלו."
+
+#: src/input_lock_notifier.py:2269
+#, python-brace-format
+msgid "Press {shortcut} to unlock."
+msgstr "לשחרור הנעילה יש ללחוץ על {shortcut}."
+
+#: src/input-lock-launch:29
+msgid "Input Lock was not started. Administrator authentication was cancelled or failed."
+msgstr "נעילת הקלט לא הופעלה. אימות מנהל המערכת בוטל או נכשל."
+
+#: src/input-lock-launch:35
+msgid "The Input Lock service started, but the tray icon could not be opened."
+msgstr "שירות נעילת הקלט הופעל, אבל לא ניתן היה לפתוח את הסמל שלו."

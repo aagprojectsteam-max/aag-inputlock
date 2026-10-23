@@ -15,6 +15,12 @@ from input_lock_lid_policy import PolicyError, UPowerPolicyController
 def main() -> int:
     parser = argparse.ArgumentParser(description="LockLock UPower policy helper")
     parser.add_argument("action", choices=("enable", "disable", "status"))
+    parser.add_argument(
+        "--no-block",
+        action="store_true",
+        help="disable only: enqueue a needed UPower restart without waiting or "
+        "verifying (used from ExecStopPost, which runs under TimeoutStopSec=5s)",
+    )
     args = parser.parse_args()
     if args.action != "status" and os.geteuid() != 0:
         print("root privileges are required", file=sys.stderr)
@@ -24,7 +30,7 @@ def main() -> int:
         if args.action == "enable":
             payload = controller.enable()
         elif args.action == "disable":
-            payload = controller.disable()
+            payload = controller.disable(wait=not args.no_block)
         else:
             payload = controller.status()
     except (OSError, subprocess.SubprocessError, PolicyError) as exc:

@@ -1,12 +1,12 @@
 include VERSION README.md install.sh update.sh uninstall.sh
 include src/input-lock src/input-lock-daemon src/input-lock-notifier src/input-lock-power-helper src/input-lock-launch
-include src/aag_sleep_transaction_compat.py
 recursive-include assets *.svg *.png *.desktop
 recursive-include config *.conf *.rules
 recursive-include systemd *.service
 recursive-include integration input-lock-system-sleep
 recursive-include gnome-extension *.js *.json
 recursive-include docs *.md
+recursive-include po *.po *.pot
 recursive-include tests *.py *.sh
 recursive-include tools *.py
 recursive-include windows *.ps1 *.spec *.md

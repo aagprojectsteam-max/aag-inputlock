@@ -7,13 +7,16 @@ import errno
 import json
 import logging
 import os
+import queue
 import shutil
 import signal
 import socket
 import subprocess
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
 import gi
@@ -31,23 +34,161 @@ from input_lock_common import (  # noqa: E402
     response_ok,
     send_request,
 )
+import input_lock_i18n as i18n  # noqa: E402
+from input_lock_i18n import N_, _, ngettext, safe_format  # noqa: E402
+# The reason tables and describe_lid_disable() live in input_lock_messages so
+# the CLI can share them; they are re-exported here for existing callers.
+from input_lock_messages import (  # noqa: E402,F401
+    LID_DISABLE_REASON_TEXT,
+    SAFETY_REASON_TEXT,
+    _safety_cause,
+    daemon_text,
+    describe_lid_disable,
+    protection_text,
+    thermal_text,
+)
 from locklock_core.allowed_keys import display_key, gtk_key_to_canonical  # noqa: E402
 
 
+# Notification titles and bodies; gettext msgids, translated where shown.
 TITLES: Final = {
-    "all-locked": ("Input locked", "Press the primary shortcut to unlock."),
-    "keyboard-locked": ("Keyboard locked", "Press the primary shortcut to unlock."),
-    "mouse-locked": ("Pointer locked", "Press the primary shortcut to unlock."),
-    "touchscreen-locked": ("Touchscreen locked", "Press the primary shortcut to unlock."),
-    "unlocked": ("Input unlocked", "Local input is available."),
-    "auto-unlocked": ("Input auto-unlocked", "The safety timer released local input."),
+    "all-locked": (N_("Input locked"), N_("Press the primary shortcut to unlock.")),
+    "keyboard-locked": (N_("Keyboard locked"), N_("Press the primary shortcut to unlock.")),
+    "mouse-locked": (N_("Pointer locked"), N_("Press the primary shortcut to unlock.")),
+    "touchscreen-locked": (N_("Touchscreen locked"), N_("Press the primary shortcut to unlock.")),
+    "unlocked": (N_("Input unlocked"), N_("Local input is available.")),
+    "auto-unlocked": (N_("Input auto-unlocked"), N_("The safety timer released local input.")),
 }
 LOG = logging.getLogger("input-lock-tray")
 CURSOR_SETTINGS_PATH: Final = Path.home() / ".config/input-lock/cursor-settings.json"
 DEFAULT_CURSOR_TIMEOUT_SECONDS: Final = 60
 MAX_CURSOR_TIMEOUT_SECONDS: Final = 86_399
-CONTINUOUS_LID_LABEL: Final = "Ignore Lid Close (continuous, safety-monitored)"
 GNOME_IDLE_ONLY: Final = 8
+# Keep the GNOME idle-only inhibitor this long after lid-ignore is lost
+# without a user request while the lid is open, so a long-idle session is not
+# suspended by gsd the instant the override disappears (review U3).
+IDLE_GRACE_SECONDS: Final = 60
+SECOND_INSTANCE_RETRY_SECONDS: Final = 300.0
+DISCONNECTED_REMINDER_SECONDS: Final = 600.0
+CURSOR_EXTENSION_UUID: Final = "input-lock-cursor@aag-projects-team"
+
+# ---------------------------------------------------------------------------
+# User-facing strings. They are English gettext msgids, marked with N_() and
+# translated with _() where they are shown, so the language chosen at start-up
+# applies (review U7). Log lines stay English.
+# ---------------------------------------------------------------------------
+LID_LABEL: Final = N_("Ignore Lid Close")
+CONTINUOUS_LID_LABEL: Final = N_("Ignore Lid Close (continuous, safety-monitored)")
+LID_UNAVAILABLE_LABEL: Final = N_("Ignore Lid Close (service unavailable)")
+LID_SAFETY_UNAVAILABLE_LABEL: Final = N_("Ignore Lid Close (safety unavailable)")
+TRAY_STOP_NOTE: Final = N_(
+    "Quitting, stopping or restarting the Input Lock tray turns Ignore Lid Close off "
+    "and unlocks input."
+)
+LID_TOOLTIP_TEXT: Final = N_(
+    "Keep running with the lid closed, under thermal, battery and telemetry supervision."
+)
+LID_TOOLTIP: Final = LID_TOOLTIP_TEXT + " " + TRAY_STOP_NOTE
+LID_LOST_TITLE: Final = N_("Ignore Lid Close was turned off")
+REENABLE_ACTION_LABEL: Final = N_("Re-enable…")
+REENABLE_HINT: Final = N_(
+    "It will not turn itself back on. To turn it on again, open the lid and choose "
+    "“Re-enable…” or use the Input Lock tray menu."
+)
+# Informational notice for a loss the user caused with another action, such
+# as the emergency shortcut (review U-R5): the body names that action.
+LID_OFF_INFO_HINT: Final = N_("Turn it on again from the Input Lock tray menu if you still need it.")
+# One corrected notice after "connection lost" turned out to have a real
+# cause reported by the daemon on reconnect (review U-R1).
+LID_CORRECTION_TEXT: Final = N_("Correction to the previous notice: {cause}")
+POWER_RESTORED_TITLE: Final = N_("Power mode restored")
+TRAY_UNLOCK_LID_NOTE: Final = N_(
+    "Unlocking input from the tray also turns Ignore Lid Close off. "
+    "Turn it on again from the tray menu if you still need it."
+)
+POWER_RESTORED_BODY: Final = N_(
+    "Power mode was changed manually; power-saver restored while Ignore Lid Close is on."
+)
+LID_CONFIRM_TITLE: Final = N_("Keep running with the lid closed?")
+LID_CONFIRM_BODY: Final = N_(
+    "Lid closure will be ignored continuously, with NO 2/4-minute timeout. "
+    "This stays enabled until you turn it off, or a safety/fail-safe condition intervenes. "
+    "Dangerous temperature, critical battery, lost monitoring or controller/daemon failure can request regular OS suspend. "
+    "GNOME idle suspend is prevented and a temporary power-saver cooling profile is held while enabled; "
+    "the previous performance preference automatically returns when disabled. "
+    "Manual system sleep and OS critical-battery protection remain available. "
+    "The setting starts OFF after a service restart or reboot."
+)
+LID_CONFIRM_WARNING: Final = N_(
+    "Keep the lid OPEN when enabling, keep the vents unobstructed, and NEVER put the running laptop in a bag."
+)
+LANGUAGE_NOTE: Final = N_(
+    "A language change takes effect the next time Input Lock starts, for example after you "
+    "log in again."
+)
+# Language names are shown in their own language, never translated.
+LANGUAGE_NAMES: Final = {"he": "עברית", "en": "English"}
+DISCONNECTED_ICON: Final = "input-lock-unlocked"
+SAFETY_STATE_NAMES: Final = {
+    "SAFE_NORMAL": N_("normal OS behavior"), "RECOVERY": N_("recovered; re-arm required"),
+    "LID_IGNORE_ARMED": N_("armed; lid open"), "LID_CLOSED_MONITORED": N_("monitoring closed lid"),
+    "LID_CLOSED_WARNING": N_("safety warning — inspect heat/battery/telemetry"),
+    "LID_CLOSED_HIGH_RISK": N_("high risk — open the lid"),
+    "PROTECTIVE_ACTION_FAILED": N_("protection FAILED — open the lid"),
+    "PROTECTIVE_ACTION_PENDING": N_("protective action requested"),
+    "PROTECTIVE_ACTION_EXECUTED": N_("suspend transition confirmed"),
+}
+# Disable reasons that mean "the user asked for it" when an older daemon does
+# not publish last_lid_disable.requested_by_user.
+USER_DISABLE_REASONS: Final = frozenset({"lid-ignore-disabled"})
+
+
+class SerialWorker:
+    """One background thread that runs blocking lease work strictly in order.
+
+    D-Bus lease checks, HoldProfile retries and the enable request never run on
+    the GTK main thread (review U4); serialising them also removes races
+    between acquire/release of the two guards.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
+        self._thread.start()
+
+    def submit(self, function, *args) -> None:
+        self._queue.put((function, args))
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._queue.put(None)
+        self._thread.join(timeout)
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            function, args = item
+            try:
+                function(*args)
+            except Exception:
+                LOG.exception("Background lease task failed")
+
+
+def cursor_extension_enabled(settings=None) -> bool | None:
+    """Whether GNOME Shell is configured to run the cursor-hider extension."""
+    try:
+        if settings is None:
+            source = Gio.SettingsSchemaSource.get_default()
+            if source is None or source.lookup("org.gnome.shell", True) is None:
+                return None
+            settings = Gio.Settings.new("org.gnome.shell")
+        if settings.get_boolean("disable-user-extensions"):
+            return False
+        return (CURSOR_EXTENSION_UUID in settings.get_strv("enabled-extensions")
+                and CURSOR_EXTENSION_UUID not in settings.get_strv("disabled-extensions"))
+    except Exception:
+        return None
 
 
 class GnomeIdleGuard:
@@ -155,11 +296,20 @@ class PowerSaverGuard:
     power-saver is mitigation, never an excuse to weaken thermal thresholds.
     """
 
-    def __init__(self, proxy_factory=None) -> None:
+    RETRY_SETTLE_SECONDS: Final = 1.0
+
+    def __init__(self, proxy_factory=None, *, sleep=None) -> None:
         self.proxy_factory = proxy_factory or self._new_proxy
+        self.sleep = sleep or time.sleep
         self.proxy = None
         self.cookie: int | None = None
         self.owner: str | None = None
+        self.released_externally = False
+        self.on_released = None
+        self._signal_connection = None
+        self._signal_id: int | None = None
+        self._released_cookies: set[int] = set()
+        self._lock = threading.RLock()
 
     @staticmethod
     def _new_proxy():
@@ -191,45 +341,137 @@ class PowerSaverGuard:
         )
         return str(result.unpack()[0])
 
-    def acquire(self) -> None:
-        if self.proxy is None:
-            self.proxy = self.proxy_factory()
+    def _subscribe_released(self) -> None:
+        """Watch PPD's ProfileReleased so a manual mode change is noticed.
+
+        Subscribed from whatever thread acquires the hold, but without a
+        thread-default main context the callback is dispatched on the global
+        default context, i.e. the GTK main thread.
+        """
+        if self._signal_id is not None or self.proxy is None:
+            return
         try:
+            connection = self.proxy.get_connection()
+            self._signal_id = connection.signal_subscribe(
+                "net.hadess.PowerProfiles", "net.hadess.PowerProfiles",
+                "ProfileReleased", "/net/hadess/PowerProfiles", None,
+                Gio.DBusSignalFlags.NONE, self._on_profile_released_signal,
+            )
+            self._signal_connection = connection
+        except Exception as exc:
+            # The post-hold verification still catches an ineffective hold.
+            LOG.warning("Could not watch power-saver hold releases: %s", exc)
+            self._signal_id = None
+            self._signal_connection = None
+
+    def _on_profile_released_signal(self, _connection, _sender, _path, _interface,
+                                    _signal, parameters) -> None:
+        try:
+            cookie = int(parameters.unpack()[0])
+        except Exception:
+            return
+        self.profile_released(cookie)
+
+    def profile_released(self, cookie: int) -> bool:
+        """Record that PPD dropped our hold (e.g. a manual Power Mode pick).
+
+        Runs on the GTK main thread, so it never waits for the guard lock
+        (an acquire may be blocked in D-Bus on the lease worker). It only
+        marks the cookie; the next acquire() takes a fresh hold.
+        """
+        current = self.cookie
+        if current is None or cookie != current:
+            return False
+        self._released_cookies.add(cookie)
+        self.released_externally = True
+        LOG.warning("Power-saver hold %s was released by power-profiles-daemon "
+                    "(manual power-mode change?)", cookie)
+        callback = self.on_released
+        if callback is not None:
+            try:
+                callback()
+            except Exception as exc:
+                LOG.warning("Power-saver release handler failed: %s", exc)
+        return True
+
+    def _hold(self) -> None:
+        owner = self.proxy.get_name_owner()
+        if not owner:
+            raise RuntimeError("Power Profiles service is unavailable")
+        if self.cookie is not None and self.owner != owner:
+            # The manager restarted, so any old cookie became invalid.
+            self._close_connection()
+            self.proxy = self.proxy_factory()
             owner = self.proxy.get_name_owner()
             if not owner:
-                raise RuntimeError("Power Profiles service is unavailable")
-            if self.cookie is not None and self.owner != owner:
-                # The manager restarted, so any old cookie became invalid.
-                self._close_connection()
+                raise RuntimeError("Power Profiles service disappeared")
+        self._subscribe_released()
+        if self.cookie is not None and self.cookie in self._released_cookies:
+            # PPD already dropped it (ProfileReleased): never reuse it.
+            self._released_cookies.discard(self.cookie)
+            self.cookie = None
+        if self.cookie is None:
+            # Request only the lower-power profile, never disable
+            # hardware throttling or override system thermal services.
+            reply = self.proxy.call_sync(
+                "HoldProfile", GLib.Variant("(sss)", (
+                    "power-saver",
+                    "Keep closed-lid laptop cool during supervised InputLock",
+                    "org.aag.InputLock",
+                )), Gio.DBusCallFlags.NONE, 3000, None,
+            )
+            self.cookie = int(reply.unpack()[0])
+            self.owner = owner
+
+    def acquire(self) -> bool:
+        """Hold power-saver and verify it; return True if it was re-taken.
+
+        A single mismatch (stale cookie after a manual Power Mode change, or a
+        missed ProfileReleased) is not a failure: reconnect, hold again and
+        re-check after about a second. Only a fresh hold that is still
+        ineffective raises, naming the observed profile.
+        """
+        with self._lock:
+            restored = self.released_externally
+            if self.proxy is None:
                 self.proxy = self.proxy_factory()
-                owner = self.proxy.get_name_owner()
-                if not owner:
-                    raise RuntimeError("Power Profiles service disappeared")
-            if self.cookie is None:
-                # Request only the lower-power profile, never disable
-                # hardware throttling or override system thermal services.
-                reply = self.proxy.call_sync(
-                    "HoldProfile", GLib.Variant("(sss)", (
-                        "power-saver",
-                        "Keep closed-lid laptop cool during supervised InputLock",
-                        "org.aag.InputLock",
-                    )), Gio.DBusCallFlags.NONE, 3000, None,
-                )
-                self.cookie = int(reply.unpack()[0])
-                self.owner = owner
-            if self._active_profile() != "power-saver":
-                raise RuntimeError("Power-saver hold did not become effective")
-        except Exception:
-            # Includes uncertain replies: close the dedicated connection so
-            # no orphan power lease can outlive a failed activation.
-            self._close_connection()
-            raise
+            try:
+                self._hold()
+                observed = self._active_profile()
+                if observed != "power-saver":
+                    LOG.warning("Power-saver hold not effective (active profile: %s); "
+                                "reconnecting and holding again", observed)
+                    self._close_connection()
+                    self.proxy = self.proxy_factory()
+                    self._hold()
+                    self.sleep(self.RETRY_SETTLE_SECONDS)
+                    observed = self._active_profile()
+                    if observed != "power-saver":
+                        raise RuntimeError(
+                            "Power-saver hold did not become effective after one retry "
+                            f"(active profile: {observed})")
+                    restored = True
+                self.released_externally = False
+                return restored
+            except Exception:
+                # Includes uncertain replies: close the dedicated connection so
+                # no orphan power lease can outlive a failed activation.
+                self._close_connection()
+                raise
 
     def _close_connection(self) -> None:
         proxy = self.proxy
+        connection, signal_id = self._signal_connection, self._signal_id
         self.proxy = None
         self.cookie = None
         self.owner = None
+        self._signal_connection = None
+        self._signal_id = None
+        if connection is not None and signal_id is not None:
+            try:
+                connection.signal_unsubscribe(signal_id)
+            except Exception:
+                pass
         if proxy is not None:
             try:
                 proxy.get_connection().close_sync(None)
@@ -237,20 +479,53 @@ class PowerSaverGuard:
                 LOG.warning("Power-saver system-bus release unconfirmed: %s", exc)
 
     def release(self) -> None:
-        cookie, owner, proxy = self.cookie, self.owner, self.proxy
-        try:
-            if cookie is not None and proxy is not None and proxy.get_name_owner() == owner:
-                proxy.call_sync(
-                    "ReleaseProfile", GLib.Variant("(u)", (cookie,)),
-                    Gio.DBusCallFlags.NONE, 2500, None,
-                )
-        except Exception as exc:
-            LOG.warning("Power-saver hold release unconfirmed: %s", exc)
-        finally:
-            self._close_connection()
+        with self._lock:
+            self.released_externally = False
+            cookie, owner, proxy = self.cookie, self.owner, self.proxy
+            if cookie is not None and cookie in self._released_cookies:
+                cookie = None  # PPD already released it
+            self._released_cookies.clear()
+            try:
+                if cookie is not None and proxy is not None and proxy.get_name_owner() == owner:
+                    proxy.call_sync(
+                        "ReleaseProfile", GLib.Variant("(u)", (cookie,)),
+                        Gio.DBusCallFlags.NONE, 2500, None,
+                    )
+            except Exception as exc:
+                LOG.warning("Power-saver hold release unconfirmed: %s", exc)
+            finally:
+                self._close_connection()
 
 
 class TrayNotifier:
+    # Class-level defaults keep partially constructed (test) instances and a
+    # half-initialised tray safe; __init__ sets the real per-instance values.
+    current_state: Mapping[str, object] = MappingProxyType({})  # replaced, never mutated
+    connected = False
+    state_stale = False
+    updating_lid_item = False
+    updating_autostart_item = False
+    autostart_cached = False
+    idle_guard = None
+    power_guard = None
+    lease_worker = None
+    reconnect_event = None
+    idle_guard_failed_generation = None
+    enable_in_flight = False
+    cooling_verified = False
+    idle_held = False
+    lease_acquire_pending = False
+    grace_until: float | None = None
+    grace_source = 0
+    own_disable_reason: str | None = None
+    down_since: float | None = None
+    tray_unlock_until: float | None = None
+    # U-R1: last_lid_disable.at seen while connected, and whether a
+    # "daemon-unavailable" loss was reported that a reconnect may correct.
+    last_disable_at: float | None = None
+    unavailable_reported = False
+    unavailable_since_at: float | None = None
+
     def __init__(self) -> None:
         self.config = load_config()
         self.running = True
@@ -262,7 +537,10 @@ class TrayNotifier:
         self.updating_autostart_item = False
         self.idle_guard = GnomeIdleGuard()
         self.power_guard = PowerSaverGuard()
+        self.power_guard.on_released = self._on_power_hold_released
         self.idle_guard_failed_generation: int | None = None
+        self.reconnect_event = threading.Event()
+        self.lease_worker = SerialWorker("input-lock-leases")
 
         self.indicator = AyatanaAppIndicator3.Indicator.new(
             "input-lock",
@@ -274,45 +552,50 @@ class TrayNotifier:
         # otherwise GNOME may display its three-dot missing-icon placeholder.
         self.indicator.set_icon_theme_path("/usr/share/icons/hicolor/scalable/status")
         self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
-        self.indicator.set_title("Input Lock")
+        self.indicator.set_title(_("Input Lock"))
 
         self.menu = Gtk.Menu()
-        self.status_item = Gtk.MenuItem(label="Input Lock — Connecting…")
+        self.status_item = Gtk.MenuItem(label=_("Input Lock — Connecting…"))
         self.status_item.set_sensitive(False)
         self.menu.append(self.status_item)
-        self.safety_item = Gtk.MenuItem(label="Lid safety: connecting…")
+        self.safety_item = Gtk.MenuItem(label=_("Lid safety: connecting…"))
         self.safety_item.set_sensitive(False)
         self.menu.append(self.safety_item)
 
         self.menu.append(Gtk.SeparatorMenuItem())
-        self.toggle_item = Gtk.MenuItem(label="Lock Input")
+        self.toggle_item = Gtk.MenuItem(label=_("Lock Input"))
         self.toggle_item.set_sensitive(False)
         self.toggle_item.connect("activate", self._on_toggle)
         self.menu.append(self.toggle_item)
 
-        self.shortcut_item = Gtk.MenuItem(label="Shortcut: Ctrl+Alt+Z")
+        self.shortcut_item = Gtk.MenuItem(label=_("Shortcut: {shortcut}").format(shortcut="Ctrl+Alt+Z"))
         self.shortcut_item.set_sensitive(False)
         self.menu.append(self.shortcut_item)
 
-        self.settings_item = Gtk.MenuItem(label="Settings…")
+        self.settings_item = Gtk.MenuItem(label=_("Settings…"))
         self.settings_item.connect("activate", self._on_settings)
         self.menu.append(self.settings_item)
 
-        self.lid_item = Gtk.CheckMenuItem(label=CONTINUOUS_LID_LABEL)
+        self.lid_item = Gtk.CheckMenuItem(label=_(CONTINUOUS_LID_LABEL))
         self.lid_item.set_sensitive(False)
+        self.lid_item.set_tooltip_text(_(LID_TOOLTIP_TEXT) + " " + _(TRAY_STOP_NOTE))
         self.lid_item.connect("toggled", self._on_lid_toggled)
         self.menu.append(self.lid_item)
 
-        self.autostart_item = Gtk.CheckMenuItem(label="Start at Login")
-        self.autostart_item.set_active(self._autostart_enabled())
+        # The real state is read off the main thread (systemctl can block).
+        self.autostart_item = Gtk.CheckMenuItem(label=_("Start at Login"))
+        self.autostart_item.set_sensitive(False)
         self.autostart_item.connect("toggled", self._on_autostart_toggled)
+        self.menu.append(self.autostart_item)
+        self._refresh_autostart_async()
+        self._watch_socket_directory()
 
         self.menu.append(Gtk.SeparatorMenuItem())
-        self.about_item = Gtk.MenuItem(label="About")
+        self.about_item = Gtk.MenuItem(label=_("About"))
         self.about_item.connect("activate", self._on_about)
         self.menu.append(self.about_item)
 
-        self.quit_item = Gtk.MenuItem(label="Quit")
+        self.quit_item = Gtk.MenuItem(label=_("Quit"))
         self.quit_item.connect("activate", self._on_quit)
         self.menu.append(self.quit_item)
 
@@ -345,24 +628,93 @@ class TrayNotifier:
             Gtk.main()
         finally:
             self.running = False
+            event = self.reconnect_event
+            if event is not None:
+                event.set()
+            worker = self.lease_worker
+            if worker is not None:
+                worker.stop()
             self.idle_guard.release()
             self.power_guard.release()
         return 0
 
+    # ------------------------------------------------------------------
+    # Subscription (heartbeat) thread
+    # ------------------------------------------------------------------
+    def _watch_socket_directory(self) -> None:
+        """Reconnect promptly when the daemon socket reappears (G1)."""
+        try:
+            socket_path = Path(self.config.socket_path)
+            monitor = Gio.File.new_for_path(str(socket_path.parent)).monitor_directory(
+                Gio.FileMonitorFlags.NONE, None)
+
+            def changed(_monitor, file, _other, event_type) -> None:
+                if (event_type == Gio.FileMonitorEvent.CREATED
+                        and file is not None and file.get_basename() == socket_path.name
+                        and self.reconnect_event is not None):
+                    self.reconnect_event.set()
+
+            monitor.connect("changed", changed)
+            self._socket_monitor = monitor
+        except Exception as exc:
+            LOG.debug("Socket directory monitor unavailable: %s", exc)
+            self._socket_monitor = None
+
+    def _wait_before_retry(self, seconds: float) -> None:
+        event = self.reconnect_event
+        if event is None:
+            time.sleep(seconds)
+            return
+        event.wait(seconds)
+        event.clear()
+
+    @staticmethod
+    def _is_second_instance(exc: BaseException) -> bool:
+        return isinstance(exc, ValueError) and "controller is already connected" in str(exc)
 
     def _subscription_worker(self) -> None:
+        """Keep the controller subscription alive; never die silently (G1).
+
+        Only state transitions are logged: the first failure, one reminder per
+        DISCONNECTED_REMINDER_SECONDS while still down, and the reconnect.
+        """
         delay = 1.0
+        last_reminder = 0.0
         while self.running:
             try:
                 self._subscribe_once()
                 delay = 1.0
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
+            except Exception as exc:  # noqa: BLE001 - this thread must survive
                 if not self.running:
                     break
-                LOG.warning("Daemon subscription unavailable: %s", exc)
-                GLib.idle_add(self._show_disconnected)
-                time.sleep(delay)
+                now = time.monotonic()
+                second_instance = self._is_second_instance(exc)
+                if self.down_since is None:
+                    self.down_since = now
+                    last_reminder = now
+                    delay = 1.0
+                    if second_instance:
+                        LOG.warning("Another Input Lock tray is already the controller; "
+                                    "this instance retries every %d s", SECOND_INSTANCE_RETRY_SECONDS)
+                    elif isinstance(exc, (OSError, ValueError)):
+                        LOG.warning("Daemon subscription unavailable: %s", exc)
+                    else:
+                        LOG.exception("Daemon subscription failed unexpectedly")
+                    GLib.idle_add(self._show_disconnected,
+                                  "another-tray" if second_instance else None)
+                elif now - last_reminder >= DISCONNECTED_REMINDER_SECONDS:
+                    last_reminder = now
+                    LOG.warning("Daemon subscription still unavailable after %d s: %s",
+                                int(now - self.down_since), exc)
+                self._wait_before_retry(SECOND_INSTANCE_RETRY_SECONDS if second_instance else delay)
                 delay = min(delay * 2.0, 15.0)
+        LOG.info("Daemon subscription worker stopped")
+
+    def _subscription_up(self) -> None:
+        down_since = self.down_since
+        self.down_since = None
+        if down_since is not None:
+            LOG.info("Daemon subscription reconnected after %d s", int(time.monotonic() - down_since))
 
     def _subscribe_once(self) -> None:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -395,6 +747,8 @@ class TrayNotifier:
                     if isinstance(message, dict) and message.get("ok") is False:
                         raise ValueError(str(message.get("error", "subscription rejected")))
                     if isinstance(message, dict):
+                        if message.get("subscribed") is True:
+                            self._subscription_up()
                         GLib.idle_add(self._handle_message, message)
         finally:
             self.subscription_socket = None
@@ -413,9 +767,28 @@ class TrayNotifier:
         if not isinstance(state, dict):
             return False
 
-        prior_safety = self.current_state.get("safety", {}).get("state")
+        prior_safety_value = self.current_state.get("safety", {})
+        prior_safety = prior_safety_value.get("state") if isinstance(prior_safety_value, dict) else None
+        # A loss noticed while disconnected was already reported by
+        # _show_disconnected(); only compare against live, connected state.
+        prior_lid = self.connected and self.current_state.get("ignore_lid_close") is True
         self.connected = True
+        self.state_stale = False
         self.current_state = state
+        lid_lost_notified = False
+        # Wording and notifications must never abort the state handling
+        # below (menu, leases): any failure is logged (review U-R9).
+        try:
+            if self.unavailable_reported:
+                self._correct_unavailable_cause(state)
+            if prior_lid and state.get("ignore_lid_close") is not True:
+                lid_lost_notified = self._on_lid_ignore_lost(state, reason)
+        except Exception:  # noqa: BLE001
+            LOG.exception("Could not report an Ignore Lid Close change")
+        finally:
+            at = self._disable_at(state)
+            if at is not None:
+                self.last_disable_at = at
         self._reconcile_idle_guard(state)
         locked_value = state.get("locked_kinds", [])
         if not isinstance(locked_value, list):
@@ -433,69 +806,304 @@ class TrayNotifier:
         if safety_state != prior_safety and safety_state in {
             "LID_CLOSED_WARNING", "PROTECTIVE_ACTION_PENDING",
             "PROTECTIVE_ACTION_FAILED", "PROTECTIVE_ACTION_EXECUTED",
-        }:
-            message = "Safety warning: check heat, battery or missing telemetry. Open the lid if needed."
+        } and not (lid_lost_notified and safety_state == "PROTECTIVE_ACTION_PENDING"):
+            message = safe_format(N_(
+                "Safety warning: check heat, battery or missing telemetry. Open the lid if needed."))
             if safety_state == "PROTECTIVE_ACTION_PENDING":
                 decision = safety.get("last_decision")
-                cause = decision.get("reason") if isinstance(decision, dict) else "unknown safety reason"
-                message = f"Safety protection requested ({cause}). Lid-ignore released."
+                cause = (decision.get("reason") if isinstance(decision, dict)
+                         else safe_format(N_("unknown safety reason")))
+                message = safe_format(N_("Safety protection requested ({cause}). Lid-ignore released."),
+                                      cause=cause)
             elif safety_state == "PROTECTIVE_ACTION_EXECUTED":
-                message = "A protective suspend was confirmed. Re-enable lid-ignore only with lid open."
+                message = safe_format(N_(
+                    "A protective suspend was confirmed. Re-enable lid-ignore only with lid open."))
             elif safety_state == "PROTECTIVE_ACTION_FAILED":
-                message = "Open the lid. Automatic safety protection failed; see InputLock diagnostics."
-            self._notify("Lid safety", message, locked=bool(locked))
+                message = safe_format(N_(
+                    "Open the lid. Automatic safety protection failed; see InputLock diagnostics."))
+            self._notify(safe_format(N_("Lid safety")), message, locked=bool(locked))
         return False
+
+    @staticmethod
+    def _disable_at(state: dict[str, object]) -> float | None:
+        """``last_lid_disable.at`` (daemon wall clock) or None."""
+        info = state.get("last_lid_disable")
+        at = info.get("at") if isinstance(info, dict) else None
+        if isinstance(at, bool) or not isinstance(at, (int, float)):
+            return None
+        return float(at)
+
+    def _correct_unavailable_cause(self, state: dict[str, object]) -> None:
+        """U-R1: after "connection lost", name the cause the daemon recorded.
+
+        The daemon flushes its final state before it drops the controller,
+        but that event can still be lost. On the first message after the
+        reconnect, a ``last_lid_disable.at`` newer than the last one seen
+        before the outage means the daemon itself turned Ignore Lid Close off
+        and knows why: show one corrected notice.
+        """
+        self.unavailable_reported = False
+        since = self.unavailable_since_at
+        self.unavailable_since_at = None
+        at = self._disable_at(state)
+        if at is None or (since is not None and at <= since):
+            return  # e.g. a restarted daemon: "connection lost" stands
+        reason, requested = self._lid_disable_info(state, "")
+        user_initiated = self._lid_user_initiated(state)
+        LOG.warning("Ignore Lid Close loss reported as daemon-unavailable was caused by: %s", reason)
+        cause = describe_lid_disable(reason, state)
+        body = safe_format(LID_CORRECTION_TEXT, cause=cause)
+        if requested or user_initiated:
+            self._notify(safe_format(LID_LOST_TITLE), body + "\n" + safe_format(LID_OFF_INFO_HINT),
+                         locked=bool(state.get("locked_kinds")))
+        else:
+            # Same severity as the notice it corrects. Re-enabling still
+            # needs the confirmation dialog and an open lid.
+            self._notify(safe_format(LID_LOST_TITLE), body + "\n" + safe_format(REENABLE_HINT),
+                         locked=bool(state.get("locked_kinds")), critical=True, reenable=True)
+
+    # ------------------------------------------------------------------
+    # Ignore Lid Close loss (A8, A4) and idle grace (U3)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _lid_disable_info(state: dict[str, object], event_reason: str) -> tuple[str, bool]:
+        """Return (reason, requested_by_user) for an observed True->False change."""
+        reason = event_reason
+        requested: bool | None = None
+        info = state.get("last_lid_disable")
+        if isinstance(info, dict):
+            if isinstance(info.get("reason"), str) and info["reason"]:
+                reason = info["reason"]
+            if isinstance(info.get("requested_by_user"), bool):
+                requested = info["requested_by_user"]
+        if requested is None:
+            requested = reason in USER_DISABLE_REASONS
+        return reason, requested
+
+    @staticmethod
+    def _lid_user_initiated(state: dict[str, object]) -> bool | None:
+        """``last_lid_disable.user_initiated``; None from an older daemon."""
+        info = state.get("last_lid_disable")
+        value = info.get("user_initiated") if isinstance(info, dict) else None
+        return value if isinstance(value, bool) else None
+
+    def _on_lid_ignore_lost(self, state: dict[str, object], event_reason: str) -> bool:
+        """Handle Ignore Lid Close going True->False; return True if notified.
+
+        Never re-arms. The notice depends on who caused the loss (U-R5):
+
+        * ``requested_by_user``: the user turned it off; no notice.
+        * ``user_initiated`` (another user action such as the emergency
+          shortcut or a settings change): a short informational notice that
+          names the action.
+        * neither: a critical, persistent notification naming the cause,
+          with a "Re-enable…" action that goes through the normal
+          confirmation dialog (and needs an open lid).
+
+        An older daemon without ``user_initiated`` keeps the earlier mapping.
+        """
+        self.cooling_verified = False
+        reason, requested = self._lid_disable_info(state, event_reason)
+        user_initiated = self._lid_user_initiated(state)
+        own = self.own_disable_reason
+        self.own_disable_reason = None
+        if own is not None:
+            # The tray failed closed itself and already showed the critical
+            # notification with the real cause; the daemon sees that request
+            # as an ordinary "off".
+            LOG.warning("Ignore Lid Close turned off by the tray's own fail-safe (%s)", own)
+            return True
+        until = self.tray_unlock_until
+        # The daemon publishes the normalised key "emergency-unlock" for its
+        # "ipc-emergency-unlock" reason (interface 3); older daemons the raw one.
+        if (reason in {"ipc-emergency-unlock", "emergency-unlock"} and until is not None
+                and time.monotonic() <= until):
+            self.tray_unlock_until = None
+            LOG.info("Ignore Lid Close turned off by the tray's Unlock/Quit action")
+            self._notify(safe_format(LID_LOST_TITLE), safe_format(TRAY_UNLOCK_LID_NOTE),
+                         locked=bool(state.get("locked_kinds")))
+            return True
+        if requested:
+            LOG.info("Ignore Lid Close turned off on request (reason=%s)", reason)
+            return False
+        if user_initiated:
+            LOG.info("Ignore Lid Close turned off by another user action (reason=%s)", reason)
+            self._notify(safe_format(LID_LOST_TITLE),
+                         describe_lid_disable(reason, state) + "\n" + safe_format(LID_OFF_INFO_HINT),
+                         locked=bool(state.get("locked_kinds")))
+            # The action may have come over SSH or a script, which does not
+            # reset GNOME's idle timer: keep the U3 grace.
+            self._start_idle_grace(state)
+            return True
+        LOG.warning("Ignore Lid Close was turned off without a user request: reason=%s", reason)
+        self._notify_lid_lost(reason, state)
+        self._start_idle_grace(state)
+        return True
+
+    def _notify_lid_lost(self, reason: str, state: dict[str, object], detail: str = "") -> None:
+        """Critical, persistent loss notice; formatting never raises (U-R9)."""
+        try:
+            text = describe_lid_disable(reason, state, detail=detail)
+        except Exception:  # noqa: BLE001 - describe_lid_disable is safe; belt and braces
+            text = LID_DISABLE_REASON_TEXT.get(reason, reason)
+        try:
+            self._notify(safe_format(LID_LOST_TITLE), text + "\n" + safe_format(REENABLE_HINT),
+                         locked=bool(state.get("locked_kinds")), critical=True, reenable=True)
+        except Exception as exc:
+            LOG.warning("Lid-ignore loss notification failed: %s", exc)
+
+    def _start_idle_grace(self, state: dict[str, object]) -> None:
+        """Keep the GNOME idle-only inhibitor ~60 s after a loss, lid open."""
+        if state.get("lid_is_closed") is True:
+            return
+        self.grace_until = time.monotonic() + IDLE_GRACE_SECONDS
+        if self.grace_source:
+            GLib.source_remove(self.grace_source)
+        self.grace_source = GLib.timeout_add_seconds(IDLE_GRACE_SECONDS, self._idle_grace_expired)
+
+    def _cancel_idle_grace(self) -> None:
+        self.grace_until = None
+        if self.grace_source:
+            GLib.source_remove(self.grace_source)
+        self.grace_source = 0
+
+    def _idle_grace_expired(self) -> bool:
+        self.grace_source = 0
+        self.grace_until = None
+        if self.connected and self.current_state.get("ignore_lid_close") is True:
+            return False  # re-enabled by the user: the lease is in use again
+        if self.enable_in_flight:
+            return False
+        self._run_lease(self._release_leases_job, True, False)
+        return False
+
+    # ------------------------------------------------------------------
+    # Lease reconciliation (A7, U3, U4, U6) — blocking work on lease_worker
+    # ------------------------------------------------------------------
+    def _run_lease(self, function, *args) -> None:
+        worker = self.lease_worker
+        if worker is None:
+            function(*args)
+        else:
+            worker.submit(function, *args)
+
+    def _to_main(self, function, *args) -> None:
+        if self.lease_worker is None:
+            function(*args)
+        else:
+            GLib.idle_add(function, *args)
 
     def _reconcile_idle_guard(self, state: dict[str, object]) -> None:
         """Hold reversible cooling + GNOME-idle leases during lid-ignore only.
 
         GNOME idle and the power-saver hold are not system sleep inhibitors.
-        On either lease failure, drop both and disable the lid override:
-        never trade away thermal protection just to remain awake.
+        On a lease failure (after A7's retry) drop the leases and disable the
+        lid override: never trade away thermal protection just to stay awake.
+        The blocking D-Bus work runs on the lease worker, not the GTK thread.
         """
-        guard = getattr(self, "idle_guard", None)
-        cooling = getattr(self, "power_guard", None)
-        if guard is None:
+        if self.idle_guard is None:
             return
         if state.get("ignore_lid_close") is not True:
-            guard.release()
-            if cooling is not None:
-                cooling.release()
+            self.cooling_verified = False
             self.idle_guard_failed_generation = None
+            if self.enable_in_flight:
+                # U6: the hold taken before an enable request must survive
+                # until that request has been answered.
+                return
+            keep_idle = self.grace_until is not None
+            self._run_lease(self._release_leases_job, not keep_idle, True)
             return
+        self._cancel_idle_grace()
+        self._queue_lease_acquire(state)
+
+    def _queue_lease_acquire(self, state: dict[str, object]) -> None:
+        if self.lease_acquire_pending:
+            return  # coalesce: one queued check is enough
+        self.lease_acquire_pending = True
+        self._run_lease(self._lease_acquire_job, state.get("lid_generation"),
+                        bool(state.get("locked_kinds")))
+
+    def _release_leases_job(self, idle: bool, cooling: bool) -> None:
+        if idle and self.idle_guard is not None:
+            self.idle_guard.release()
+            self.idle_held = False
+        if cooling and self.power_guard is not None:
+            self.power_guard.release()
+
+    def _lease_acquire_job(self, generation: int | None, locked: bool) -> None:
+        self.lease_acquire_pending = False
+        guard, cooling = self.idle_guard, self.power_guard
+        stage = "cooling"
         try:
             # Throttle CPU spikes as soon as the user explicitly arms lid-ignore
             # rather than awaiting the first hot sample with the lid closed.
-            if cooling is not None:
-                cooling.acquire()
+            restored = bool(cooling.acquire()) if cooling is not None else False
+            stage = "idle"
             guard.acquire()
-            self.idle_guard_failed_generation = None
+            self.idle_held = True
         except Exception as exc:
-            guard.release()
             if cooling is not None:
                 cooling.release()
-            generation = state.get("lid_generation")
-            LOG.error("Continuous lid safety leases unavailable: %s", exc)
-            if getattr(self, "idle_guard_failed_generation", None) == generation:
-                return
-            self.idle_guard_failed_generation = generation
-            # Do not allow a stuck/broken desktop notification to delay the
-            # actual fail-safe disable of continuous lid-ignore.
-            threading.Thread(
-                target=self._idle_guard_safety_disable,
-                args=(generation,),
-                name="input-lock-idle-safety-disable",
-                daemon=True,
-            ).start()
-            try:
-                self._notify(
-                    "Lid safety",
-                    "Continuous lid cooling/idle protection is unavailable. Lid-ignore is being disabled; open the lid.",
-                    locked=bool(state.get("locked_kinds")),
-                )
-            except Exception as notification_error:
-                LOG.warning("Safety disable started but notification failed: %s",
-                            notification_error)
+            # U3: if only cooling failed and the idle inhibitor is still held
+            # with the lid open, keep it through the grace period.
+            keep_idle = (stage == "cooling" and self.idle_held
+                         and self.current_state.get("lid_is_closed") is not True)
+            if not keep_idle:
+                guard.release()
+                self.idle_held = False
+            self._to_main(self._lease_failed, generation, exc, locked, keep_idle, stage)
+            return
+        self._to_main(self._lease_ok, generation, restored, locked)
+
+    def _lease_ok(self, generation: int | None, restored: bool, locked: bool) -> bool:
+        self.idle_guard_failed_generation = None
+        self.cooling_verified = self.power_guard is not None
+        self._refresh_safety_label()
+        if restored and self.current_state.get("ignore_lid_close") is True:
+            LOG.warning("Power-saver hold restored after an external release (generation %s)", generation)
+            self._notify(_(POWER_RESTORED_TITLE), _(POWER_RESTORED_BODY), locked=locked)
+        return False
+
+    def _lease_failed(self, generation: int | None, error: Exception, locked: bool,
+                      idle_kept: bool = False, stage: str = "idle") -> bool:
+        self.cooling_verified = False
+        LOG.error("Continuous lid safety leases unavailable: %s", error)
+        current_generation = self.current_state.get("lid_generation", generation)
+        if current_generation != generation:
+            # Stale result: lid-ignore already changed since this check.
+            return False
+        if self.idle_guard_failed_generation == generation:
+            return False
+        self.idle_guard_failed_generation = generation
+        key = "power-saver-ineffective" if stage == "cooling" else "lease-unavailable"
+        self.own_disable_reason = key
+        # Do not allow a stuck/broken desktop notification to delay the
+        # actual fail-safe disable of continuous lid-ignore.
+        threading.Thread(
+            target=self._idle_guard_safety_disable,
+            args=(generation,),
+            name="input-lock-idle-safety-disable",
+            daemon=True,
+        ).start()
+        try:
+            self._notify(
+                _(LID_LOST_TITLE),
+                describe_lid_disable(key, self.current_state, detail=daemon_text(str(error)))
+                + "\n" + _(REENABLE_HINT),
+                locked=locked, critical=True, reenable=True,
+            )
+        except Exception as notification_error:
+            LOG.warning("Safety disable started but notification failed: %s",
+                        notification_error)
+        if idle_kept:
+            self._start_idle_grace(self.current_state)
+        return False
+
+    def _on_power_hold_released(self) -> None:
+        """PPD dropped our hold (manual Power Mode change): re-hold at once."""
+        if self.enable_in_flight or self.current_state.get("ignore_lid_close") is True:
+            self.cooling_verified = False
+            self._queue_lease_acquire(self.current_state)
 
     def _idle_guard_safety_disable(self, generation: int | None) -> None:
         """Fail closed if the cooling or GNOME idle service cannot honor policy.
@@ -517,77 +1125,114 @@ class TrayNotifier:
                 except OSError:
                     pass
             GLib.idle_add(
-                self._action_error, "Lid Safety",
-                RuntimeError("Continuous lid safety prerequisites failed; controller released. Open the lid."),
+                self._action_error, _("Lid Safety"),
+                RuntimeError(_("Continuous lid safety prerequisites failed; controller released. "
+                               "Open the lid.")),
             )
 
-    def _update_menu(self, locked: frozenset[str], hotkey: str) -> None:
+    def _safety_label(self) -> str | None:
         safety = self.current_state.get("safety", {})
-        if isinstance(safety, dict):
-            names = {"SAFE_NORMAL": "normal OS behavior", "RECOVERY": "recovered; re-arm required",
-                     "LID_IGNORE_ARMED": "armed; lid open", "LID_CLOSED_MONITORED": "monitoring closed lid",
-                     "LID_CLOSED_WARNING": "safety warning — inspect heat/battery/telemetry",
-                     "LID_CLOSED_HIGH_RISK": "high risk — open the lid",
-                     "PROTECTIVE_ACTION_FAILED": "protection FAILED — open the lid",
-                     "PROTECTIVE_ACTION_PENDING": "protective action requested", "PROTECTIVE_ACTION_EXECUTED": "suspend transition confirmed"}
-            label = names.get(safety.get("state"), "unavailable")
-            if self.current_state.get("ignore_lid_close"):
-                label += " (continuous; power-saver cooling active)"
-            self.safety_item.set_label("Lid safety: " + label + " | Temperature: "
-                                       + str(safety.get("thermal", "UNKNOWN"))
-                                       + " | Protection: " + str(safety.get("thermal_protection", "UNKNOWN")))
+        if not isinstance(safety, dict):
+            return None
+        label = _(SAFETY_STATE_NAMES.get(safety.get("state"), N_("unavailable")))
+        if self.current_state.get("ignore_lid_close"):
+            # U2: claim active cooling only once the hold has been verified.
+            label = safe_format(N_("{state} (continuous; power-saver cooling active)") if self.cooling_verified
+                                else N_("{state} (continuous; power-saver cooling not confirmed)"), state=label)
+        return safe_format(N_("Lid safety: {state} | Temperature: {thermal} | Protection: {protection}"),
+                           state=label,
+                           thermal=thermal_text(safety.get("thermal", "UNKNOWN")),
+                           protection=protection_text(safety.get("thermal_protection", "UNKNOWN")))
+
+    def _refresh_safety_label(self) -> None:
+        item = getattr(self, "safety_item", None)
+        if item is None or not self.connected:
+            return
+        label = self._safety_label()
+        if label is not None:
+            item.set_label(label)
+
+    def _update_menu(self, locked: frozenset[str], hotkey: str) -> None:
+        label = self._safety_label()
+        if label is not None:
+            self.safety_item.set_label(label)
         ignore_lid = self.current_state.get("ignore_lid_close") is True
         policy_healthy = self.current_state.get("lid_policy_healthy") is True
         if locked:
-            self.status_item.set_label("Input Lock — Locked")
-            self.toggle_item.set_label("Unlock Input")
+            self.status_item.set_label(_("Input Lock — Locked"))
+            self.toggle_item.set_label(_("Unlock Input"))
             icon = (
                 "input-lock-locked-lid-ignored"
                 if ignore_lid
                 else "input-lock-locked"
             )
             description = (
-                "Input is locked; lid close is ignored"
+                _("Input is locked; lid close is ignored")
                 if ignore_lid
-                else "Input is locked"
+                else _("Input is locked")
             )
         else:
-            self.status_item.set_label("Input Lock — Unlocked")
-            self.toggle_item.set_label("Lock Input")
+            self.status_item.set_label(_("Input Lock — Unlocked"))
+            self.toggle_item.set_label(_("Lock Input"))
             icon = (
                 "input-lock-unlocked-lid-ignored"
                 if ignore_lid
                 else "input-lock-unlocked"
             )
             description = (
-                "Input is unlocked; lid close is ignored"
+                _("Input is unlocked; lid close is ignored")
                 if ignore_lid
-                else "Input is unlocked"
+                else _("Input is unlocked")
             )
         self.indicator.set_icon_full(icon, description)
-        self.shortcut_item.set_label(f"Shortcut: {self._display_hotkey(hotkey)}")
+        self.shortcut_item.set_label(
+            safe_format(N_("Shortcut: {shortcut}"), shortcut=self._display_hotkey(hotkey)))
         self.updating_lid_item = True
-        self.lid_item.set_active(ignore_lid)
-        self.lid_item.set_label(
-            CONTINUOUS_LID_LABEL
-            if not ignore_lid or policy_healthy
-            else "Ignore Lid Close (safety unavailable)"
-        )
-        lid_count = self.current_state.get("lid_switch_devices", 0)
-        self.lid_item.set_sensitive(isinstance(lid_count, int) and lid_count > 0)
-        self.updating_lid_item = False
+        try:
+            self.lid_item.set_active(ignore_lid)
+            self.lid_item.set_label(_(
+                CONTINUOUS_LID_LABEL
+                if not ignore_lid or policy_healthy
+                else LID_SAFETY_UNAVAILABLE_LABEL
+            ))
+            lid_count = self.current_state.get("lid_switch_devices", 0)
+            self.lid_item.set_sensitive(
+                isinstance(lid_count, int) and lid_count > 0 and not self.enable_in_flight)
+        finally:
+            self.updating_lid_item = False
         self.toggle_item.set_sensitive(True)
 
-    def _show_disconnected(self) -> bool:
-        guard = getattr(self, "idle_guard", None)
-        cooling = getattr(self, "power_guard", None)
-        if guard is not None:
-            guard.release()
-        if cooling is not None:
-            cooling.release()
+    def _show_disconnected(self, detail: str | None = None) -> bool:
+        """Daemon unreachable: never claim lid-ignore is active (U1)."""
+        lid_was_on = self.connected and self.current_state.get("ignore_lid_close") is True
         self.connected = False
-        self.status_item.set_label("Input Lock — Service unavailable")
-        self.safety_item.set_label("Lid safety: disconnected — status unknown; open the lid")
+        self.state_stale = True
+        self.cooling_verified = False
+        if self.current_state:
+            # Keep display-only values (hotkeys) but never a stale lid state.
+            self.current_state = {**self.current_state, "ignore_lid_close": False,
+                                  "lid_no_suspend_effective": False, "stale": True}
+        if lid_was_on:
+            own = self.own_disable_reason
+            self.own_disable_reason = None
+            if own is None:
+                LOG.warning("Ignore Lid Close lost: daemon connection lost")
+                self._notify_lid_lost("daemon-unavailable", self.current_state)
+                self._start_idle_grace(self.current_state)
+                # U-R1: the daemon may have dropped us for a reason it
+                # records; correct the cause on the next subscription.
+                self.unavailable_reported = True
+                self.unavailable_since_at = self.last_disable_at
+        if self.idle_guard is not None and not self.enable_in_flight:
+            keep_idle = self.grace_until is not None
+            self._run_lease(self._release_leases_job, not keep_idle, True)
+        self.indicator.set_icon_full(DISCONNECTED_ICON, _("Input Lock service unavailable"))
+        if detail == "another-tray":
+            self.status_item.set_label(_("Input Lock — Another tray is in control"))
+            self.safety_item.set_label(_("Lid safety: managed by the other Input Lock tray"))
+        else:
+            self.status_item.set_label(_("Input Lock — Service unavailable"))
+            self.safety_item.set_label(_("Lid safety: disconnected — status unknown; open the lid"))
         self.toggle_item.set_sensitive(False)
         self._restore_lid_item()
         return False
@@ -595,17 +1240,26 @@ class TrayNotifier:
     def _action_error(self, title: str, error: Exception) -> bool:
         if isinstance(error, OSError) and error.errno in {errno.ENOENT, errno.ECONNREFUSED}:
             self._show_disconnected()
-            return self._show_error(title, "InputLock background service unavailable. Open the lid and check "
-                                    "input-lock.service with systemctl status input-lock.service. "
-                                    "After the service is repaired, the tray will reconnect automatically.")
+            return self._show_error(title, _(
+                "InputLock background service unavailable. Open the lid and check "
+                "input-lock.service with systemctl status input-lock.service. "
+                "After the service is repaired, the tray will reconnect automatically."))
         self.toggle_item.set_sensitive(getattr(self, "connected", False))
-        return self._show_error(title, str(error))
+        return self._show_error(title, daemon_text(str(error)))
+
+    def _mark_tray_unlock(self) -> None:
+        # emergency-unlock also ends lid-ignore; when the tray sent it on the
+        # user's behalf, that loss is user-initiated, not a critical surprise.
+        self.tray_unlock_until = time.monotonic() + 10.0
 
     def _on_toggle(self, _item: Gtk.MenuItem) -> None:
         self.toggle_item.set_sensitive(False)
+        unlocking = bool(self.current_state.get("locked_kinds"))
+        if unlocking:
+            self._mark_tray_unlock()
         threading.Thread(
             target=self._toggle_worker,
-            args=(bool(self.current_state.get("locked_kinds")),),
+            args=(unlocking,),
             name="input-lock-tray-action",
             daemon=True,
         ).start()
@@ -620,7 +1274,7 @@ class TrayNotifier:
                 )
             )
         except Exception as exc:
-            GLib.idle_add(self._action_error, "Input Lock", exc)
+            GLib.idle_add(self._action_error, _("Input Lock"), exc)
 
     @staticmethod
     def _event_hotkey(event: Gdk.EventKey) -> str | None:
@@ -652,28 +1306,28 @@ class TrayNotifier:
         return "+".join([*modifiers, key])
 
     def _on_settings(self, _item: Gtk.MenuItem) -> None:
-        dialog = Gtk.Dialog(title="Input Lock Settings", flags=Gtk.DialogFlags.MODAL)
+        dialog = Gtk.Dialog(title=_("Input Lock Settings"), flags=Gtk.DialogFlags.MODAL)
         dialog.set_default_size(480, 380)
         dialog.set_position(Gtk.WindowPosition.CENTER)
         dialog.set_keep_above(True)
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Save", Gtk.ResponseType.APPLY)
+        dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+        dialog.add_button(_("Save"), Gtk.ResponseType.APPLY)
 
         box = dialog.get_content_area()
         box.set_spacing(12)
         box.set_border_width(18)
 
         title = Gtk.Label()
-        title.set_markup("<b>Lock these devices</b>")
+        title.set_markup("<b>" + GLib.markup_escape_text(_("Lock these devices")) + "</b>")
         title.set_xalign(0)
         box.add(title)
 
         configured = self.current_state.get("default_locked_kinds", [])
         if not isinstance(configured, list):
             configured = ["keyboard", "mouse", "touchpad", "touchscreen"]
-        keyboard = Gtk.CheckButton(label="Keyboard")
-        pointer = Gtk.CheckButton(label="Mouse and touchpad")
-        touchscreen = Gtk.CheckButton(label="Touchscreen")
+        keyboard = Gtk.CheckButton(label=_("Keyboard"))
+        pointer = Gtk.CheckButton(label=_("Mouse and touchpad"))
+        touchscreen = Gtk.CheckButton(label=_("Touchscreen"))
         keyboard.set_active("keyboard" in configured)
         pointer.set_active("mouse" in configured or "touchpad" in configured)
         touchscreen.set_active("touchscreen" in configured)
@@ -682,15 +1336,14 @@ class TrayNotifier:
 
         box.add(Gtk.Separator())
         shortcut = Gtk.Label(
-            label="Shortcut: "
-            + self._display_hotkey(
+            label=_("Shortcut: {shortcut}").format(shortcut=self._display_hotkey(
                 str(self.current_state.get("primary_hotkey", "CTRL+ALT+Z"))
-            )
+            ))
         )
         shortcut.set_xalign(0)
         shortcut_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         shortcut_row.pack_start(shortcut, True, True, 0)
-        change_shortcut = Gtk.Button(label="Change Shortcut…")
+        change_shortcut = Gtk.Button(label=_("Change Shortcut…"))
         change_shortcut.connect("clicked", lambda _button: dialog.response(1001))
         shortcut_row.pack_end(change_shortcut, False, False, 0)
         box.add(shortcut_row)
@@ -703,30 +1356,32 @@ class TrayNotifier:
 
         def refresh_allowed_summary() -> None:
             allowed_summary.set_text(
-                "Keys allowed while locked: "
-                + (f"{len(allowed_keys)} selected" if allowed_keys else "None")
+                ngettext("Keys allowed while locked: {count} selected",
+                         "Keys allowed while locked: {count} selected",
+                         len(allowed_keys)).format(count=len(allowed_keys))
+                if allowed_keys else _("Keys allowed while locked: None")
             )
 
         refresh_allowed_summary()
         allowed_row.pack_start(allowed_summary, True, True, 0)
-        allowed_button = Gtk.Button(label="Manage Keys…")
+        allowed_button = Gtk.Button(label=_("Manage Keys…"))
         allowed_button.connect("clicked", lambda _button: dialog.response(1002))
         allowed_row.pack_end(allowed_button, False, False, 0)
         box.add(allowed_row)
 
-        startup = Gtk.CheckButton(label="Start Input Lock when I log in")
-        startup.set_active(self._autostart_enabled())
+        startup = Gtk.CheckButton(label=_("Start Input Lock when I log in"))
+        startup.set_active(self.autostart_cached)
         box.add(startup)
 
         box.add(Gtk.Separator())
-        idle_enabled = Gtk.CheckButton(label="Automatically lock after no activity")
+        idle_enabled = Gtk.CheckButton(label=_("Automatically lock after no activity"))
         idle_enabled.set_active(
             self.current_state.get("idle_lock_enabled") is True
         )
         box.add(idle_enabled)
 
         idle_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        idle_label = Gtk.Label(label="No activity for")
+        idle_label = Gtk.Label(label=_("No activity for"))
         idle_label.set_xalign(0)
         idle_row.pack_start(idle_label, False, False, 0)
         idle_minutes = Gtk.Entry()
@@ -755,7 +1410,7 @@ class TrayNotifier:
         idle_row.pack_start(decrease_idle, False, False, 0)
         idle_row.pack_start(idle_minutes, False, False, 0)
         idle_row.pack_start(increase_idle, False, False, 0)
-        idle_row.pack_start(Gtk.Label(label="minutes"), False, False, 0)
+        idle_row.pack_start(Gtk.Label(label=_("minutes")), False, False, 0)
         box.add(idle_row)
 
         def update_idle_sensitivity(_button: Gtk.CheckButton | None = None) -> None:
@@ -766,12 +1421,37 @@ class TrayNotifier:
 
         box.add(Gtk.Separator())
         cursor_config = self._load_cursor_settings()
-        hide_cursor = Gtk.CheckButton(label="Hide cursor after no activity")
+        hide_cursor = Gtk.CheckButton(label=_("Hide cursor after no activity"))
         hide_cursor.set_active(cursor_config["enabled"])
         box.add(hide_cursor)
 
+        # U5: cursor hiding is done by the GNOME Shell extension; say so when
+        # it is not enabled instead of silently doing nothing.
+        extension_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        extension_state = cursor_extension_enabled()
+        extension_label = Gtk.Label(label=self._cursor_extension_text(extension_state))
+        extension_label.set_xalign(0)
+        extension_label.set_line_wrap(True)
+        extension_row.pack_start(extension_label, True, True, 0)
+        if extension_state is not True:
+            enable_extension = Gtk.Button(label=_("Enable Extension"))
+
+            def on_enable_extension(button: Gtk.Button) -> None:
+                button.set_sensitive(False)
+                extension_label.set_text(_("Enabling the cursor extension…"))
+                threading.Thread(
+                    target=self._enable_cursor_extension_worker,
+                    args=(extension_label, button),
+                    name="input-lock-cursor-extension",
+                    daemon=True,
+                ).start()
+
+            enable_extension.connect("clicked", on_enable_extension)
+            extension_row.pack_end(enable_extension, False, False, 0)
+        box.add(extension_row)
+
         cursor_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        cursor_row.pack_start(Gtk.Label(label="Hide cursor after"), False, False, 0)
+        cursor_row.pack_start(Gtk.Label(label=_("Hide cursor after")), False, False, 0)
         cursor_minutes = Gtk.Entry()
         cursor_minutes.set_width_chars(3)
         cursor_minutes.set_max_length(4)
@@ -812,12 +1492,12 @@ class TrayNotifier:
         minutes_column.pack_start(increase_cursor_minutes, False, False, 0)
         minutes_column.pack_start(cursor_minutes, False, False, 0)
         minutes_column.pack_start(decrease_cursor_minutes, False, False, 0)
-        minutes_column.pack_start(Gtk.Label(label="minutes"), False, False, 0)
+        minutes_column.pack_start(Gtk.Label(label=_("minutes")), False, False, 0)
         seconds_column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         seconds_column.pack_start(increase_cursor_seconds, False, False, 0)
         seconds_column.pack_start(cursor_seconds, False, False, 0)
         seconds_column.pack_start(decrease_cursor_seconds, False, False, 0)
-        seconds_column.pack_start(Gtk.Label(label="seconds"), False, False, 0)
+        seconds_column.pack_start(Gtk.Label(label=_("seconds")), False, False, 0)
         cursor_row.pack_start(minutes_column, False, False, 0)
         cursor_row.pack_start(seconds_column, False, False, 0)
         box.add(cursor_row)
@@ -827,6 +1507,23 @@ class TrayNotifier:
 
         hide_cursor.connect("toggled", update_cursor_sensitivity)
         update_cursor_sensitivity()
+
+        box.add(Gtk.Separator())
+        language_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        language_label = Gtk.Label(label=_("Language:"))
+        language_label.set_xalign(0)
+        language_row.pack_start(language_label, False, False, 0)
+        language_choice = Gtk.ComboBoxText()
+        for value, name in self._language_choices():
+            language_choice.append(value, name)
+        initial_language = i18n.read_ui_language(CURSOR_SETTINGS_PATH)
+        language_choice.set_active_id(initial_language)
+        language_row.pack_start(language_choice, False, False, 0)
+        box.add(language_row)
+        language_note = Gtk.Label(label=_(LANGUAGE_NOTE))
+        language_note.set_xalign(0)
+        language_note.set_line_wrap(True)
+        box.add(language_note)
 
         warning = Gtk.Label()
         warning.set_xalign(0)
@@ -839,9 +1536,8 @@ class TrayNotifier:
                 dialog.hide()
                 self._on_change_shortcut(self.settings_item)
                 if self.selected_hotkey:
-                    shortcut.set_text(
-                        "Shortcut: " + self._display_hotkey(self.selected_hotkey)
-                    )
+                    shortcut.set_text(_("Shortcut: {shortcut}").format(
+                        shortcut=self._display_hotkey(self.selected_hotkey)))
                 dialog.show_all()
                 continue
             if response == 1002:
@@ -863,31 +1559,32 @@ class TrayNotifier:
             if touchscreen.get_active():
                 kinds.append("touchscreen")
             if not kinds:
-                warning.set_text("Select at least one device type.")
+                warning.set_text(_("Select at least one device type."))
                 continue
             start_at_login = startup.get_active()
             idle_lock_enabled = idle_enabled.get_active()
             try:
                 minutes = int(idle_minutes.get_text())
             except ValueError:
-                warning.set_text("Enter a whole number of minutes.")
+                warning.set_text(_("Enter a whole number of minutes."))
                 continue
             if not 1 <= minutes <= 1440:
-                warning.set_text("Idle time must be between 1 and 1440 minutes.")
+                warning.set_text(_("Idle time must be between 1 and 1440 minutes."))
                 continue
             idle_lock_seconds = minutes * 60
             try:
                 hide_minutes = int(cursor_minutes.get_text())
                 hide_seconds = int(cursor_seconds.get_text())
             except ValueError:
-                warning.set_text("Enter whole numbers for cursor minutes and seconds.")
+                warning.set_text(_("Enter whole numbers for cursor minutes and seconds."))
                 continue
             if not 0 <= hide_minutes <= 1439 or not 0 <= hide_seconds <= 59:
-                warning.set_text("Cursor time must use 0–1439 minutes and 0–59 seconds.")
+                warning.set_text(_("Cursor time must use 0–1439 minutes and 0–59 seconds."))
                 continue
             cursor_timeout = hide_minutes * 60 + hide_seconds
+            chosen_language = language_choice.get_active_id() or "auto"
             if hide_cursor.get_active() and cursor_timeout < 1:
-                warning.set_text("Cursor hiding time must be at least one second.")
+                warning.set_text(_("Cursor hiding time must be at least one second."))
                 continue
             dialog.destroy()
             threading.Thread(
@@ -900,6 +1597,7 @@ class TrayNotifier:
                     hide_cursor.get_active(),
                     max(1, cursor_timeout),
                     allowed_keys,
+                    chosen_language if chosen_language != initial_language else None,
                 ),
                 name="input-lock-settings",
                 daemon=True,
@@ -915,6 +1613,7 @@ class TrayNotifier:
         hide_cursor_enabled: bool,
         hide_cursor_seconds: int,
         allowed_keys: list[str],
+        ui_language: str | None = None,
     ) -> None:
         try:
             response_ok(
@@ -932,6 +1631,10 @@ class TrayNotifier:
                 )
             )
             self._save_cursor_settings(hide_cursor_enabled, hide_cursor_seconds)
+            if ui_language is not None:
+                # Applied at the next tray start: rebuilding the running tray
+                # would mean restarting it, which ends lid-ignore (U8).
+                i18n.write_ui_language(ui_language, CURSOR_SETTINGS_PATH)
             response_ok(
                 send_request(
                     {
@@ -944,38 +1647,44 @@ class TrayNotifier:
                 )
             )
         except Exception as exc:
-            GLib.idle_add(self._show_error, "Settings Failed", str(exc))
+            GLib.idle_add(self._show_error, _("Settings Failed"), daemon_text(str(exc)))
             return
         if start_at_login != self._autostart_enabled():
             self._autostart_worker(start_at_login)
+        elif ui_language is not None:
+            GLib.idle_add(self._show_info, _("Settings Saved"),
+                          _("Your settings were saved.") + " " + _(LANGUAGE_NOTE))
         else:
-            GLib.idle_add(self._show_info, "Settings Saved", "Your settings were saved.")
+            GLib.idle_add(self._show_info, _("Settings Saved"), _("Your settings were saved."))
 
     def _edit_allowed_keys(
         self, parent: Gtk.Dialog, initial: list[str]
     ) -> list[str] | None:
-        dialog = Gtk.Dialog(title="Keys Allowed While Locked", transient_for=parent, flags=Gtk.DialogFlags.MODAL)
+        dialog = Gtk.Dialog(title=_("Keys Allowed While Locked"), transient_for=parent,
+                            flags=Gtk.DialogFlags.MODAL)
         dialog.set_default_size(480, 430)
         dialog.set_keep_above(True)
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Done", Gtk.ResponseType.APPLY)
+        dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+        dialog.add_button(_("Done"), Gtk.ResponseType.APPLY)
         box = dialog.get_content_area()
         box.set_spacing(10)
         box.set_border_width(16)
-        system_title = Gtk.Label(label="System recovery shortcuts (always available)")
+        system_title = Gtk.Label(label=_("System recovery shortcuts (always available)"))
         system_title.set_xalign(0)
         box.add(system_title)
         for text in (
-            f"Primary: {self._display_hotkey(str(self.current_state.get('primary_hotkey', 'CTRL+ALT+Z')))}",
-            f"Emergency: {self._display_hotkey(str(self.current_state.get('emergency_hotkey', 'CTRL+ALT+SHIFT+F12')))}",
-            "TTY recovery: Ctrl+Alt+F1–F12",
+            _("Primary: {shortcut}").format(shortcut=self._display_hotkey(
+                str(self.current_state.get("primary_hotkey", "CTRL+ALT+Z")))),
+            _("Emergency: {shortcut}").format(shortcut=self._display_hotkey(
+                str(self.current_state.get("emergency_hotkey", "CTRL+ALT+SHIFT+F12")))),
+            _("TTY recovery: {shortcut}").format(shortcut="Ctrl+Alt+F1–F12"),
         ):
             label = Gtk.Label(label=text)
             label.set_xalign(0)
             label.set_sensitive(False)
             box.add(label)
         box.add(Gtk.Separator())
-        note = Gtk.Label(label="These individual keys continue to reach applications while the keyboard is locked.")
+        note = Gtk.Label(label=_("These individual keys continue to reach applications while the keyboard is locked."))
         note.set_xalign(0)
         note.set_line_wrap(True)
         box.add(note)
@@ -996,17 +1705,18 @@ class TrayNotifier:
                 label = Gtk.Label(label=display_key(key))
                 label.set_xalign(0)
                 row.pack_start(label, True, True, 8)
-                remove = Gtk.Button(label="Remove")
+                remove = Gtk.Button(label=_("Remove"))
                 remove.connect("clicked", lambda _button, value=key: (selected.remove(value), rebuild()))
                 row.pack_end(remove, False, False, 4)
                 key_list.add(row)
             key_list.show_all()
 
         def add_key(_button: Gtk.Button) -> None:
-            capture = Gtk.Dialog(title="Add Allowed Key", transient_for=dialog, flags=Gtk.DialogFlags.MODAL)
+            capture = Gtk.Dialog(title=_("Add Allowed Key"), transient_for=dialog,
+                                 flags=Gtk.DialogFlags.MODAL)
             capture.set_default_size(360, 140)
-            capture.add_button("Cancel", Gtk.ResponseType.CANCEL)
-            message = Gtk.Label(label="Press one key. Modifier keys cannot be added.")
+            capture.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+            message = Gtk.Label(label=_("Press one key. Modifier keys cannot be added."))
             message.set_margin_top(22)
             message.set_margin_bottom(22)
             capture.get_content_area().add(message)
@@ -1023,12 +1733,12 @@ class TrayNotifier:
                     else gtk_key_to_canonical(name)
                 )
                 if key is None:
-                    message.set_text("That key is not supported. Try a letter, number, function or media key.")
+                    message.set_text(_("That key is not supported. Try a letter, number, function or media key."))
                     return True
                 primary_key = str(self.current_state.get("primary_hotkey", "CTRL+ALT+Z")).split("+")[-1]
                 emergency_key = str(self.current_state.get("emergency_hotkey", "CTRL+ALT+SHIFT+F12")).split("+")[-1]
                 if key in {primary_key, emergency_key} or key in {f"F{n}" for n in range(1, 13)}:
-                    message.set_text("That key belongs to a fixed recovery shortcut.")
+                    message.set_text(_("That key belongs to a fixed recovery shortcut."))
                     return True
                 chosen.append(key)
                 capture.response(Gtk.ResponseType.APPLY)
@@ -1042,7 +1752,7 @@ class TrayNotifier:
                 selected.append(chosen[0])
                 rebuild()
 
-        add = Gtk.Button(label="Add Key…")
+        add = Gtk.Button(label=_("Add Key…"))
         add.connect("clicked", add_key)
         box.add(add)
         rebuild()
@@ -1050,6 +1760,53 @@ class TrayNotifier:
         response = dialog.run()
         dialog.destroy()
         return selected if response == Gtk.ResponseType.APPLY else None
+
+    @staticmethod
+    def _cursor_extension_text(enabled: bool | None) -> str:
+        if enabled is True:
+            return _("Cursor hiding extension: enabled.")
+        if enabled is False:
+            return _("Cursor hiding extension: disabled — the cursor will not be hidden "
+                     "until the Input Lock Cursor Hider GNOME extension is enabled.")
+        return _("Cursor hiding extension: status unknown (GNOME Shell settings unavailable).")
+
+    @staticmethod
+    def _language_choices() -> list[tuple[str, str]]:
+        """(ui_language value, label) for the Settings language selector."""
+        return [("auto", _("Automatic (system language)")),
+                ("he", LANGUAGE_NAMES["he"]), ("en", LANGUAGE_NAMES["en"])]
+
+    @staticmethod
+    def _enable_cursor_extension() -> tuple[bool, str]:
+        """Run `gnome-extensions enable` (blocking; call from a worker)."""
+        tool = shutil.which("gnome-extensions")
+        if not tool:
+            return False, _("The gnome-extensions command is not installed.")
+        try:
+            result = subprocess.run(
+                [tool, "enable", CURSOR_EXTENSION_UUID],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, str(exc)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip() or _("gnome-extensions failed")
+            return False, _("{detail} If GNOME does not know the extension yet, log out and "
+                            "back in once, then try again.").format(detail=detail)
+        return True, _("Cursor hiding extension: enabled.")
+
+    def _enable_cursor_extension_worker(self, label: Gtk.Label, button: Gtk.Button) -> None:
+        ok, message = self._enable_cursor_extension()
+
+        def finish() -> bool:
+            try:
+                label.set_text(message)
+                button.set_sensitive(not ok)
+            except Exception:
+                pass  # the dialog was closed meanwhile
+            return False
+
+        GLib.idle_add(finish)
 
     @staticmethod
     def _load_cursor_settings() -> dict[str, object]:
@@ -1069,31 +1826,26 @@ class TrayNotifier:
 
     @staticmethod
     def _save_cursor_settings(enabled: bool, seconds: int) -> None:
-        CURSOR_SETTINGS_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        temporary = CURSOR_SETTINGS_PATH.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps({"enabled": enabled, "seconds": seconds}, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, CURSOR_SETTINGS_PATH)
+        # The file also holds ui_language; keep every other key.
+        i18n.update_user_settings(CURSOR_SETTINGS_PATH, enabled=enabled, seconds=seconds)
 
     def _on_change_shortcut(self, _item: Gtk.MenuItem) -> None:
-        dialog = Gtk.Dialog(title="Change Shortcut", flags=Gtk.DialogFlags.MODAL)
+        dialog = Gtk.Dialog(title=_("Change Shortcut"), flags=Gtk.DialogFlags.MODAL)
         dialog.set_default_size(420, 170)
         dialog.set_position(Gtk.WindowPosition.CENTER)
         dialog.set_keep_above(True)
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        apply_button = dialog.add_button("Apply", Gtk.ResponseType.APPLY)
+        dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+        apply_button = dialog.add_button(_("Apply"), Gtk.ResponseType.APPLY)
         apply_button.set_sensitive(False)
 
         box = dialog.get_content_area()
         box.set_spacing(12)
         box.set_border_width(18)
-        label = Gtk.Label(label="Press a shortcut with at least two modifiers.\nSupported keys: A–Z, 0–9, and F1–F12.")
+        label = Gtk.Label(label=_("Press a shortcut with at least two modifiers.\n"
+                                  "Supported keys: A–Z, 0–9, and F1–F12."))
         label.set_justify(Gtk.Justification.CENTER)
         box.add(label)
-        selected = Gtk.Label(label="Waiting for shortcut…")
+        selected = Gtk.Label(label=_("Waiting for shortcut…"))
         selected.get_style_context().add_class("title")
         box.add(selected)
         warning = Gtk.Label()
@@ -1108,12 +1860,12 @@ class TrayNotifier:
             if candidate is None:
                 return False
             if not candidate:
-                warning.set_text("Use at least two modifiers and one supported key.")
+                warning.set_text(_("Use at least two modifiers and one supported key."))
                 apply_button.set_sensitive(False)
                 return True
             emergency = str(self.current_state.get("emergency_hotkey", "CTRL+ALT+SHIFT+F12"))
             if candidate == emergency:
-                warning.set_text("This shortcut is reserved for emergency unlock.")
+                warning.set_text(_("This shortcut is reserved for emergency unlock."))
                 apply_button.set_sensitive(False)
                 return True
             self.selected_hotkey = candidate
@@ -1145,14 +1897,21 @@ class TrayNotifier:
                 timeout=10,
             )
             if result.returncode != 0:
-                raise RuntimeError(result.stderr.strip() or "Could not change the shortcut.")
+                raise RuntimeError(result.stderr.strip() or _("Could not change the shortcut."))
             GLib.idle_add(
                 self._show_info,
-                "Shortcut Changed",
-                f"The new shortcut is {self._display_hotkey(hotkey)}.",
+                _("Shortcut Changed"),
+                _("The new shortcut is {shortcut}.").format(shortcut=self._display_hotkey(hotkey)),
             )
         except Exception as exc:
-            GLib.idle_add(self._show_error, "Shortcut Change Failed", str(exc))
+            GLib.idle_add(self._show_error, _("Shortcut Change Failed"), str(exc))
+
+    def _reset_lid_item(self, item: Gtk.CheckMenuItem) -> None:
+        self.updating_lid_item = True
+        try:
+            item.set_active(False)
+        finally:
+            self.updating_lid_item = False
 
     def _on_lid_toggled(self, item: Gtk.CheckMenuItem) -> None:
         if self.updating_lid_item:
@@ -1163,38 +1922,30 @@ class TrayNotifier:
                 flags=Gtk.DialogFlags.MODAL,
                 message_type=Gtk.MessageType.WARNING,
                 buttons=Gtk.ButtonsType.YES_NO,
-                text="Keep running with the lid closed?",
+                text=_(LID_CONFIRM_TITLE),
             )
-            dialog.format_secondary_text(
-                "Lid closure will be ignored continuously, with NO 2/4-minute timeout. "
-                "This stays enabled until you turn it off, or a safety/fail-safe condition intervenes. "
-                "Dangerous temperature, critical battery, lost monitoring or controller/daemon failure can request regular OS suspend. "
-                "GNOME idle suspend is prevented and a temporary power-saver cooling profile is held while enabled; "
-                "the previous performance preference automatically returns when disabled. "
-                "Manual system sleep and OS critical-battery protection remain available. "
-                "The setting starts OFF after a service restart or reboot. "
-                "Keep the lid OPEN when enabling, keep the vents unobstructed, and NEVER put the running laptop in a bag."
-            )
+            dialog.format_secondary_text(" ".join(
+                (_(LID_CONFIRM_BODY), _(TRAY_STOP_NOTE), _(LID_CONFIRM_WARNING))))
             dialog.set_keep_above(True)
             response = dialog.run()
             dialog.destroy()
             if response != Gtk.ResponseType.YES:
-                self.updating_lid_item = True
-                item.set_active(False)
-                self.updating_lid_item = False
+                self._reset_lid_item(item)
                 return
-            try:
-                # Acquire cooling BEFORE even requesting the lid inhibitor:
-                # the user may physically close the lid immediately after
-                # accepting the dialog. Temperature supervision remains armed.
-                self.power_guard.acquire()
-            except Exception as exc:
-                self.updating_lid_item = True
-                item.set_active(False)
-                self.updating_lid_item = False
-                self._show_error(
-                    "Lid Safety", "Temporary power-saver cooling unavailable: " + str(exc))
+            if self.current_state.get("lid_is_closed") is True:
+                self._reset_lid_item(item)
+                self._show_error(_(LID_LABEL), _("Open the lid first, then turn Ignore Lid Close on."))
                 return
+            if self.enable_in_flight:
+                return
+            # Acquire cooling BEFORE even requesting the lid inhibitor: the
+            # user may physically close the lid immediately after accepting
+            # the dialog. Both steps run on the lease worker (U4); the
+            # reconcile path will not release this hold meanwhile (U6).
+            self.enable_in_flight = True
+            item.set_sensitive(False)
+            self._run_lease(self._enable_job, self.current_state.get("lid_generation"))
+            return
         item.set_sensitive(False)
         threading.Thread(
             target=self._lid_toggle_worker,
@@ -1202,6 +1953,82 @@ class TrayNotifier:
             name="input-lock-lid-change",
             daemon=True,
         ).start()
+
+    def _enable_job(self, generation: int | None) -> None:
+        cooling = self.power_guard
+        try:
+            if cooling is not None:
+                cooling.acquire()
+        except Exception as exc:
+            self._to_main(self._enable_finished, False,
+                          _("Temporary power-saver cooling unavailable: {error}").format(
+                              error=daemon_text(str(exc))), None)
+            return
+        try:
+            # Captured generation prevents delayed UI work from undoing a later
+            # disable/session loss. Only the daemon owns effective lid state.
+            response_ok(send_request(
+                {"cmd": "set-lid-ignore", "enabled": True, "generation": generation},
+                socket_path=self.config.socket_path, timeout=5.0))
+        except Exception as exc:
+            # U6: never leave the pre-enable hold behind a failed request.
+            if cooling is not None and self.current_state.get("ignore_lid_close") is not True:
+                cooling.release()
+            self._to_main(self._enable_finished, False, None, exc)
+            return
+        self._to_main(self._enable_finished, True, None, None)
+
+    def _enable_finished(self, ok: bool, message: str | None, error: Exception | None) -> bool:
+        self.enable_in_flight = False
+        if ok:
+            if self.current_state.get("ignore_lid_close") is True:
+                self._reconcile_idle_guard(self.current_state)
+            else:
+                # The state event normally follows the reply; if it never
+                # shows lid-ignore on, reconcile then (releasing the hold).
+                GLib.timeout_add_seconds(3, self._reconcile_after_enable)
+            self._restore_lid_item()
+            return False
+        # U-R6: the idle grace timer may have expired while this request was
+        # in flight (it does not release then); reconcile now so neither the
+        # cooling hold nor the idle inhibitor outlives the failed enable.
+        try:
+            self._reconcile_idle_guard(self.current_state)
+        except Exception:  # noqa: BLE001 - never hide the error dialog below
+            LOG.exception("Could not reconcile leases after a failed enable")
+        self._restore_lid_item()
+        if error is not None:
+            self._action_error(_("Lid Setting Failed"), error)
+        else:
+            self._show_error(_("Lid Safety"), message or _("Ignore Lid Close could not be turned on."))
+        return False
+
+    def _reconcile_after_enable(self) -> bool:
+        if not self.enable_in_flight:
+            self._reconcile_idle_guard(self.current_state)
+        return False
+
+    def _offer_reenable(self) -> bool:
+        """Handle the "Re-enable…" action: same dialog, open lid, no auto-arm."""
+        if not self.connected:
+            self._show_error(_(LID_LABEL), _("The Input Lock service is not available. "
+                                             "When the tray reconnects, turn Ignore Lid Close on "
+                                             "from its menu."))
+            return False
+        state = self.current_state
+        if state.get("ignore_lid_close") is True or self.enable_in_flight:
+            return False
+        if state.get("lid_is_closed") is True:
+            self._show_error(_(LID_LABEL), _("Open the lid first, then choose “Re-enable…” again "
+                                             "or use the Input Lock tray menu."))
+            return False
+        lid_count = state.get("lid_switch_devices", 0)
+        if not isinstance(lid_count, int) or lid_count <= 0:
+            self._show_error(_(LID_LABEL), _("No lid switch is available right now."))
+            return False
+        # Emits "toggled" -> _on_lid_toggled -> the usual confirmation dialog.
+        self.lid_item.set_active(True)
+        return False
 
     def _lid_toggle_worker(self, enabled: bool, generation: int | None) -> None:
         try:
@@ -1212,25 +2039,30 @@ class TrayNotifier:
                 socket_path=self.config.socket_path, timeout=5.0))
         except Exception as exc:
             GLib.idle_add(self._restore_lid_item)
-            GLib.idle_add(self._action_error, "Lid Setting Failed", exc)
+            GLib.idle_add(self._action_error, _("Lid Setting Failed"), exc)
 
 
     def _restore_lid_item(self) -> bool:
-        if not getattr(self, "connected", False):
-            self.lid_item.set_sensitive(False)
-            self.lid_item.set_label("Ignore Lid Switch (service unavailable)")
-            return False
-        enabled = self.current_state.get("ignore_lid_close") is True
         self.updating_lid_item = True
-        self.lid_item.set_active(enabled)
-        self.lid_item.set_label(
-            CONTINUOUS_LID_LABEL
-            if not enabled or self.current_state.get("lid_policy_healthy") is True
-            else "Ignore Lid Close (safety unavailable)"
-        )
-        lid_count = self.current_state.get("lid_switch_devices", 0)
-        self.lid_item.set_sensitive(isinstance(lid_count, int) and lid_count > 0)
-        self.updating_lid_item = False
+        try:
+            if not self.connected:
+                # U1: unchecked, insensitive, consistent wording.
+                self.lid_item.set_active(False)
+                self.lid_item.set_sensitive(False)
+                self.lid_item.set_label(_(LID_UNAVAILABLE_LABEL))
+                return False
+            enabled = self.current_state.get("ignore_lid_close") is True
+            self.lid_item.set_active(enabled)
+            self.lid_item.set_label(_(
+                CONTINUOUS_LID_LABEL
+                if not enabled or self.current_state.get("lid_policy_healthy") is True
+                else LID_SAFETY_UNAVAILABLE_LABEL
+            ))
+            lid_count = self.current_state.get("lid_switch_devices", 0)
+            self.lid_item.set_sensitive(
+                isinstance(lid_count, int) and lid_count > 0 and not self.enable_in_flight)
+        finally:
+            self.updating_lid_item = False
         return False
 
     @staticmethod
@@ -1274,7 +2106,7 @@ class TrayNotifier:
             )
             if user_result.returncode != 0:
                 raise RuntimeError(
-                    user_result.stderr.strip() or "could not update the user service"
+                    user_result.stderr.strip() or _("could not update the user service")
                 )
             user_changed = True
             system_result = subprocess.run(
@@ -1284,7 +2116,7 @@ class TrayNotifier:
             if system_result.returncode != 0:
                 raise RuntimeError(
                     system_result.stderr.strip()
-                    or "administrator authentication was cancelled or failed"
+                    or _("administrator authentication was cancelled or failed")
                 )
         except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
             error = str(exc)
@@ -1297,15 +2129,29 @@ class TrayNotifier:
                     check=False, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL, timeout=15.0,
                 )
-        GLib.idle_add(self._finish_autostart_change, error)
+        GLib.idle_add(self._finish_autostart_change, error, self._autostart_enabled())
 
-    def _finish_autostart_change(self, error: str) -> bool:
+    def _refresh_autostart_async(self) -> None:
+        """Read the start-at-login state off the GTK main thread (U4)."""
+        def worker() -> None:
+            GLib.idle_add(self._apply_autostart_state, self._autostart_enabled())
+
+        threading.Thread(target=worker, name="input-lock-autostart-state", daemon=True).start()
+
+    def _apply_autostart_state(self, enabled: bool) -> bool:
+        self.autostart_cached = enabled
         self.updating_autostart_item = True
-        self.autostart_item.set_active(self._autostart_enabled())
-        self.autostart_item.set_sensitive(True)
-        self.updating_autostart_item = False
+        try:
+            self.autostart_item.set_active(enabled)
+            self.autostart_item.set_sensitive(True)
+        finally:
+            self.updating_autostart_item = False
+        return False
+
+    def _finish_autostart_change(self, error: str, enabled: bool) -> bool:
+        self._apply_autostart_state(enabled)
         if error:
-            self._show_error("Startup Setting Failed", error)
+            self._show_error(_("Startup Setting Failed"), error)
         return False
 
 
@@ -1324,9 +2170,9 @@ class TrayNotifier:
 
     def _on_about(self, _item: Gtk.MenuItem) -> None:
         dialog = Gtk.AboutDialog()
-        dialog.set_program_name("Input Lock")
+        dialog.set_program_name(_("Input Lock"))
         dialog.set_version(VERSION)
-        dialog.set_comments("Safe keyboard, mouse, touchpad, and touchscreen locking for Ubuntu.")
+        dialog.set_comments(_("Safe keyboard, mouse, touchpad, and touchscreen locking for Ubuntu."))
         logo = self._about_logo()
         if logo is not None:
             dialog.set_logo(logo)
@@ -1346,19 +2192,20 @@ class TrayNotifier:
             modal=True,
             message_type=Gtk.MessageType.WARNING,
             buttons=Gtk.ButtonsType.NONE,
-            text="Quit Input Lock?",
+            text=_("Quit Input Lock?"),
         )
-        dialog.format_secondary_text(
+        dialog.format_secondary_text(_(
             "This will unlock all input and stop both the Input Lock service "
             "and its tray process."
-        )
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Quit", Gtk.ResponseType.OK)
+        ))
+        dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+        dialog.add_button(_("Quit"), Gtk.ResponseType.OK)
         response = dialog.run()
         dialog.destroy()
         if response != Gtk.ResponseType.OK:
             return
         self.quit_item.set_sensitive(False)
+        self._mark_tray_unlock()
         threading.Thread(
             target=self._quit_worker,
             name="input-lock-tray-quit",
@@ -1370,7 +2217,7 @@ class TrayNotifier:
             response_ok(send_request({"cmd": "emergency-unlock"}, socket_path=self.config.socket_path, timeout=5.0))
             response_ok(send_request({"cmd": "quit"}, socket_path=self.config.socket_path, timeout=5.0))
         except Exception as exc:
-            GLib.idle_add(self._show_error, "Input Lock", str(exc))
+            GLib.idle_add(self._show_error, _("Input Lock"), daemon_text(str(exc)))
             GLib.idle_add(self.quit_item.set_sensitive, True)
             return
         self.running = False
@@ -1417,40 +2264,83 @@ class TrayNotifier:
             key = "touchscreen-locked"
         else:
             key = "all-locked"
-        title, body = TITLES[key]
+        title, body = (safe_format(text) for text in TITLES[key])
         if locked:
-            body = f"Press {self._display_hotkey(hotkey)} to unlock."
+            body = safe_format(N_("Press {shortcut} to unlock."), shortcut=self._display_hotkey(hotkey))
         self._notify(title, body, locked=bool(locked))
 
-    def _notify(self, title: str, body: str, *, locked: bool) -> None:
-        notify_send = shutil.which("notify-send")
-        if notify_send:
-            subprocess.run(
-                [
-                    notify_send,
-                    "--app-name=Input Lock",
-                    "--icon=input-lock-locked" if locked else "--icon=input-lock-unlocked",
-                    "--urgency=normal",
-                    "--expire-time=2500",
-                    title,
-                    body,
-                ],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=4,
-            )
-        if self.config.play_sound:
-            player = shutil.which("canberra-gtk-play")
-            if player:
-                sound = "service-login" if locked else "service-logout"
-                subprocess.run(
-                    [player, "--id", sound],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=4,
-                )
+    def _notify(self, title: str, body: str, *, locked: bool,
+                critical: bool = False, reenable: bool = False) -> None:
+        """Queue a desktop notification; never blocks the GTK thread (U4)."""
+        threading.Thread(
+            target=self._notify_blocking,
+            args=(title, body, locked, critical, reenable),
+            name="input-lock-notify",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _notify_command(notify_send: str, title: str, body: str, locked: bool,
+                        critical: bool, reenable: bool) -> list[str]:
+        command = [
+            notify_send,
+            "--app-name=" + _("Input Lock"),
+            "--icon=input-lock-locked" if locked else "--icon=input-lock-unlocked",
+        ]
+        if critical:
+            # Critical + no expiry: stays until the user dismisses it (A8).
+            command += ["--urgency=critical", "--expire-time=0"]
+            if reenable:
+                command.append("--action=reenable=" + _(REENABLE_ACTION_LABEL))
+        else:
+            command += ["--urgency=normal", "--expire-time=2500"]
+        return [*command, title, body]
+
+    def _notify_blocking(self, title: str, body: str, locked: bool,
+                         critical: bool = False, reenable: bool = False) -> None:
+        try:
+            config = getattr(self, "config", None)
+            if config is not None and config.play_sound:
+                player = shutil.which("canberra-gtk-play")
+                if player:
+                    sound = "service-login" if locked else "service-logout"
+                    subprocess.run(
+                        [player, "--id", sound],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=4,
+                    )
+            notify_send = shutil.which("notify-send")
+            if not notify_send:
+                if critical:
+                    LOG.warning("notify-send missing; critical notice not shown: %s: %s", title, body)
+                return
+            command = self._notify_command(notify_send, title, body, locked, critical, reenable)
+            if critical and reenable:
+                # --action implies --wait: this thread waits until the user
+                # dismisses the notification or picks the action.
+                result = subprocess.run(command, check=False, capture_output=True, text=True)
+                if "reenable" in result.stdout.split():
+                    GLib.idle_add(self._offer_reenable)
+                return
+            subprocess.run(command, check=False, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=4)
+        except Exception as exc:
+            LOG.warning("Desktop notification failed: %s", exc)
+
+
+def apply_ui_language(setting: str | None = None) -> str:
+    """Activate the UI language and the matching text direction.
+
+    Must run before any widget is built: GTK only applies the default
+    direction to widgets created afterwards.
+    """
+    language = i18n.setup(setting, settings_file=CURSOR_SETTINGS_PATH)
+    Gtk.Widget.set_default_direction(
+        Gtk.TextDirection.RTL if i18n.is_rtl() else Gtk.TextDirection.LTR)
+    LOG.info("UI language: %s", language)
+    return language
 
 
 def main() -> int:
@@ -1467,6 +2357,7 @@ def main() -> int:
         # core dump.  The unit is also ordered after GNOME initialization.
         LOG.error("Graphical display is not ready; retrying after GNOME initialization")
         return os.EX_TEMPFAIL
+    apply_ui_language()
     try:
         return TrayNotifier().run()
     except Exception:

@@ -8,7 +8,10 @@ StartLimitIntervalSec=60s
 StartLimitBurst=3
 
 [Service]
-Type=simple
+# The daemon sends READY=1 once its socket exists and the first state file is
+# written, so "systemctl start/restart" returns only when the CLI can connect.
+Type=notify
+NotifyAccess=main
 User=input-lockd
 Group=input-lockd
 SupplementaryGroups=input
@@ -16,10 +19,18 @@ SupplementaryGroups=input
 # active.  Remove it as root before the unprivileged daemon starts.
 ExecStartPre=+/usr/lib/input-lock/input-lock-power-helper disable
 ExecStart=/usr/lib/input-lock/input-lock-daemon
-ExecStopPost=+/usr/lib/input-lock/input-lock-power-helper disable
+# ExecStopPost runs under TimeoutStopSec=5s, so a UPower restart (legacy
+# drop-in only) is enqueued with --no-block and verified by the next
+# ExecStartPre, which waits.
+ExecStopPost=+/usr/lib/input-lock/input-lock-power-helper disable --no-block
 LimitNOFILE=512
 ExecReload=/bin/kill -HUP $MAINPID
-WatchdogSec=20s
+# 60 s: longer than one 20 s kernel freezer timeout, so a single freeze outside
+# a sleep window is not fatal. From PrepareForSleep(true) the daemon raises its
+# own watchdog to 300 s with sd_notify WATCHDOG_USEC (one suspend may make
+# several failing 20 s freeze attempts) and restores 60 s only once logind no
+# longer reports PreparingForSleep (or, if that is unknown, at the window cap).
+WatchdogSec=60s
 Restart=no
 RestartSec=2s
 TimeoutStopSec=5s

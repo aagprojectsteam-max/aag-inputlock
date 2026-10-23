@@ -1,21 +1,38 @@
 #!/usr/bin/env bash
 set -u
 
+# Translate a message into the user's Input Lock language (gettext domain
+# input-lock). A source checkout uses its own module; the installed launcher
+# uses /usr/lib/input-lock. Any failure shows the English text.
+_t() {
+    local here module translated
+    here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || here=''
+    module=/usr/lib/input-lock/input_lock_i18n.py
+    if [[ -n "$here" && -f "$here/input_lock_i18n.py" ]]; then
+        module="$here/input_lock_i18n.py"
+    fi
+    if translated=$(python3 -I "$module" gettext "$1" 2>/dev/null) && [[ -n "$translated" ]]; then
+        printf '%s' "$translated"
+    else
+        printf '%s' "$1"
+    fi
+}
+
 notify_error() {
     if command -v notify-send >/dev/null 2>&1; then
-        notify-send --urgency=critical 'Input Lock' "$1"
+        notify-send --urgency=critical "$(_t 'Input Lock')" "$1"
     fi
 }
 
 if ! systemctl is-active --quiet input-lock.service; then
     if ! pkexec /usr/bin/systemctl start input-lock.service; then
-        notify_error 'Input Lock was not started. Administrator authentication was cancelled or failed.'
+        notify_error "$(_t 'Input Lock was not started. Administrator authentication was cancelled or failed.')"
         exit 1
     fi
 fi
 
 if ! systemctl --user start input-lock-notifier.service; then
-    notify_error 'The Input Lock service started, but the tray icon could not be opened.'
+    notify_error "$(_t 'The Input Lock service started, but the tray icon could not be opened.')"
     exit 1
 fi
 
