@@ -108,7 +108,7 @@ class ControllerDropTests(unittest.TestCase):
             tray._handle_message({"subscribed": True, "state": dict(ARMED, last_lid_disable={
                 "reason": "lid-ignore-disabled", "requested_by_user": True, "at": 10.0})})
             tray._show_disconnected()  # the final event was lost: EOF only
-        self.assertIn("connection to the Input Lock background service was lost",
+        self.assertIn("connection to the AAG - InputLock background service was lost",
                       tray._notify.call_args.args[1])
         self.assertTrue(tray.unavailable_reported)
         self.assertEqual(tray.unavailable_since_at, 10.0)
@@ -123,7 +123,7 @@ class ControllerDropTests(unittest.TestCase):
         tray._notify.assert_called_once()
         title, body = tray._notify.call_args.args[:2]
         self.assertEqual(title, notifier.LID_LOST_TITLE)
-        self.assertTrue(body.startswith("Correction to the previous notice: The Input Lock tray did not check in"))
+        self.assertTrue(body.startswith("Correction to the previous notice: The AAG - InputLock tray did not check in"))
         self.assertTrue(tray._notify.call_args.kwargs["critical"])
         self.assertTrue(tray._notify.call_args.kwargs["reenable"])
         self.assertFalse(tray.unavailable_reported)
@@ -322,7 +322,7 @@ class RobustWordingTests(unittest.TestCase):
 
     def test_describe_and_daemon_text_fall_back_to_english(self):
         self.assertEqual(messages.describe_lid_disable("something-new", detail="x=1"),
-                         "The Input Lock service turned it off (reason: something-new). Details: x=1")
+                         "The AAG - InputLock service turned it off (reason: something-new). Details: x=1")
         self.assertEqual(messages.daemon_text("locking is paused for 3 s after an emergency unlock"),
                          "locking is paused for 3 s after an emergency unlock")
         self.assertEqual(i18n.safe_format("Press {shortcut} to unlock.", shortcut="Ctrl+Alt+Z"),
@@ -346,7 +346,7 @@ class RobustWordingTests(unittest.TestCase):
         tray.power_guard.release.assert_called_once_with()
         self.assertEqual(tray.last_disable_at, 2.0)
         self.assertEqual(tray._notify.call_args_list[-1].args[1],
-                         "Open the lid. Automatic safety protection failed; see InputLock diagnostics.")
+                         "Open the lid. Automatic safety protection failed; see AAG - InputLock diagnostics.")
 
 
 class HebrewWordingTests(unittest.TestCase):
@@ -368,7 +368,7 @@ class HebrewWordingTests(unittest.TestCase):
     def test_new_strings_are_translated(self):
         with HebrewSession():
             self.assertEqual(i18n._(notifier.LID_OFF_INFO_HINT),
-                             "אם עדיין צריך אותה, אפשר להפעיל אותה שוב מהתפריט של נעילת הקלט.")
+                             "אם עדיין צריך אותה, אפשר להפעיל אותה שוב מהתפריט של ⁨AAG - InputLock⁩.")
             self.assertTrue(i18n.safe_format(notifier.LID_CORRECTION_TEXT, cause="X").startswith("תיקון"))
 
 

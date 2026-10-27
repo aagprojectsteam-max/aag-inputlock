@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""User-interface language for Input Lock (gettext text domain ``input-lock``).
+"""User-interface language for AAG - InputLock (gettext text domain ``input-lock``).
 
 Only the stdlib ``gettext`` module is used. Nothing here imports GTK, so the
 CLI, the GNOME helper and the tray share the same language choice:

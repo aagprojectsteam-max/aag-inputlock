@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Command-line client for Input Lock."""
+"""Command-line client for AAG - InputLock."""
 
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ def _send_with_retry(
                 sleep(CONNECT_RETRY_INTERVAL)
                 continue
             raise ProtocolError(
-                _("cannot connect to the Input Lock daemon at {path} "
+                _("cannot connect to the AAG - InputLock daemon at {path} "
                   "({error}; {unit} is {state}). "
                   "Check: systemctl status {unit}").format(
                     path=socket_path, error=exc, unit=SERVICE_NAME, state=state)
@@ -226,7 +226,7 @@ def print_status(state: dict[str, object]) -> None:
     locked = state.get("locked", {})
     if not isinstance(locked, dict):
         locked = {}
-    title = _("Input Lock Status")
+    title = _("AAG - InputLock Status")
     print(title)
     print("-" * len(title))
     print(_("Keyboard:    {state}").format(state=_yes_no(locked.get("keyboard"))))
@@ -625,13 +625,13 @@ def run_doctor() -> int:
             healthy = ready and daemon_state.get("lid_inhibitor_active") is True and daemon_state.get("lid_controller_connected") is True
             add("PASS" if healthy else "FAIL", _("Lid supervision"), str(safety.get("state", "unknown")))
         add("INFO", _("Critical battery policy"),
-            _("LockLock does not suppress UPower; platform critical-action acceptance is separate"))
+            _("AAG - InputLock does not suppress UPower; platform critical-action acceptance is separate"))
 
     protection_checks(add)
 
     # The [PASS]/[WARNING]/[FAIL]/[INFO] level tags stay in English so the
     # output can be grepped and compared in bug reports in any language.
-    title = _("Input Lock Doctor")
+    title = _("AAG - InputLock Doctor")
     print(title)
     print("=" * len(title))
     for level, name, detail in checks:
@@ -664,7 +664,7 @@ def emergency_unlock() -> int:
             ["systemctl", "stop", "input-lock.service"], check=False
         )
         if result.returncode == 0:
-            print(_("Input Lock service stopped; kernel file descriptors were released."))
+            print(_("AAG - InputLock service stopped; kernel file descriptors were released."))
             return 0
         return result.returncode or 3
 

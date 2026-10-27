@@ -89,7 +89,7 @@ Diagnosis:
 systemctl --user status input-lock-notifier.service --no-pager
 journalctl --user -u input-lock-notifier.service -b --no-pager -n 100
 echo "$DBUS_SESSION_BUS_ADDRESS"
-notify-send 'Input Lock test'
+notify-send 'AAG - InputLock test'
 ```
 
 Expected: user service active and direct notification visible.
@@ -208,7 +208,7 @@ input-lock doctor
 
 Rollback: restore the dated copy under `/var/backups/input-lock/` or rerun the package's `update.sh`.
 
-## `cannot connect to the Input Lock daemon at …`
+## `cannot connect to the AAG - InputLock daemon at …`
 
 The CLI retried for up to 5 seconds while `input-lock.service` was activating or active, or the unit is not running at all. The message names the socket path and the unit state.
 
@@ -280,7 +280,7 @@ While a suspend is being prepared, `input-lock status` shows `OS sleep: in progr
 
 ## Arming refused: previous emergency suspend failed
 
-A failure latch is written only when InputLock's own suspend request was accepted and the kernel transition then failed or was never confirmed. While it is active, arming stays blocked until an administrator reviews and acknowledges it:
+A failure latch is written only when AAG - InputLock's own suspend request was accepted and the kernel transition then failed or was never confirmed. While it is active, arming stays blocked until an administrator reviews and acknowledges it:
 
 ```bash
 input-lock doctor
@@ -357,7 +357,7 @@ Repair: disconnect/reconnect the affected external device or log out after input
 sudo fuser -v /dev/input/eventX
 ```
 
-Rollback: stop Input Lock and verify the symptom without it:
+Rollback: stop AAG - InputLock and verify the symptom without it:
 
 ```bash
 sudo systemctl stop input-lock.service
@@ -375,14 +375,14 @@ Expected: `yes`. Repair it with `sudoedit`, then reload. Rollback by setting `no
 
 ## SSH is inaccessible
 
-Input Lock cannot filter SSH. Diagnose the independent service/network:
+AAG - InputLock cannot filter SSH. Diagnose the independent service/network:
 
 ```bash
 systemctl status ssh --no-pager
 ss -ltn | grep ':22 '
 ```
 
-Expected: ssh active and listening. Repair with the normal OpenSSH configuration. No Input Lock rollback is relevant; stopping Input Lock can confirm this:
+Expected: ssh active and listening. Repair with the normal OpenSSH configuration. No AAG - InputLock rollback is relevant; stopping AAG - InputLock can confirm this:
 
 ```bash
 sudo systemctl stop input-lock.service
@@ -438,7 +438,7 @@ input-lock logs -n 100
 
 Expected: at least one node named `Lid Switch` with class `lid-switch`. If none exists, the menu item stays disabled and the daemon safely refuses `input-lock lid-ignore on`. Do not substitute an arbitrary power-button or tablet-mode node.
 
-When enabled, status must report an active lid inhibitor, a connected controller and a supervised safety state with fresh telemetry. `input-lock doctor` checks the installed InputLock units, dependencies, the daemon protocol version, the GNOME emergency binding and the native protection readiness (unit contracts, unit drop-ins and the failure latch). There is no tray policy-repair writer. If monitoring is unavailable, reopen the lid and inspect the journals. Return to normal OS behavior with:
+When enabled, status must report an active lid inhibitor, a connected controller and a supervised safety state with fresh telemetry. `input-lock doctor` checks the installed AAG - InputLock units, dependencies, the daemon protocol version, the GNOME emergency binding and the native protection readiness (unit contracts, unit drop-ins and the failure latch). There is no tray policy-repair writer. If monitoring is unavailable, reopen the lid and inspect the journals. Return to normal OS behavior with:
 
 ```bash
 input-lock lid-ignore off

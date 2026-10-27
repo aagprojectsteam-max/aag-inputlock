@@ -190,13 +190,13 @@ def install() -> int:
     values = (
         (
             PRIMARY_PATH,
-            _("Input Lock — toggle keyboard and mouse"),
+            _("AAG - InputLock — toggle keyboard and mouse"),
             "/usr/bin/input-lock gnome-hotkey",
             primary_binding,
         ),
         (
             EMERGENCY_PATH,
-            _("Input Lock — emergency unlock"),
+            _("AAG - InputLock — emergency unlock"),
             "/usr/bin/input-lock gnome-emergency",
             emergency,
         ),
@@ -217,8 +217,8 @@ def set_primary(hotkey: str) -> int:
     if PRIMARY_PATH not in paths():
         # Writing the relocatable schema alone would have no visible effect.
         raise RuntimeError(_(
-            "the Input Lock GNOME shortcuts are not installed; run "
-            "'input_lock_gnome.py install' (or reinstall Input Lock) first"))
+            "the AAG - InputLock GNOME shortcuts are not installed; run "
+            "'input_lock_gnome.py install' (or reinstall AAG - InputLock) first"))
     if check(binding, emergency) != 0:
         return 2
     run("set", schema(PRIMARY_PATH), "binding", quote(binding))

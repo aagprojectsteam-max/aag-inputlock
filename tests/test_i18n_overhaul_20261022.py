@@ -191,7 +191,7 @@ class CatalogueTests(unittest.TestCase):
         for key, needle in {
             (None, "Recovery: {command}"): "\n{command}",
             (None, "TTY recovery: {shortcut}"): " {shortcut}",
-            (None, "InputLock background service unavailable. Open the lid and check "
+            (None, "AAG - InputLock background service unavailable. Open the lid and check "
                    "input-lock.service with systemctl status input-lock.service. After the service "
                    "is repaired, the tray will reconnect automatically."):
                 "\nsystemctl status input-lock.service\n",
@@ -346,10 +346,10 @@ class LanguageResolutionTests(unittest.TestCase):
             hebrew_mo(Path(directory))
             self.assertEqual(i18n.setup("he", environ={}, localedir=Path(directory)), "he")
             self.assertTrue(i18n.is_rtl())
-            self.assertEqual(i18n._("Input Lock"), "נעילת קלט")
+            self.assertEqual(i18n._("AAG - InputLock"), "⁨AAG - InputLock⁩")
             self.assertEqual(i18n._("text that is not in the catalogue"), "text that is not in the catalogue")
             self.assertEqual(i18n.setup("auto", environ={"LANG": "en_US.UTF-8"}, localedir=Path(directory)), "en")
-            self.assertEqual(i18n._("Input Lock"), "Input Lock")
+            self.assertEqual(i18n._("AAG - InputLock"), "AAG - InputLock")
             self.assertFalse(i18n.is_rtl())
         with tempfile.TemporaryDirectory() as empty:
             # Hebrew requested but no catalogue installed: English, left-to-right.
@@ -376,8 +376,8 @@ class LanguageResolutionTests(unittest.TestCase):
     def test_command_line_helper_prints_the_translation(self):
         output = io.StringIO()
         with HebrewSession(), mock.patch.object(i18n, "setup"), contextlib.redirect_stdout(output):
-            self.assertEqual(i18n.main(["gettext", "Input Lock"]), 0)
-        self.assertEqual(output.getvalue(), "נעילת קלט\n")
+            self.assertEqual(i18n.main(["gettext", "AAG - InputLock"]), 0)
+        self.assertEqual(output.getvalue(), "⁨AAG - InputLock⁩\n")
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(i18n.main(["bogus"]), 2)
 
@@ -494,7 +494,7 @@ class CliLanguageTests(unittest.TestCase):
     def test_hebrew_status(self):
         with HebrewSession():
             text = self.status()
-        self.assertTrue(text.startswith("מצב נעילת הקלט\n"))
+        self.assertTrue(text.startswith("מצב ⁨AAG - InputLock⁩\n"))
         self.assertIn(FSI + "נעול" + PDI, text)
         # U-R2: a shortcut and a reason key are copyable; never isolated.
         self.assertIn("קיצור ראשי:          CTRL+ALT+Z\n", text)
@@ -587,7 +587,7 @@ class TrayLanguageTests(unittest.TestCase):
             self.assertTrue(detail.startswith("טמפרטורה: " + FSI + "תקינה" + PDI), detail)
             self.assertEqual(cooling, "קירור: פעיל")
             command = notifier.TrayNotifier._notify_command("/usr/bin/notify-send", "T", "B", False, True, True)
-            self.assertIn("--app-name=נעילת קלט", command)
+            self.assertIn("--app-name=⁨AAG - InputLock⁩", command)
             self.assertIn("--action=reenable=הפעלה מחדש…", command)
 
 
@@ -609,9 +609,9 @@ class LauncherLanguageTests(unittest.TestCase):
             shutil.copy(REPO / "src" / "input_lock_i18n.py", source)
             (root / "po").mkdir()
             hebrew_mo(root / "po" / "build")
-            message = "The Input Lock service started, but the tray icon could not be opened."
+            message = "The AAG - InputLock service started, but the tray icon could not be opened."
             self.assertEqual(self.run_t(source, message, "he"),
-                             "שירות נעילת הקלט הופעל, אבל לא ניתן היה לפתוח את הסמל שלו.")
+                             "השירות של ⁨AAG - InputLock⁩ הופעל, אבל לא ניתן היה לפתוח את הסמל שלו.")
             self.assertEqual(self.run_t(source, message, "en"), message)
             # A broken module never hides the message.
             (source / "input_lock_i18n.py").write_text("raise SystemExit(3)\n")

@@ -2,7 +2,7 @@
 
 ## Current support
 
-AAG LockLock 2.0.0-beta.4 targets Ubuntu 26.04, GNOME 50 and Wayland,
+AAG - InputLock 2.0.0-beta.4 targets Ubuntu 26.04, GNOME 50 and Wayland,
 and provides a Windows 11 x64 beta backend. The Windows code, build,
 installer, agent, secured pipe, service and simulated recovery tests are
 implemented. Hardware-dependent Windows features remain experimental until the

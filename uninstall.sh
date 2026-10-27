@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Input Lock uninstaller. Safe to run again after a partial run. The whole
+# AAG - InputLock uninstaller. Safe to run again after a partial run. The whole
 # script is parsed before anything runs (see main at the end).
 set -Eeuo pipefail
 umask 022
@@ -205,7 +205,7 @@ Gio.Settings.sync()
         userdel input-lockd || warn 'could not remove the input-lockd account'
     fi
 
-    log 'Input Lock was removed. All local input is released.'
+    log 'AAG - InputLock was removed. All local input is released.'
     if [[ -d "$ARCHIVE_DIR" ]]; then
         log "State and protection records were archived under $ARCHIVE_DIR (root-only)."
     fi

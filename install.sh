@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Input Lock installer. The whole script is parsed before anything runs (see
+# AAG - InputLock installer. The whole script is parsed before anything runs (see
 # main at the end), so editing this file while it runs cannot change it.
 set -Eeuo pipefail
 umask 022
@@ -15,7 +15,7 @@ WAS_ACTIVE=0
 # state (review U-R8). A successful install always starts the tray.
 NOTIFIER_STOPPED=0
 NOTIFIER_WAS_ACTIVE=0
-# 1 when an earlier Input Lock installation exists (an update): the installer
+# 1 when an earlier AAG - InputLock installation exists (an update): the installer
 # then never changes whether the cursor-hiding extension is enabled (U-R4).
 PREVIOUS_INSTALL=0
 STAGE=''
@@ -151,7 +151,7 @@ usage() {
     cat <<'EOF'
 Usage: sudo ./install.sh [--user LOGIN] [--update]
 
-Installs Input Lock for one local graphical-seat user. The daemon starts in
+Installs AAG - InputLock for one local graphical-seat user. The daemon starts in
 the UNLOCKED state. The installer never performs a test lock.
 
 The checkout must not be writable by other users. The payload is copied to a
@@ -392,7 +392,7 @@ root, *languages = sys.argv[1:]
 for language in languages:
     with open(f"{root}/{language}/LC_MESSAGES/input-lock.mo", "rb") as handle:
         catalogue = gettext.GNUTranslations(handle)
-    if catalogue.info().get("language") != language or catalogue.gettext("Input Lock") == "Input Lock":
+    if catalogue.info().get("language") != language or catalogue.gettext("Lock Input") == "Lock Input":
         raise SystemExit(f"{language}: catalogue header or content is wrong")
 PY
     bash -n "$STAGE/src/input-lock-launch" || fail 'src/input-lock-launch has a shell syntax error'
@@ -811,7 +811,7 @@ main() {
     fi
     log 'Do not run a full lock yet. Follow README section “First safe test” with --timeout 30.'
     if [[ -d "$BACKUP_DIR" ]]; then
-        log "Previous Input Lock files were backed up under $BACKUP_DIR"
+        log "Previous AAG - InputLock files were backed up under $BACKUP_DIR"
     fi
     exit 0
 }

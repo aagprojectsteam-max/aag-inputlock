@@ -61,7 +61,7 @@ class DisconnectTests(unittest.TestCase):
                         tray._toggle_worker(False)
                 self.assertFalse(tray.connected)
                 tray.lid_item.set_sensitive.assert_called_with(False)
-                self.assertIn('InputLock background service unavailable', tray._show_error.call_args.args[1])
+                self.assertIn('AAG - InputLock background service unavailable', tray._show_error.call_args.args[1])
                 self.assertNotIn('[Errno', tray._show_error.call_args.args[1])
 
     def test_policy_refusal_remains_visible_and_lid_toggle_reversible(self):

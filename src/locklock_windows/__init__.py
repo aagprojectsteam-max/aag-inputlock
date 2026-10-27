@@ -1,4 +1,4 @@
-"""Windows platform implementation for LockLock.
+"""Windows platform implementation for AAG - InputLock.
 
 Modules keep Win32 imports lazy so shared tests can validate state and recovery
 logic on non-Windows CI runners.

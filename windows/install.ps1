@@ -41,9 +41,9 @@ Move-Item -LiteralPath $TemporaryConfig -Destination $FinalConfig -Force
 $ServiceExe = Join-Path $InstallDirectory 'LockLockService.exe'
 $BinaryPath = '"' + $ServiceExe + '"'
 if ($ExistingService) {
-    Invoke-Checked sc.exe @('config','AAGLockLock','binPath=', $BinaryPath,'start=','auto') | Out-Null
+    Invoke-Checked sc.exe @('config','AAGLockLock','binPath=', $BinaryPath,'start=','auto','DisplayName=','AAG - InputLock Power Helper') | Out-Null
 } else {
-    Invoke-Checked sc.exe @('create','AAGLockLock','binPath=', $BinaryPath,'start=','auto','DisplayName=','AAG LockLock Power Helper') | Out-Null
+    Invoke-Checked sc.exe @('create','AAGLockLock','binPath=', $BinaryPath,'start=','auto','DisplayName=','AAG - InputLock Power Helper') | Out-Null
 }
 $ServiceSddl = "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;LCRPWPLOCR;;;${TargetSid})"
 Invoke-Checked sc.exe @('sdset','AAGLockLock',$ServiceSddl) | Out-Null
@@ -52,13 +52,16 @@ Invoke-Checked sc.exe @('start','AAGLockLock') | Out-Null
 (Get-Service AAGLockLock).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
 $Programs = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
 Assert-PlainPath $Programs
-$ShortcutPath = Join-Path $Programs 'AAG LockLock.lnk'
+$LegacyShortcutPath = Join-Path $Programs 'AAG LockLock.lnk'
+Assert-PlainPath $LegacyShortcutPath
+if (Test-Path -LiteralPath $LegacyShortcutPath) { Remove-Item -LiteralPath $LegacyShortcutPath -Force }
+$ShortcutPath = Join-Path $Programs 'AAG - InputLock.lnk'
 Assert-PlainPath $ShortcutPath
 $Shell = New-Object -ComObject WScript.Shell
 $Shortcut = $Shell.CreateShortcut($ShortcutPath)
 $Shortcut.TargetPath = Join-Path $InstallDirectory 'LockLockAgent.exe'
 $Shortcut.WorkingDirectory = $InstallDirectory
 $Shortcut.Save()
-Write-Host "AAG LockLock installed for $TargetSid. Rollback files: $BackupDirectory"
-Write-Host 'Start AAG LockLock from the target user desktop (without elevation).'
+Write-Host "AAG - InputLock installed for $TargetSid. Rollback files: $BackupDirectory"
+Write-Host 'Start AAG - InputLock from the target user desktop (without elevation).'
 Write-Warning 'Windows native and hardware acceptance is required. Global cursor hiding and independent touchscreen locking are unavailable.'

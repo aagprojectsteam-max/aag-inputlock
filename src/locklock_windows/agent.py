@@ -1,4 +1,4 @@
-"""Interactive Windows LockLock agent and tray entry point."""
+"""Interactive Windows AAG - InputLock agent and tray entry point."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ class SingleInstance:
         if last_error == 183:
             ctypes.windll.kernel32.CloseHandle(self.handle)
             self.handle = None
-            raise RuntimeError("AAG LockLock is already running")
+            raise RuntimeError("AAG - InputLock is already running")
 
     def close(self) -> None:
         if self.handle:
@@ -193,12 +193,12 @@ class WindowsApplication:
 
 def main() -> int:
     if os.name != "nt":
-        print("AAG LockLock Windows agent requires Windows 11.", file=sys.stderr)
+        print("AAG - InputLock Windows agent requires Windows 11.", file=sys.stderr)
         return 2
     try:
         return WindowsApplication().run()
     except Exception as exc:
-        ctypes.windll.user32.MessageBoxW(None, str(exc), "AAG LockLock", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, str(exc), "AAG - InputLock", 0x10)
         return 1
 
 

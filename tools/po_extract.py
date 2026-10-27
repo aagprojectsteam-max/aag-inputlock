@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract Input Lock's translatable strings into po/input-lock.pot.
+"""Extract AAG - InputLock's translatable strings into po/input-lock.pot.
 
 Stdlib only (``ast``), so contributors do not need xgettext. Recognised
 markers, with constant string arguments only:
@@ -135,8 +135,8 @@ def po_string(keyword: str, text: str) -> list[str]:
 
 def render_pot(messages: dict[tuple[str | None, str], Message], version: str) -> str:
     lines = [
-        "# Input Lock user interface.",
-        "# This file is distributed under the same license as the Input Lock package.",
+        "# AAG - InputLock user interface.",
+        "# This file is distributed under the same license as the AAG - InputLock package.",
         "# Regenerate with: python3 tools/po_extract.py",
         "#",
         "#, fuzzy",

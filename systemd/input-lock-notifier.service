@@ -1,5 +1,5 @@
 [Unit]
-Description=Input Lock tray indicator and desktop notifications
+Description=AAG - InputLock tray indicator and desktop notifications
 PartOf=graphical-session.target
 After=graphical-session-pre.target gnome-session-initialized.target
 

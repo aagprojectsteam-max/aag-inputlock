@@ -419,7 +419,7 @@ class DisconnectedStateTests(unittest.TestCase):
         self.assertIs(tray.current_state["ignore_lid_close"], False)
         self.assertTrue(tray.current_state["stale"])
         tray.indicator.set_icon_full.assert_called_with(notifier.DISCONNECTED_ICON,
-                                                        "Input Lock service unavailable")
+                                                        "AAG - InputLock service unavailable")
         tray.lid_item.set_label.assert_called_with(notifier.LID_UNAVAILABLE_LABEL)
         tray._notify.assert_called_once()
         self.assertIn("connection", tray._notify.call_args.args[1])
@@ -554,7 +554,7 @@ class SubscriptionWorkerTests(unittest.TestCase):
         error = ValueError("a tray controller is already connected")
         tray, waits, idle, logs = self.run_worker([error, error, None])
         self.assertEqual(waits, [notifier.SECOND_INSTANCE_RETRY_SECONDS] * 2)
-        self.assertEqual(len([line for line in logs if "Another Input Lock tray" in line]), 1)
+        self.assertEqual(len([line for line in logs if "Another AAG - InputLock tray" in line]), 1)
         self.assertEqual(idle.call_args.args[1], "another-tray")
 
     def test_reconnect_is_logged(self):

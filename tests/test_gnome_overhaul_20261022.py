@@ -111,7 +111,7 @@ class ExtensionSourceTests(unittest.TestCase):
 
     def test_idle_time_is_sampled_because_inhibitors_block_idle_watches(self):
         # Mutter never fires idle watches while a GNOME idle inhibitor exists
-        # (Caffeine, Input Lock's own lid-ignore guard); the pointer then
+        # (Caffeine, AAG - InputLock's own lid-ignore guard); the pointer then
         # never hid (2026-10-27).
         text = self.SOURCE.read_text()
         self.assertNotIn("add_idle_watch", text)

@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 $InstallDirectory = Join-Path $env:ProgramFiles "AAG\LockLock"
 $Cli = Join-Path $InstallDirectory "LockLockCli.exe"
-if (-not (Test-Path $Cli)) { throw "Install LockLock before running this checklist." }
+if (-not (Test-Path $Cli)) { throw "Install AAG - InputLock before running this checklist." }
 
 & $Cli status
 if (-not $Armed) {

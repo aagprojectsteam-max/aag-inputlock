@@ -51,7 +51,7 @@ class WindowsTray:
         self.icon = pystray.Icon(
             "AAG LockLock",
             _icon_image(False),
-            "AAG LockLock",
+            "AAG - InputLock",
             menu=pystray.Menu(
                 pystray.MenuItem(self._status_text, None, enabled=False),
                 pystray.MenuItem(self._toggle_text, self._schedule_toggle, default=True),
@@ -75,7 +75,7 @@ class WindowsTray:
     def refresh(self) -> None:
         locked = bool(self.status().get("locked_kinds"))
         self.icon.icon = _icon_image(locked)
-        self.icon.title = "AAG LockLock — " + ("Locked" if locked else "Unlocked")
+        self.icon.title = "AAG - InputLock — " + ("Locked" if locked else "Unlocked")
         self.icon.update_menu()
 
     def _status_text(self, _item) -> str:
@@ -95,7 +95,7 @@ class WindowsTray:
         try:
             action()
         except Exception as exc:
-            messagebox.showerror("AAG LockLock", str(exc), parent=self.root)
+            messagebox.showerror("AAG - InputLock", str(exc), parent=self.root)
 
     def _schedule_settings(self, _icon, _item) -> None:
         self.post(self.open_settings)
@@ -108,15 +108,15 @@ class WindowsTray:
             startup.set_enabled(not startup.is_enabled())
             self.icon.update_menu()
         except Exception as exc:
-            messagebox.showerror("AAG LockLock", str(exc), parent=self.root)
+            messagebox.showerror("AAG - InputLock", str(exc), parent=self.root)
 
     def _schedule_quit(self, _icon, _item) -> None:
         self.post(self._confirm_quit)
 
     def _confirm_quit(self) -> None:
         if messagebox.askyesno(
-            "Quit AAG LockLock",
-            "Unlock all input, restore temporary settings and quit LockLock?",
+            "Quit AAG - InputLock",
+            "Unlock all input, restore temporary settings and quit AAG - InputLock?",
             parent=self.root,
         ):
             self.quit_application()
@@ -145,7 +145,7 @@ class WindowsTray:
         state = self.status()
         window = tk.Toplevel(self.root)
         self._settings_window = window
-        window.title("AAG LockLock Settings")
+        window.title("AAG - InputLock Settings")
         window.resizable(False, False)
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         body = ttk.Frame(window, padding=16)

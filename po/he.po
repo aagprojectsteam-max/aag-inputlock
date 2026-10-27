@@ -26,9 +26,9 @@ msgstr "input-lock: לא ניתן לקרוא את קובץ ההגדרות ({erro
 
 #: src/input_lock_cli.py:125
 #, python-brace-format
-msgid "cannot connect to the Input Lock daemon at {path} ({error}; {unit} is {state}). Check: systemctl status {unit}"
+msgid "cannot connect to the AAG - InputLock daemon at {path} ({error}; {unit} is {state}). Check: systemctl status {unit}"
 msgstr ""
-"אין חיבור לשירות הרקע של נעילת הקלט בכתובת:\n"
+"אין חיבור לשירות הרקע של ⁨AAG - InputLock⁩ בכתובת:\n"
 "{path}\n"
 "שגיאה: {error}; מצב {unit}: ⁨{state}⁩. לבדיקה:\n"
 "systemctl status {unit}"
@@ -64,8 +64,8 @@ msgstr ""
 "sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure"
 
 #: src/input_lock_cli.py:229
-msgid "Input Lock Status"
-msgstr "מצב נעילת הקלט"
+msgid "AAG - InputLock Status"
+msgstr "מצב ⁨AAG - InputLock⁩"
 
 #: src/input_lock_cli.py:232
 #, python-brace-format
@@ -504,12 +504,12 @@ msgid "Critical battery policy"
 msgstr "מדיניות סוללה קריטית"
 
 #: src/input_lock_cli.py:628
-msgid "LockLock does not suppress UPower; platform critical-action acceptance is separate"
-msgstr "⁨LockLock⁩ אינו משבית את ⁨UPower⁩; הפעולה של המערכת בסוללה קריטית נקבעת בנפרד"
+msgid "AAG - InputLock does not suppress UPower; platform critical-action acceptance is separate"
+msgstr "⁨AAG - InputLock⁩ אינו משבית את ⁨UPower⁩; הפעולה של המערכת בסוללה קריטית נקבעת בנפרד"
 
 #: src/input_lock_cli.py:634
-msgid "Input Lock Doctor"
-msgstr "בדיקת התקינות של נעילת הקלט"
+msgid "AAG - InputLock Doctor"
+msgstr "בדיקת התקינות של ⁨AAG - InputLock⁩"
 
 #: src/input_lock_cli.py:642
 #, python-brace-format
@@ -536,8 +536,8 @@ msgstr ""
 "{error}"
 
 #: src/input_lock_cli.py:667
-msgid "Input Lock service stopped; kernel file descriptors were released."
-msgstr "שירות נעילת הקלט נעצר; ההתקנים שוחררו ברמת הליבה."
+msgid "AAG - InputLock service stopped; kernel file descriptors were released."
+msgstr "השירות של ⁨AAG - InputLock⁩ נעצר; ההתקנים שוחררו ברמת הליבה."
 
 #: src/input_lock_cli.py:675
 msgid "Safely lock and unlock local evdev input devices."
@@ -629,21 +629,21 @@ msgid "the primary shortcut must differ from the emergency shortcut"
 msgstr "קיצור המקשים הראשי חייב להיות שונה מקיצור החירום"
 
 #: src/input_lock_gnome.py:193
-msgid "Input Lock — toggle keyboard and mouse"
-msgstr "נעילת קלט — נעילה או שחרור של המקלדת והעכבר"
+msgid "AAG - InputLock — toggle keyboard and mouse"
+msgstr "⁨AAG - InputLock⁩ — נעילה או שחרור של המקלדת והעכבר"
 
 #: src/input_lock_gnome.py:199
-msgid "Input Lock — emergency unlock"
-msgstr "נעילת קלט — שחרור חירום"
+msgid "AAG - InputLock — emergency unlock"
+msgstr "⁨AAG - InputLock⁩ — שחרור חירום"
 
 #: src/input_lock_gnome.py:208
 msgid "GNOME fallback shortcuts installed."
 msgstr "קיצורי הגיבוי של ⁨GNOME⁩ הותקנו."
 
 #: src/input_lock_gnome.py:219
-msgid "the Input Lock GNOME shortcuts are not installed; run 'input_lock_gnome.py install' (or reinstall Input Lock) first"
+msgid "the AAG - InputLock GNOME shortcuts are not installed; run 'input_lock_gnome.py install' (or reinstall AAG - InputLock) first"
 msgstr ""
-"קיצורי ⁨GNOME⁩ של נעילת הקלט אינם מותקנים. יש להתקין מחדש את נעילת הקלט, או להריץ קודם:\n"
+"קיצורי ⁨GNOME⁩ של ⁨AAG - InputLock⁩ אינם מותקנים. יש להתקין מחדש את ⁨AAG - InputLock⁩, או להריץ קודם:\n"
 "input_lock_gnome.py install"
 
 #: src/input_lock_gnome.py:225
@@ -696,35 +696,35 @@ msgstr "נתוני הטמפרטורה או הסוללה לא היו זמינים
 
 #: src/input_lock_messages.py:30
 msgid "the tray lost contact with the service while the lid may have been closed"
-msgstr "סמל נעילת הקלט איבד קשר עם השירות בזמן שהמכסה אולי היה סגור"
+msgstr "הסמל של ⁨AAG - InputLock⁩ איבד קשר עם השירות בזמן שהמכסה אולי היה סגור"
 
 #: src/input_lock_messages.py:35
-msgid "The Input Lock tray did not check in with the background service in time (for example, the tray stopped responding, or the computer was going to sleep or waking up)."
-msgstr "סמל נעילת הקלט לא דיווח לשירות הרקע בזמן (למשל, הסמל הפסיק להגיב, או שהמחשב נכנס למצב שינה או התעורר ממנו)."
+msgid "The AAG - InputLock tray did not check in with the background service in time (for example, the tray stopped responding, or the computer was going to sleep or waking up)."
+msgstr "הסמל של ⁨AAG - InputLock⁩ לא דיווח לשירות הרקע בזמן (למשל, הסמל הפסיק להגיב, או שהמחשב נכנס למצב שינה או התעורר ממנו)."
 
 #: src/input_lock_messages.py:39
-msgid "The Input Lock tray's connection to the background service was closed (the tray was stopped, restarted or crashed)."
-msgstr "החיבור של סמל נעילת הקלט לשירות הרקע נסגר (הסמל נעצר, הופעל מחדש או קרס)."
+msgid "The AAG - InputLock tray's connection to the background service was closed (the tray was stopped, restarted or crashed)."
+msgstr "החיבור של הסמל של ⁨AAG - InputLock⁩ לשירות הרקע נסגר (הסמל נעצר, הופעל מחדש או קרס)."
 
 #: src/input_lock_messages.py:42 src/input_lock_messages.py:43
 msgid "Your desktop session stopped being active (user switch, logout or a session problem)."
 msgstr "הפעלת שולחן העבודה שלך הפסיקה להיות פעילה (החלפת משתמש, יציאה מהמערכת או תקלה בהפעלה)."
 
 #: src/input_lock_messages.py:45
-msgid "The Input Lock tray was stopped or your desktop session ended."
-msgstr "סמל נעילת הקלט נעצר, או שהפעלת שולחן העבודה שלך הסתיימה."
+msgid "The AAG - InputLock tray was stopped or your desktop session ended."
+msgstr "הסמל של ⁨AAG - InputLock⁩ נעצר, או שהפעלת שולחן העבודה שלך הסתיימה."
 
 #: src/input_lock_messages.py:46
-msgid "The Input Lock background service was stopped or restarted."
-msgstr "שירות הרקע של נעילת הקלט נעצר או הופעל מחדש."
+msgid "The AAG - InputLock background service was stopped or restarted."
+msgstr "שירות הרקע של ⁨AAG - InputLock⁩ נעצר או הופעל מחדש."
 
 #: src/input_lock_messages.py:47
-msgid "The connection to the Input Lock background service was lost (the service stopped or crashed)."
-msgstr "החיבור לשירות הרקע של נעילת הקלט אבד (השירות נעצר או קרס)."
+msgid "The connection to the AAG - InputLock background service was lost (the service stopped or crashed)."
+msgstr "החיבור לשירות הרקע של ⁨AAG - InputLock⁩ אבד (השירות נעצר או קרס)."
 
 #: src/input_lock_messages.py:49
-msgid "The Input Lock background service restarted; Ignore Lid Close always starts off after a restart."
-msgstr "שירות הרקע של נעילת הקלט הופעל מחדש; לאחר הפעלה מחדש ההתעלמות מסגירת מכסה תמיד כבויה."
+msgid "The AAG - InputLock background service restarted; Ignore Lid Close always starts off after a restart."
+msgstr "שירות הרקע של ⁨AAG - InputLock⁩ הופעל מחדש; לאחר הפעלה מחדש ההתעלמות מסגירת מכסה תמיד כבויה."
 
 #: src/input_lock_messages.py:52 src/input_lock_messages.py:66
 msgid "Input was unlocked with an emergency unlock, which also turns Ignore Lid Close off."
@@ -751,28 +751,28 @@ msgid "The keys allowed while locked were changed, which resets all locks."
 msgstr "המקשים המותרים בזמן נעילה שונו, וכל הנעילות אופסו."
 
 #: src/input_lock_messages.py:62
-msgid "The Input Lock configuration was reloaded, which resets all locks."
-msgstr "ההגדרות של נעילת הקלט נטענו מחדש, וכל הנעילות אופסו."
+msgid "The AAG - InputLock configuration was reloaded, which resets all locks."
+msgstr "ההגדרות של ⁨AAG - InputLock⁩ נטענו מחדש, וכל הנעילות אופסו."
 
 #: src/input_lock_messages.py:63
-msgid "The Input Lock configuration could not be reloaded, so all locks were reset."
-msgstr "לא ניתן היה לטעון מחדש את ההגדרות של נעילת הקלט, ולכן כל הנעילות אופסו."
+msgid "The AAG - InputLock configuration could not be reloaded, so all locks were reset."
+msgstr "לא ניתן היה לטעון מחדש את ההגדרות של ⁨AAG - InputLock⁩, ולכן כל הנעילות אופסו."
 
 #: src/input_lock_messages.py:64
 msgid "All locks were released."
 msgstr "כל הנעילות שוחררו."
 
 #: src/input_lock_messages.py:68
-msgid "Input Lock settings were changed or reloaded, which resets all locks."
-msgstr "ההגדרות של נעילת הקלט שונו או נטענו מחדש, וכל הנעילות אופסו."
+msgid "AAG - InputLock settings were changed or reloaded, which resets all locks."
+msgstr "ההגדרות של ⁨AAG - InputLock⁩ שונו או נטענו מחדש, וכל הנעילות אופסו."
 
 #: src/input_lock_messages.py:69
 msgid "The auto-unlock safety timer released input, which also turns Ignore Lid Close off."
 msgstr "קוצב הזמן לשחרור אוטומטי שחרר את הקלט, וזה מכבה גם את ההתעלמות מסגירת מכסה."
 
 #: src/input_lock_messages.py:71
-msgid "Input Lock could not save its safety record, so it stopped ignoring the lid."
-msgstr "נעילת הקלט לא הצליחה לשמור את רישום הבטיחות שלה, ולכן הפסיקה להתעלם מסגירת המכסה."
+msgid "AAG - InputLock could not save its safety record, so it stopped ignoring the lid."
+msgstr "⁨AAG - InputLock⁩ לא הצליח לשמור את רישום הבטיחות שלו, ולכן הפסיק להתעלם מסגירת המכסה."
 
 #: src/input_lock_messages.py:73
 msgid "The power-saver cooling hold could not be kept."
@@ -814,12 +814,12 @@ msgstr "היא כבתה סביב כניסה של המחשב למצב שינה א
 
 #: src/input_lock_messages.py:125
 #, python-brace-format
-msgid "The Input Lock service turned it off (reason: {reason})."
-msgstr "שירות נעילת הקלט כיבה אותה (סיבה: {reason})."
+msgid "The AAG - InputLock service turned it off (reason: {reason})."
+msgstr "השירות של ⁨AAG - InputLock⁩ כיבה אותה (סיבה: {reason})."
 
 #: src/input_lock_messages.py:127
-msgid "The Input Lock service turned it off without giving a reason."
-msgstr "שירות נעילת הקלט כיבה אותה בלי לציין סיבה."
+msgid "The AAG - InputLock service turned it off without giving a reason."
+msgstr "השירות של ⁨AAG - InputLock⁩ כיבה אותה בלי לציין סיבה."
 
 #: src/input_lock_messages.py:129
 #, python-brace-format
@@ -872,7 +872,7 @@ msgstr "הבקשה לגבי המכסה אינה עדכנית; יש לרענן א
 
 #: src/input_lock_messages.py:181
 msgid "lid-ignore requires an active graphical session and connected tray"
-msgstr "התעלמות מסגירת מכסה דורשת הפעלה גרפית פעילה וסמל נעילת קלט מחובר"
+msgstr "התעלמות מסגירת מכסה דורשת הפעלה גרפית פעילה והסמל של ⁨AAG - InputLock⁩ מחובר"
 
 #: src/input_lock_messages.py:182
 msgid "no eligible lid switch input device was detected"
@@ -909,8 +909,8 @@ msgid "missing terminal failure recorder"
 msgstr "חסר רושם הכשל הסופי"
 
 #: src/input_lock_messages.py:190
-msgid "InputLock watchdog/restart contract changed"
-msgstr "הגדרות ה־⁨watchdog⁩ או ההפעלה מחדש של נעילת הקלט השתנו"
+msgid "AAG - InputLock watchdog/restart contract changed"
+msgstr "הגדרות ה־⁨watchdog⁩ או ההפעלה מחדש של ⁨AAG - InputLock⁩ השתנו"
 
 #: src/input_lock_messages.py:191
 msgid "unreadable failure latch"
@@ -969,8 +969,8 @@ msgid "recovery shortcut keys (including F1-F12) cannot be added"
 msgstr "לא ניתן להוסיף מקשים של קיצורי שחזור (כולל F1-F12)"
 
 #: src/input_lock_messages.py:209
-msgid "allowed keys need /dev/uinput; run the LockLock updater and restart"
-msgstr "מקשים מותרים דורשים את ‎/dev/uinput; יש להריץ את העדכון של ⁨LockLock⁩ ולהפעיל מחדש"
+msgid "allowed keys need /dev/uinput; run the AAG - InputLock updater and restart"
+msgstr "מקשים מותרים דורשים את ‎/dev/uinput; יש להריץ את העדכון של ⁨AAG - InputLock⁩ ולהפעיל מחדש"
 
 #: src/input_lock_messages.py:210
 msgid "mouse and touchpad must be configured together"
@@ -990,7 +990,7 @@ msgstr "מספר השניות חייב להיות בין ⁨60⁩ ל־⁨86400�
 
 #: src/input_lock_messages.py:215
 msgid "a tray controller is already connected"
-msgstr "סמל נעילת קלט אחר כבר מחובר ושולט בשירות"
+msgstr "סמל אחר של ⁨AAG - InputLock⁩ כבר מחובר ושולט בשירות"
 
 #: src/input_lock_messages.py:216
 msgid "subscriber limit reached"
@@ -998,11 +998,11 @@ msgstr "הושג המספר המרבי של מנויים"
 
 #: src/input_lock_messages.py:217
 msgid "the tray controller must run as the authorized user"
-msgstr "סמל נעילת הקלט חייב לפעול כמשתמש המורשה"
+msgstr "הסמל של ⁨AAG - InputLock⁩ חייב לפעול כמשתמש המורשה"
 
 #: src/input_lock_messages.py:218
 msgid "the tray controller must run in the local graphical session"
-msgstr "סמל נעילת הקלט חייב לפעול בהפעלה הגרפית המקומית"
+msgstr "הסמל של ⁨AAG - InputLock⁩ חייב לפעול בהפעלה הגרפית המקומית"
 
 #: src/input_lock_messages.py:219
 msgid "unauthorized UID"
@@ -1123,13 +1123,13 @@ msgstr "היחידה {unit} חסרה או אינה תואמת"
 
 #: src/input_lock_messages.py:272
 #, python-brace-format
-msgid "InputLock root helper/timeout contract changed: {unit}"
-msgstr "הגדרות רכיב העזר של נעילת הקלט או הזמנים הקצובים שלו השתנו: {unit}"
+msgid "AAG - InputLock root helper/timeout contract changed: {unit}"
+msgstr "הגדרות רכיב העזר של ⁨AAG - InputLock⁩ או הזמנים הקצובים שלו השתנו: {unit}"
 
 #: src/input_lock_messages.py:274
 #, python-brace-format
-msgid "missing InputLock failure handler on {unit}"
-msgstr "חסר מטפל הכשל של נעילת הקלט ב־{unit}"
+msgid "missing AAG - InputLock failure handler on {unit}"
+msgstr "חסר מטפל הכשל של ⁨AAG - InputLock⁩ ב־{unit}"
 
 #: src/input_lock_messages.py:276
 #, python-brace-format
@@ -1220,8 +1220,8 @@ msgid "Ignore Lid Close (safety unavailable)"
 msgstr "התעלמות מסגירת מכסה (הבטיחות אינה זמינה)"
 
 #: src/input_lock_notifier.py:85
-msgid "Quitting, stopping or restarting the Input Lock tray turns Ignore Lid Close off and unlocks input."
-msgstr "יציאה, עצירה או הפעלה מחדש של סמל נעילת הקלט מכבות את ההתעלמות מסגירת מכסה ומשחררות את נעילת הקלט."
+msgid "Quitting, stopping or restarting the AAG - InputLock tray turns Ignore Lid Close off and unlocks input."
+msgstr "יציאה, עצירה או הפעלה מחדש של הסמל של ⁨AAG - InputLock⁩ מכבות את ההתעלמות מסגירת מכסה ומשחררות את נעילת הקלט."
 
 #: src/input_lock_notifier.py:89
 msgid "Keep running with the lid closed, under thermal, battery and telemetry supervision."
@@ -1236,12 +1236,12 @@ msgid "Re-enable…"
 msgstr "הפעלה מחדש…"
 
 #: src/input_lock_notifier.py:95
-msgid "It will not turn itself back on. To turn it on again, open the lid and choose “Re-enable…” or use the Input Lock tray menu."
-msgstr "היא לא תופעל שוב מעצמה. כדי להפעיל אותה שוב יש לפתוח את המכסה ולבחור \"הפעלה מחדש…\", או להשתמש בתפריט של נעילת הקלט."
+msgid "It will not turn itself back on. To turn it on again, open the lid and choose “Re-enable…” or use the AAG - InputLock tray menu."
+msgstr "היא לא תופעל שוב מעצמה. כדי להפעיל אותה שוב יש לפתוח את המכסה ולבחור \"הפעלה מחדש…\", או להשתמש בתפריט של ⁨AAG - InputLock⁩."
 
 #: src/input_lock_notifier.py:101
-msgid "Turn it on again from the Input Lock tray menu if you still need it."
-msgstr "אם עדיין צריך אותה, אפשר להפעיל אותה שוב מהתפריט של נעילת הקלט."
+msgid "Turn it on again from the AAG - InputLock tray menu if you still need it."
+msgstr "אם עדיין צריך אותה, אפשר להפעיל אותה שוב מהתפריט של ⁨AAG - InputLock⁩."
 
 #: src/input_lock_notifier.py:104
 #, python-brace-format
@@ -1254,7 +1254,7 @@ msgstr "מצב צריכת החשמל שוחזר"
 
 #: src/input_lock_notifier.py:106
 msgid "Unlocking input from the tray also turns Ignore Lid Close off. Turn it on again from the tray menu if you still need it."
-msgstr "שחרור נעילת הקלט מהתפריט מכבה גם את ההתעלמות מסגירת מכסה. אם עדיין צריך אותה, אפשר להפעיל אותה שוב מהתפריט של נעילת הקלט."
+msgstr "שחרור נעילת הקלט מהתפריט מכבה גם את ההתעלמות מסגירת מכסה. אם עדיין צריך אותה, אפשר להפעיל אותה שוב מהתפריט של ⁨AAG - InputLock⁩."
 
 #: src/input_lock_notifier.py:110
 msgid "Power mode was changed manually; power-saver restored while Ignore Lid Close is on."
@@ -1266,15 +1266,15 @@ msgstr "להמשיך לפעול כשהמכסה סגור?"
 
 #: src/input_lock_notifier.py:114
 msgid "Lid closure will be ignored continuously, with NO 2/4-minute timeout. This stays enabled until you turn it off, or a safety/fail-safe condition intervenes. Dangerous temperature, critical battery, lost monitoring or controller/daemon failure can request regular OS suspend. GNOME idle suspend is prevented and a temporary power-saver cooling profile is held while enabled; the previous performance preference automatically returns when disabled. Manual system sleep and OS critical-battery protection remain available. The setting starts OFF after a service restart or reboot."
-msgstr "המערכת תתעלם מסגירת המכסה באופן רציף, ללא הגבלת זמן של 2 או 4 דקות. ההגדרה נשארת פעילה עד שמכבים אותה, או עד שמצב בטיחות או מנגנון גיבוי מתערבים. טמפרטורה מסוכנת, סוללה במצב קריטי, אובדן ניטור או כשל של סמל נעילת הקלט או של שירות הרקע יכולים לבקש מהמערכת להיכנס למצב שינה רגיל. בזמן שההגדרה פעילה, ⁨GNOME⁩ לא ייכנס למצב שינה עקב חוסר פעילות, ומצב חיסכון בחשמל מוחזק זמנית לצורך קירור; העדפת הביצועים הקודמת חוזרת אוטומטית כשמכבים את ההגדרה. שינה ידנית של המערכת וההגנה של מערכת ההפעלה בסוללה קריטית נשארות זמינות. לאחר הפעלה מחדש של השירות או של המחשב, ההגדרה כבויה."
+msgstr "המערכת תתעלם מסגירת המכסה באופן רציף, ללא הגבלת זמן של 2 או 4 דקות. ההגדרה נשארת פעילה עד שמכבים אותה, או עד שמצב בטיחות או מנגנון גיבוי מתערבים. טמפרטורה מסוכנת, סוללה במצב קריטי, אובדן ניטור או כשל של הסמל של ⁨AAG - InputLock⁩ או של שירות הרקע יכולים לבקש מהמערכת להיכנס למצב שינה רגיל. בזמן שההגדרה פעילה, ⁨GNOME⁩ לא ייכנס למצב שינה עקב חוסר פעילות, ומצב חיסכון בחשמל מוחזק זמנית לצורך קירור; העדפת הביצועים הקודמת חוזרת אוטומטית כשמכבים את ההגדרה. שינה ידנית של המערכת וההגנה של מערכת ההפעלה בסוללה קריטית נשארות זמינות. לאחר הפעלה מחדש של השירות או של המחשב, ההגדרה כבויה."
 
 #: src/input_lock_notifier.py:123
 msgid "Keep the lid OPEN when enabling, keep the vents unobstructed, and NEVER put the running laptop in a bag."
 msgstr "יש להשאיר את המכסה פתוח בזמן ההפעלה, לא לחסום את פתחי האוורור, ולעולם לא להכניס מחשב נייד פועל לתיק."
 
 #: src/input_lock_notifier.py:126
-msgid "A language change takes effect the next time Input Lock starts, for example after you log in again."
-msgstr "שינוי השפה ייכנס לתוקף בפעם הבאה שנעילת הקלט תופעל, למשל לאחר כניסה מחדש למערכת."
+msgid "A language change takes effect the next time AAG - InputLock starts, for example after you log in again."
+msgstr "שינוי השפה ייכנס לתוקף בפעם הבאה ש־⁨AAG - InputLock⁩ יופעל, למשל לאחר כניסה מחדש למערכת."
 
 #: src/input_lock_notifier.py:134
 msgid "normal OS behavior"
@@ -1315,12 +1315,12 @@ msgstr "המעבר למצב שינה אושר"
 #: src/input_lock_notifier.py:556 src/input_lock_notifier.py:1314
 #: src/input_lock_notifier.py:2251 src/input_lock_notifier.py:2298
 #: src/input_lock_notifier.py:2366 src/input-lock-launch:23
-msgid "Input Lock"
-msgstr "נעילת קלט"
+msgid "AAG - InputLock"
+msgstr "⁨AAG - InputLock⁩"
 
 #: src/input_lock_notifier.py:559
-msgid "Input Lock — Connecting…"
-msgstr "נעילת קלט — מתחבר…"
+msgid "AAG - InputLock — Connecting…"
+msgstr "⁨AAG - InputLock⁩ — מתחבר…"
 
 #: src/input_lock_notifier.py:562
 msgid "Lid safety: connecting…"
@@ -1370,8 +1370,8 @@ msgid "A protective suspend was confirmed. Re-enable lid-ignore only with lid op
 msgstr "כניסה למצב שינה לצורך הגנה אושרה. יש להפעיל מחדש את ההתעלמות מסגירת מכסה רק כשהמכסה פתוח."
 
 #: src/input_lock_notifier.py:832
-msgid "Open the lid. Automatic safety protection failed; see InputLock diagnostics."
-msgstr "יש לפתוח את המכסה. הגנת הבטיחות האוטומטית נכשלה; פרטים בבדיקת התקינות של נעילת הקלט."
+msgid "Open the lid. Automatic safety protection failed; see AAG - InputLock diagnostics."
+msgstr "יש לפתוח את המכסה. הגנת הבטיחות האוטומטית נכשלה; פרטים בבדיקת התקינות של ⁨AAG - InputLock⁩."
 
 #: src/input_lock_notifier.py:834
 msgid "Lid safety"
@@ -1408,8 +1408,8 @@ msgid "Lid safety: {state}"
 msgstr "בטיחות המכסה: ⁨{state}⁩"
 
 #: src/input_lock_notifier.py:1197
-msgid "Input Lock — Locked"
-msgstr "נעילת קלט — נעול"
+msgid "AAG - InputLock — Locked"
+msgstr "⁨AAG - InputLock⁩ — נעול"
 
 #: src/input_lock_notifier.py:1198
 msgid "Unlock Input"
@@ -1424,8 +1424,8 @@ msgid "Input is locked"
 msgstr "הקלט נעול"
 
 #: src/input_lock_notifier.py:1210
-msgid "Input Lock — Unlocked"
-msgstr "נעילת קלט — לא נעול"
+msgid "AAG - InputLock — Unlocked"
+msgstr "⁨AAG - InputLock⁩ — לא נעול"
 
 #: src/input_lock_notifier.py:1218
 msgid "Input is unlocked; lid close is ignored"
@@ -1436,35 +1436,35 @@ msgid "Input is unlocked"
 msgstr "הקלט לא נעול"
 
 #: src/input_lock_notifier.py:1264
-msgid "Input Lock service unavailable"
-msgstr "שירות נעילת הקלט אינו זמין"
+msgid "AAG - InputLock service unavailable"
+msgstr "השירות של ⁨AAG - InputLock⁩ אינו זמין"
 
 #: src/input_lock_notifier.py:1266
-msgid "Input Lock — Another tray is in control"
-msgstr "נעילת קלט — סמל אחר של נעילת הקלט שולט בשירות"
+msgid "AAG - InputLock — Another tray is in control"
+msgstr "⁨AAG - InputLock⁩ — סמל אחר של ⁨AAG - InputLock⁩ שולט בשירות"
 
 #: src/input_lock_notifier.py:1267
-msgid "Lid safety: managed by the other Input Lock tray"
-msgstr "בטיחות המכסה: מנוהלת על ידי הסמל האחר של נעילת הקלט"
+msgid "Lid safety: managed by the other AAG - InputLock tray"
+msgstr "בטיחות המכסה: מנוהלת על ידי הסמל האחר של ⁨AAG - InputLock⁩"
 
 #: src/input_lock_notifier.py:1270
-msgid "Input Lock — Service unavailable"
-msgstr "נעילת קלט — השירות אינו זמין"
+msgid "AAG - InputLock — Service unavailable"
+msgstr "⁨AAG - InputLock⁩ — השירות אינו זמין"
 
 #: src/input_lock_notifier.py:1271
 msgid "Lid safety: disconnected — status unknown; open the lid"
 msgstr "בטיחות המכסה: מנותק — המצב לא ידוע; יש לפתוח את המכסה"
 
 #: src/input_lock_notifier.py:1280
-msgid "InputLock background service unavailable. Open the lid and check input-lock.service with systemctl status input-lock.service. After the service is repaired, the tray will reconnect automatically."
+msgid "AAG - InputLock background service unavailable. Open the lid and check input-lock.service with systemctl status input-lock.service. After the service is repaired, the tray will reconnect automatically."
 msgstr ""
-"שירות הרקע של נעילת הקלט אינו זמין. יש לפתוח את המכסה ולבדוק את מצב השירות input-lock.service באמצעות הפקודה:\n"
+"שירות הרקע של ⁨AAG - InputLock⁩ אינו זמין. יש לפתוח את המכסה ולבדוק את מצב השירות input-lock.service באמצעות הפקודה:\n"
 "systemctl status input-lock.service\n"
 "לאחר תיקון השירות, הסמל יתחבר מחדש אוטומטית."
 
 #: src/input_lock_notifier.py:1346
-msgid "Input Lock Settings"
-msgstr "הגדרות נעילת הקלט"
+msgid "AAG - InputLock Settings"
+msgstr "הגדרות ⁨AAG - InputLock⁩"
 
 #: src/input_lock_notifier.py:1350 src/input_lock_notifier.py:1704
 #: src/input_lock_notifier.py:1755 src/input_lock_notifier.py:1874
@@ -1512,8 +1512,8 @@ msgid "Manage Keys…"
 msgstr "ניהול מקשים…"
 
 #: src/input_lock_notifier.py:1409
-msgid "Start Input Lock when I log in"
-msgstr "הפעלת נעילת הקלט בכניסה למערכת"
+msgid "Start AAG - InputLock when I log in"
+msgstr "הפעלת ⁨AAG - InputLock⁩ בכניסה למערכת"
 
 #: src/input_lock_notifier.py:1414
 msgid "Automatically lock after no activity"
@@ -1647,8 +1647,8 @@ msgid "Cursor hiding extension: enabled."
 msgstr "הרחבת הסתרת הסמן: פעילה."
 
 #: src/input_lock_notifier.py:1806
-msgid "Cursor hiding extension: disabled — the cursor will not be hidden until the Input Lock Cursor Hider GNOME extension is enabled."
-msgstr "הרחבת הסתרת הסמן: כבויה — הסמן לא יוסתר עד שתופעל ההרחבה ⁨Input Lock Cursor Hider⁩ של ⁨GNOME⁩."
+msgid "Cursor hiding extension: disabled — the cursor will not be hidden until the AAG - InputLock Cursor Hider GNOME extension is enabled."
+msgstr "הרחבת הסתרת הסמן: כבויה — הסמן לא יוסתר עד שתופעל ההרחבה ⁨AAG - InputLock Cursor Hider⁩ של ⁨GNOME⁩."
 
 #: src/input_lock_notifier.py:1808
 msgid "Cursor hiding extension: status unknown (GNOME Shell settings unavailable)."
@@ -1738,12 +1738,12 @@ msgid "Ignore Lid Close could not be turned on."
 msgstr "לא ניתן היה להפעיל את ההתעלמות מסגירת מכסה."
 
 #: src/input_lock_notifier.py:2092
-msgid "The Input Lock service is not available. When the tray reconnects, turn Ignore Lid Close on from its menu."
-msgstr "שירות נעילת הקלט אינו זמין. כשהסמל יתחבר מחדש, אפשר להפעיל את ההתעלמות מסגירת מכסה מהתפריט שלו."
+msgid "The AAG - InputLock service is not available. When the tray reconnects, turn Ignore Lid Close on from its menu."
+msgstr "השירות של ⁨AAG - InputLock⁩ אינו זמין. כשהסמל יתחבר מחדש, אפשר להפעיל את ההתעלמות מסגירת מכסה מהתפריט שלו."
 
 #: src/input_lock_notifier.py:2100
-msgid "Open the lid first, then choose “Re-enable…” again or use the Input Lock tray menu."
-msgstr "יש לפתוח קודם את המכסה, ואז לבחור שוב \"הפעלה מחדש…\" או להשתמש בתפריט של נעילת הקלט."
+msgid "Open the lid first, then choose “Re-enable…” again or use the AAG - InputLock tray menu."
+msgstr "יש לפתוח קודם את המכסה, ואז לבחור שוב \"הפעלה מחדש…\" או להשתמש בתפריט של ⁨AAG - InputLock⁩."
 
 #: src/input_lock_notifier.py:2105
 msgid "No lid switch is available right now."
@@ -1766,12 +1766,12 @@ msgid "Safe keyboard, mouse, touchpad, and touchscreen locking for Ubuntu."
 msgstr "נעילה בטוחה של המקלדת, העכבר, משטח המגע ומסך המגע ב־⁨Ubuntu⁩."
 
 #: src/input_lock_notifier.py:2273
-msgid "Quit Input Lock?"
-msgstr "לצאת מנעילת הקלט?"
+msgid "Quit AAG - InputLock?"
+msgstr "לצאת מ־⁨AAG - InputLock⁩?"
 
 #: src/input_lock_notifier.py:2275
-msgid "This will unlock all input and stop both the Input Lock service and its tray process."
-msgstr "פעולה זו תשחרר את נעילת כל הקלט ותעצור גם את שירות נעילת הקלט וגם את הסמל שלו."
+msgid "This will unlock all input and stop both the AAG - InputLock service and its tray process."
+msgstr "פעולה זו תשחרר את נעילת כל הקלט ותעצור גם את השירות של ⁨AAG - InputLock⁩ וגם את הסמל שלו."
 
 #: src/input_lock_notifier.py:2348
 #, python-brace-format
@@ -1779,9 +1779,9 @@ msgid "Press {shortcut} to unlock."
 msgstr "לשחרור הנעילה יש ללחוץ על {shortcut}."
 
 #: src/input-lock-launch:29
-msgid "Input Lock was not started. Administrator authentication was cancelled or failed."
-msgstr "נעילת הקלט לא הופעלה. אימות מנהל המערכת בוטל או נכשל."
+msgid "AAG - InputLock was not started. Administrator authentication was cancelled or failed."
+msgstr "⁨AAG - InputLock⁩ לא הופעל. אימות מנהל המערכת בוטל או נכשל."
 
 #: src/input-lock-launch:35
-msgid "The Input Lock service started, but the tray icon could not be opened."
-msgstr "שירות נעילת הקלט הופעל, אבל לא ניתן היה לפתוח את הסמל שלו."
+msgid "The AAG - InputLock service started, but the tray icon could not be opened."
+msgstr "השירות של ⁨AAG - InputLock⁩ הופעל, אבל לא ניתן היה לפתוח את הסמל שלו."

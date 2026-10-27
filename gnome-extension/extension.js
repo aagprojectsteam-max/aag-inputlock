@@ -6,7 +6,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 const DEFAULT_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 86399;
 // Mutter does not fire idle watches while any GNOME idle inhibitor is active
-// (Caffeine, Input Lock's own lid-ignore guard, a video player...), so the
+// (Caffeine, AAG - InputLock's own lid-ignore guard, a video player...), so the
 // idle *time* is sampled instead. Sampling the core idle monitor is cheap;
 // the runtime lease file is read only once the pointer is already idle.
 const IDLE_POLL_MS = 500;

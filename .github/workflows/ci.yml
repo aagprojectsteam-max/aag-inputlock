@@ -1,4 +1,4 @@
-name: LockLock CI
+name: AAG - InputLock CI
 on: [push, pull_request]
 
 permissions:

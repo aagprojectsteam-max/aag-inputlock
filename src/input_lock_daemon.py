@@ -160,7 +160,7 @@ class TransitionError(RuntimeError):
 
 
 class RecoveryRequired(TransitionError):
-    """The daemon must terminate so that systemd runs InputLock recovery.
+    """The daemon must terminate so that systemd runs AAG - InputLock recovery.
 
     A subclass of TransitionError for compatibility, but never swallowed by a
     handler that refuses an ordinary transition: those re-raise it (S-R7).
@@ -911,7 +911,7 @@ class InputLockDaemon:
         self._start_logind_monitor()
         threading.Thread(target=self._sample_safety, name="input-lock-telemetry", daemon=True).start()
         LOG.info(
-            "Input Lock %s started unlocked; authorized UID=%d; devices=%d",
+            "AAG - InputLock %s started unlocked; authorized UID=%d; devices=%d",
             VERSION,
             self.config.authorized_uid,
             len(self.devices),
@@ -1173,7 +1173,7 @@ class InputLockDaemon:
         if now - self.last_safety_emit >= 5:
             self.last_safety_emit = now
             self._emit_state_event("safety-status")
-        # A wedged main event loop loses its watchdog. InputLock recovery stops
+        # A wedged main event loop loses its watchdog. AAG - InputLock recovery stops
         # the daemon before one final ordinary suspend attempt.
         sd_notify("WATCHDOG=1")
 
@@ -1202,7 +1202,7 @@ class InputLockDaemon:
                                lid_reason=lid_reason or "protective-suspend:" + reason,
                                user_initiated=False)
         if any(r.grabbed for r in self.devices.values()):
-            raise RecoveryRequired("device release failed; terminating for InputLock recovery")
+            raise RecoveryRequired("device release failed; terminating for AAG - InputLock recovery")
         self.protective_result = {"reason": reason, "attempted_at": time.time(),
                                   "generation": self.lid_generation, "result": "pending",
                                   "decision_evidence": self.safety.last_decision}
@@ -1643,7 +1643,7 @@ class InputLockDaemon:
                 self.safety.event("PROTECTIVE_ACTION_FAILED" if result["result"] == "request-failed" else "PROTECTIVE_ACTION_STARTED")
                 self._write_safety(force=True)
                 if result["result"] == "request-failed" and self.safety.state == "PROTECTIVE_ACTION_PENDING":
-                    # Exit failure so systemd invokes InputLock recovery,
+                    # Exit failure so systemd invokes AAG - InputLock recovery,
                     # independently of the failed D-Bus request.
                     raise RecoveryRequired("protective service dispatch failed")
             elif event.startswith("power-state:"):
@@ -1950,7 +1950,7 @@ class InputLockDaemon:
             )
         except (OSError, PermissionError) as exc:
             raise TransitionError(
-                "allowed keys need /dev/uinput; run the LockLock updater and restart"
+                "allowed keys need /dev/uinput; run the AAG - InputLock updater and restart"
             ) from exc
 
     def _release_forwarded_for_record(self, record: DeviceRecord) -> None:
@@ -3305,7 +3305,7 @@ class InputLockDaemon:
             self._send_and_close(fd, response)
         except RecoveryRequired:
             # S-R7: e.g. a protective release that failed while a client was
-            # being closed. Terminate so that systemd runs InputLock recovery.
+            # being closed. Terminate so that systemd runs AAG - InputLock recovery.
             raise
         except (TransitionError, ValueError) as exc:
             self._send_and_close(fd, {"ok": False, "error": str(exc)})

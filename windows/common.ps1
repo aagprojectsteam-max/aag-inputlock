@@ -42,7 +42,7 @@ function Assert-AgentStopped {
     # Never terminate another user's agent or send commands to the elevation
     # account by accident. Exit the tray in its interactive session first.
     $Agents = @(Get-Process -Name LockLockAgent -ErrorAction SilentlyContinue)
-    if ($Agents.Count) { throw 'Exit LockLock from each running user session before installing or removing its binaries.' }
+    if ($Agents.Count) { throw 'Exit AAG - InputLock from each running user session before installing or removing its binaries.' }
 }
 
 function Stop-PowerServiceSafely {

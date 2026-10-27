@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Restoration-only migration of legacy LockLock GNOME/UPower overrides.
+"""Restoration-only migration of legacy AAG - InputLock GNOME/UPower overrides.
 
 New lid leases never change automatic sleep or critical-battery settings.
 Recovery journals remain until each relevant runtime verification succeeds.
@@ -393,7 +393,7 @@ class UPowerPolicyController:
 def user_main(argv: list[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Manage LockLock GNOME lid policy")
+    parser = argparse.ArgumentParser(description="Manage AAG - InputLock GNOME lid policy")
     parser.add_argument("action", choices=("enable-user", "disable-user", "status-user"))
     args = parser.parse_args(argv)
     policy = LidNoSuspendPolicy.current_user()

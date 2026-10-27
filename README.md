@@ -1,7 +1,7 @@
-# AAG LockLock 2.0.0-beta.5 — Ubuntu ו־Windows
+# AAG - InputLock 2.0.0-beta.5 — Ubuntu ו־Windows
 
 
-Version 2.0.0-beta.5 source update: Linux lid-ignore now uses independent logind inhibition and InputLock-owned ordinary suspend protection. It requires native protection readiness; retired AAG services and AAG Power APIs are not prerequisites. See [independent lid protection and deployment limits](docs/independent-lid-protection.md). Historical deployment records describe earlier code; this source change is not a claim of physical acceptance.
+Version 2.0.0-beta.5 source update: Linux lid-ignore now uses independent logind inhibition and AAG - InputLock-owned ordinary suspend protection. It requires native protection readiness; retired AAG services and AAG Power APIs are not prerequisites. See [independent lid protection and deployment limits](docs/independent-lid-protection.md). Historical deployment records describe earlier code; this source change is not a claim of physical acceptance.
 
 Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUALIFICATION.md). 2.0.0-beta.5 has not been physically requalified.
 
@@ -14,7 +14,7 @@ Current Linux production acceptance: [beta.4 Linux qualification](docs/BETA4-QUA
 - **Hotkeys are validated.** `HOTKEY` and `EMERGENCY_HOTKEY` need at least two of CTRL/ALT/SHIFT/SUPER plus one key A–Z, 0–9 or F1–F12, and must differ; otherwise the configuration is invalid and `input-lock doctor` reports FAIL. The GNOME emergency shortcut follows `EMERGENCY_HOTKEY`; after changing it run `python3 /usr/lib/input-lock/input_lock_gnome.py install` (doctor warns while they differ). `input-lock set-hotkey` fails with a clear error when the GNOME bindings are not installed.
 - **Emergency path.** After an emergency unlock by the emergency hotkey, the GNOME emergency shortcut or the TTY recovery chord, IPC requests that would lock (`lock`, `lock-default`, and `toggle`/the GNOME primary-shortcut fallback while nothing is locked) are refused for 60 s and the requesting PID is logged; unlocking is never refused. The internal commands and `input-lock emergency-unlock` fall back to the default socket when the configuration cannot be parsed.
 - **CLI.** The CLI waits up to 5 s for the daemon socket while the service starts, then names the socket and `systemctl status input-lock.service`. It warns once when the running daemon speaks another protocol version (current: 3).
-- **Failure latch.** Written only when InputLock's own suspend request was accepted and the transition then failed; later failures are appended, never overwritten. While it is active, arming stays blocked until `sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure` (the latch is archived and renamed, never deleted). After a reboot or a later successful suspend the latch is stale: it no longer blocks arming, and `input-lock doctor` and `input_lock_safety.py check` show it as information.
+- **Failure latch.** Written only when AAG - InputLock's own suspend request was accepted and the transition then failed; later failures are appended, never overwritten. While it is active, arming stays blocked until `sudo /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py acknowledge-failure` (the latch is archived and renamed, never deleted). After a reboot or a later successful suspend the latch is stale: it no longer blocks arming, and `input-lock doctor` and `input_lock_safety.py check` show it as information.
 - **Installer.** It refuses a checkout other accounts can modify, compiles and validates a root-owned staged copy before stopping anything, restores the backup automatically on failure, reports doctor problems as post-install warnings, and prunes stale files from `/usr/lib/input-lock`. `tools/install_native_lid.py` is retired.
 - **Units.** The protect and failsafe units gain sandboxing (`PrivateDevices`, kernel/cgroup protection, `RestrictNamespaces`, native syscalls only) but deliberately no `CapabilityBoundingSet`. The daemon unit's stop hook no longer waits for a UPower restart.
 - **Uninstaller.** Stops the protect and failsafe units first, archives `/var/lib/input-lock` and `/var/lib/input-lock-protection` (with any latch) before removing them, and cleans up the GNOME extension entry. See section 11 below.
@@ -56,19 +56,19 @@ The tray menu, notifications, dialogs, the CLI (`status`, `doctor`, errors, `--h
 
 סמל ה־Tray וההתראות מופעלים מתהליך משתמש נפרד. הוא יורש את D-Bus הנכון מה־user manager של systemd, ולכן שירות המערכת אינו מנחש `DISPLAY`, ‏`WAYLAND_DISPLAY` או `DBUS_SESSION_BUS_ADDRESS`. ממשק ה־Tray זמין באנגלית ובעברית (ראו „Language / שפה” למעלה) וכולל נעילה/שחרור, שינוי קיצור, התעלמות מסגירת מכסה ו־About.
 
-הפעולה `Quit` בתפריט ה־Tray מבקשת אישור, משחררת את כל התקני הקלט ומסיימת ביציאה תקינה הן את ה־daemon והן את תהליך ה־Tray. כדי להפעיל את Input Lock שוב יש להריץ `sudo systemctl start input-lock.service` ולאחריו `systemctl --user start input-lock-notifier.service`.
+הפעולה `Quit` בתפריט ה־Tray מבקשת אישור, משחררת את כל התקני הקלט ומסיימת ביציאה תקינה הן את ה־daemon והן את תהליך ה־Tray. כדי להפעיל את AAG - InputLock שוב יש להריץ `sudo systemctl start input-lock.service` ולאחריו `systemctl --user start input-lock-notifier.service`.
 
-לאחר ההתקנה מופיע `Input Lock` בתפריט האפליקציות של GNOME. אפשר להפעיל ממנו את התוכנה ללא Terminal; אם שירות המערכת נעצר באמצעות `Quit`, Ubuntu מציג בקשת אימות גרפית ולאחריה מפעיל מחדש את השירות ואת סמל ה־Tray.
+לאחר ההתקנה מופיע `AAG - InputLock` בתפריט האפליקציות של GNOME. אפשר להפעיל ממנו את התוכנה ללא Terminal; אם שירות המערכת נעצר באמצעות `Quit`, Ubuntu מציג בקשת אימות גרפית ולאחריה מפעיל מחדש את השירות ואת סמל ה־Tray.
 
 תפריט ה־Tray כולל גם את האפשרות `Start at Login`. סימון או ביטול שלה מעדכן יחד את שירות המערכת ואת שירות ה־Tray; Ubuntu מציג בקשת אימות גרפית לשינוי שירות המערכת. שירות ה־Tray מסודר אחרי `gnome-session-initialized.target`, ולכן הוא אינו מנסה ליצור חלון לפני שחיבור Wayland של GNOME מוכן. אם התצוגה עדיין אינה זמינה הוא יוצא ללא core-dump ו־systemd מנסה שוב. ביטול האפשרות אינו סוגר את התוכנה מיד—לכך מיועדת הפעולה `Quit`.
 
-הפעולה `Settings…` פותחת חלון הגדרות מאוחד. בחלון ניתן לבחור אילו סוגי קלט ייכללו בנעילה הרגילה—מקלדת, עכבר ו־Touchpad, ומסך מגע—לשנות את הקיצור הראשי, להחליט אם Input Lock יופעל אוטומטית בכניסה למשתמש ולבחור את שפת הממשק (אוטומטית, עברית או אנגלית; השינוי חל בהפעלה הבאה של ה־Tray). יש לבחור לפחות סוג קלט אחד. הבחירות נשמרות בקובץ ההעדפות ואינן אובדות בעדכון או בהפעלה מחדש.
+הפעולה `Settings…` פותחת חלון הגדרות מאוחד. בחלון ניתן לבחור אילו סוגי קלט ייכללו בנעילה הרגילה—מקלדת, עכבר ו־Touchpad, ומסך מגע—לשנות את הקיצור הראשי, להחליט אם AAG - InputLock יופעל אוטומטית בכניסה למשתמש ולבחור את שפת הממשק (אוטומטית, עברית או אנגלית; השינוי חל בהפעלה הבאה של ה־Tray). יש לבחור לפחות סוג קלט אחד. הבחירות נשמרות בקובץ ההעדפות ואינן אובדות בעדכון או בהפעלה מחדש.
 
 באותו חלון ניתן להפעיל `Automatically lock after no activity` ולבחור זמן של 1–1440 דקות. כל אירוע מקלדת, עכבר, Touchpad או מסך מגע מאפס את הספירה. הטיימר פועל רק ב־Session המורשה וכשהקלט משוחרר; בסיום הזמן הוא נועל את סוגי הקלט שנבחרו באותו חלון. ביטול תיבת הסימון משבית את Auto-Lock, וברירת המחדל לאחר התקנה חדשה היא כבויה.
 
 האפשרות `Hide cursor after no activity` מסתירה את סמן העכבר אחרי זמן של דקות ושניות שנבחר באמצעות כפתורי ‎−/+‎. כל פעילות קלט—מקלדת, עכבר, Touchpad או מסך מגע, וגם קלט מדומה של RustDesk או של התקני uinput—מחזירה את הסמן מיד ומתחילה את הספירה מחדש. המימוש הוא הרחבת GNOME מצומצמת שמקבלת התראות פעילות וחוסר פעילות ממוניטור ה־Idle של Mutter (ללא דגימה של מיקום הסמן) ומשתמשת ב־CursorTracker, ולכן פועלת באופן גלובלי ב־Wayland. האפשרות כבויה כברירת מחדל והעדפת המשתמש נשמרת תחת `~/.config/input-lock/`. GNOME Wayland טוען התקנה או עדכון של קוד ההרחבה בכניסה הבאה למשתמש; המתקין אינו מכבה הרחבה פעילה באמצע Session. המתקין מפעיל את ההרחבה רק בהתקנה חדשה; עדכון לעולם אינו מפעיל מחדש הרחבה שהמשתמש כיבה, ואפשר להפעיל אותה מחלון ה־Settings של ה־Tray.
 
-`Ignore Lid Close (continuous)` מופעל רק עם מכסה פתוח, משתמש גרפי פעיל, בקר Tray מחובר וניטור תקין. במצב תקין הוא מתעלם מסגירת המכסה ברציפות, **ללא טיימר של 2 או 4 דקות**. בזמן שהאפשרות פעילה, ה־Tray מחזיק חסימת GNOME Idle זמנית וגם פרופיל `power-saver` **זמני בלבד**, כדי להפחית קפיצות חום ולמנוע כניסה לשינה מחוסר פעילות; בביטול האפשרות פרופיל החשמל הקודם חוזר אוטומטית. ההגדרות הקבועות של GNOME אינן משתנות, ושינת חירום/שינה ידנית אינה נחסמת. במקרה חום מסוכן, סוללה קריטית או אובדן השגחה InputLock משחרר את העיכוב ומבקש השהיה רגילה. לאחר הפעלת השירות מחדש יש להפעיל את האפשרות שוב במפורש. ראו [מדיניות ההגנה המעודכנת](docs/independent-lid-protection.md).
+`Ignore Lid Close (continuous)` מופעל רק עם מכסה פתוח, משתמש גרפי פעיל, בקר Tray מחובר וניטור תקין. במצב תקין הוא מתעלם מסגירת המכסה ברציפות, **ללא טיימר של 2 או 4 דקות**. בזמן שהאפשרות פעילה, ה־Tray מחזיק חסימת GNOME Idle זמנית וגם פרופיל `power-saver` **זמני בלבד**, כדי להפחית קפיצות חום ולמנוע כניסה לשינה מחוסר פעילות; בביטול האפשרות פרופיל החשמל הקודם חוזר אוטומטית. ההגדרות הקבועות של GNOME אינן משתנות, ושינת חירום/שינה ידנית אינה נחסמת. במקרה חום מסוכן, סוללה קריטית או אובדן השגחה AAG - InputLock משחרר את העיכוב ומבקש השהיה רגילה. לאחר הפעלת השירות מחדש יש להפעיל את האפשרות שוב במפורש. ראו [מדיניות ההגנה המעודכנת](docs/independent-lid-protection.md).
 
 ### השוואת החלופות
 
@@ -106,7 +106,7 @@ The tray menu, notifications, dialogs, the CLI (`status`, `doctor`, errors, `--h
 
 - `EVIOCGRAB` הוא ברמת התקן, לא ברמת אפליקציה. אם node יחיד מסומן גם כמקלדת וגם כעכבר, נעילת אחד הסוגים תופסת את ה־node כולו.
 - בזמן נעילת מקלדת, TTY אינו מקבל את הצירוף הראשון. השירות מפרש `Ctrl+Alt+F3` כשחרור; אחרי שחרור המקשים יש ללחוץ שוב כדי לעבור ל־TTY.
-- מסך הנעילה של GNOME שייך לאותו Session פעיל. נעילת Input Lock יכולה להישאר שם; קיצורי החירום ממשיכים לעבוד.
+- מסך הנעילה של GNOME שייך לאותו Session פעיל. נעילת AAG - InputLock יכולה להישאר שם; קיצורי החירום ממשיכים לעבוד.
 - למחשב מרובה־מושבים (multi-seat) נדרש פיתוח נוסף. גרסה זו מיועדת ל־seat מקומי יחיד ול־UID מורשה יחיד.
 - אין דרך תוכנתית “להוכיח” חומרה ספציפית בלי בדיקה על המחשב. לכן הבדיקה הראשונה חייבת להיות עם טיימר 30 שניות ודרך חילוץ נוספת.
 - `Ignore Lid Close (continuous)` מתעלם מסגירת המכסה ללא מגבלת זמן אוטומטית — על חשמל, על סוללה ובעומס מעבד. בעת הפעלת האפשרות נחסמת **רק כניסת GNOME למצב Idle**, ונוצרה גם החזקה זמנית של פרופיל `power-saver` להפחתת קפיצות החום. שתי ההחזקות מסתיימות עם כיבוי האפשרות או ניתוק ה־Tray, ופרופיל החשמל הקודם משוחזר ללא שינוי קבוע בהעדפת המשתמש. לא נחסמת שינה ידנית או שינת הגנה. טמפרטורה מסוכנת, סוללה קריטית או כשל ניטור/בקרה יכולים עדיין להורות על שינה בטוחה. יש לפתוח את המכסה לפני הפעלה; אחרי Restart האפשרות כבויה עד להפעלה מפורשת. אין להשאיר מחשב פועל עם מכסה סגור בתוך תיק או ללא אוורור. ראו [תיעוד הבטיחות העדכני](docs/independent-lid-protection.md).
@@ -259,7 +259,7 @@ Since 2.0.0-beta.5 the installer refuses a checkout that other accounts can modi
 
 ## חלק 7 — הגדרת הקיצור
 
-הדרך הנוחה היא לחיצה ימנית על סמל `Input Lock` ב־Tray ובחירה ב־`Change Shortcut…`. החלון מקבל קיצור הכולל לפחות שני modifiers ומקש A–Z, ‏0–9 או F1–F12, בודק התנגשות, מעדכן יחד את ה־daemon ואת קיצור ה־GNOME ושומר את הבחירה לעדכונים ולהפעלות הבאות.
+הדרך הנוחה היא לחיצה ימנית על סמל `AAG - InputLock` ב־Tray ובחירה ב־`Change Shortcut…`. החלון מקבל קיצור הכולל לפחות שני modifiers ומקש A–Z, ‏0–9 או F1–F12, בודק התנגשות, מעדכן יחד את ה־daemon ואת קיצור ה־GNOME ושומר את הבחירה לעדכונים ולהפעלות הבאות.
 
 אפשר לבצע את אותה פעולה במסוף:
 
@@ -284,11 +284,11 @@ The emergency binding is generated from `EMERGENCY_HOTKEY` (Ctrl+Alt+Shift+F12 b
 gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings \
 "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock-emergency/']"
 
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock/ name "'Input Lock — toggle keyboard and mouse'"
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock/ name "'AAG - InputLock — toggle keyboard and mouse'"
 gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock/ command "'/usr/bin/input-lock gnome-hotkey'"
 gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock/ binding "'<Control><Alt>z'"
 
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock-emergency/ name "'Input Lock — emergency unlock'"
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock-emergency/ name "'AAG - InputLock — emergency unlock'"
 gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock-emergency/ command "'/usr/bin/input-lock gnome-emergency'"
 gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/input-lock-emergency/ binding "'<Control><Alt><Shift>F12'"
 ```

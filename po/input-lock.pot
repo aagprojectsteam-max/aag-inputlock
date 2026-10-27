@@ -1,5 +1,5 @@
-# Input Lock user interface.
-# This file is distributed under the same license as the Input Lock package.
+# AAG - InputLock user interface.
+# This file is distributed under the same license as the AAG - InputLock package.
 # Regenerate with: python3 tools/po_extract.py
 #
 #, fuzzy
@@ -20,7 +20,7 @@ msgstr ""
 
 #: src/input_lock_cli.py:125
 #, python-brace-format
-msgid "cannot connect to the Input Lock daemon at {path} ({error}; {unit} is {state}). Check: systemctl status {unit}"
+msgid "cannot connect to the AAG - InputLock daemon at {path} ({error}; {unit} is {state}). Check: systemctl status {unit}"
 msgstr ""
 
 #: src/input_lock_cli.py:148
@@ -50,7 +50,7 @@ msgid "review 'journalctl -u input-lock-failsafe.service', then run: sudo /usr/b
 msgstr ""
 
 #: src/input_lock_cli.py:229
-msgid "Input Lock Status"
+msgid "AAG - InputLock Status"
 msgstr ""
 
 #: src/input_lock_cli.py:232
@@ -481,11 +481,11 @@ msgid "Critical battery policy"
 msgstr ""
 
 #: src/input_lock_cli.py:628
-msgid "LockLock does not suppress UPower; platform critical-action acceptance is separate"
+msgid "AAG - InputLock does not suppress UPower; platform critical-action acceptance is separate"
 msgstr ""
 
 #: src/input_lock_cli.py:634
-msgid "Input Lock Doctor"
+msgid "AAG - InputLock Doctor"
 msgstr ""
 
 #: src/input_lock_cli.py:642
@@ -509,7 +509,7 @@ msgid "Daemon did not respond ({error}); stopping the service to close all grabs
 msgstr ""
 
 #: src/input_lock_cli.py:667
-msgid "Input Lock service stopped; kernel file descriptors were released."
+msgid "AAG - InputLock service stopped; kernel file descriptors were released."
 msgstr ""
 
 #: src/input_lock_cli.py:675
@@ -602,11 +602,11 @@ msgid "the primary shortcut must differ from the emergency shortcut"
 msgstr ""
 
 #: src/input_lock_gnome.py:193
-msgid "Input Lock — toggle keyboard and mouse"
+msgid "AAG - InputLock — toggle keyboard and mouse"
 msgstr ""
 
 #: src/input_lock_gnome.py:199
-msgid "Input Lock — emergency unlock"
+msgid "AAG - InputLock — emergency unlock"
 msgstr ""
 
 #: src/input_lock_gnome.py:208
@@ -614,7 +614,7 @@ msgid "GNOME fallback shortcuts installed."
 msgstr ""
 
 #: src/input_lock_gnome.py:219
-msgid "the Input Lock GNOME shortcuts are not installed; run 'input_lock_gnome.py install' (or reinstall Input Lock) first"
+msgid "the AAG - InputLock GNOME shortcuts are not installed; run 'input_lock_gnome.py install' (or reinstall AAG - InputLock) first"
 msgstr ""
 
 #: src/input_lock_gnome.py:225
@@ -670,11 +670,11 @@ msgid "the tray lost contact with the service while the lid may have been closed
 msgstr ""
 
 #: src/input_lock_messages.py:35
-msgid "The Input Lock tray did not check in with the background service in time (for example, the tray stopped responding, or the computer was going to sleep or waking up)."
+msgid "The AAG - InputLock tray did not check in with the background service in time (for example, the tray stopped responding, or the computer was going to sleep or waking up)."
 msgstr ""
 
 #: src/input_lock_messages.py:39
-msgid "The Input Lock tray's connection to the background service was closed (the tray was stopped, restarted or crashed)."
+msgid "The AAG - InputLock tray's connection to the background service was closed (the tray was stopped, restarted or crashed)."
 msgstr ""
 
 #: src/input_lock_messages.py:42 src/input_lock_messages.py:43
@@ -682,19 +682,19 @@ msgid "Your desktop session stopped being active (user switch, logout or a sessi
 msgstr ""
 
 #: src/input_lock_messages.py:45
-msgid "The Input Lock tray was stopped or your desktop session ended."
+msgid "The AAG - InputLock tray was stopped or your desktop session ended."
 msgstr ""
 
 #: src/input_lock_messages.py:46
-msgid "The Input Lock background service was stopped or restarted."
+msgid "The AAG - InputLock background service was stopped or restarted."
 msgstr ""
 
 #: src/input_lock_messages.py:47
-msgid "The connection to the Input Lock background service was lost (the service stopped or crashed)."
+msgid "The connection to the AAG - InputLock background service was lost (the service stopped or crashed)."
 msgstr ""
 
 #: src/input_lock_messages.py:49
-msgid "The Input Lock background service restarted; Ignore Lid Close always starts off after a restart."
+msgid "The AAG - InputLock background service restarted; Ignore Lid Close always starts off after a restart."
 msgstr ""
 
 #: src/input_lock_messages.py:52 src/input_lock_messages.py:66
@@ -722,11 +722,11 @@ msgid "The keys allowed while locked were changed, which resets all locks."
 msgstr ""
 
 #: src/input_lock_messages.py:62
-msgid "The Input Lock configuration was reloaded, which resets all locks."
+msgid "The AAG - InputLock configuration was reloaded, which resets all locks."
 msgstr ""
 
 #: src/input_lock_messages.py:63
-msgid "The Input Lock configuration could not be reloaded, so all locks were reset."
+msgid "The AAG - InputLock configuration could not be reloaded, so all locks were reset."
 msgstr ""
 
 #: src/input_lock_messages.py:64
@@ -734,7 +734,7 @@ msgid "All locks were released."
 msgstr ""
 
 #: src/input_lock_messages.py:68
-msgid "Input Lock settings were changed or reloaded, which resets all locks."
+msgid "AAG - InputLock settings were changed or reloaded, which resets all locks."
 msgstr ""
 
 #: src/input_lock_messages.py:69
@@ -742,7 +742,7 @@ msgid "The auto-unlock safety timer released input, which also turns Ignore Lid 
 msgstr ""
 
 #: src/input_lock_messages.py:71
-msgid "Input Lock could not save its safety record, so it stopped ignoring the lid."
+msgid "AAG - InputLock could not save its safety record, so it stopped ignoring the lid."
 msgstr ""
 
 #: src/input_lock_messages.py:73
@@ -785,11 +785,11 @@ msgstr ""
 
 #: src/input_lock_messages.py:125
 #, python-brace-format
-msgid "The Input Lock service turned it off (reason: {reason})."
+msgid "The AAG - InputLock service turned it off (reason: {reason})."
 msgstr ""
 
 #: src/input_lock_messages.py:127
-msgid "The Input Lock service turned it off without giving a reason."
+msgid "The AAG - InputLock service turned it off without giving a reason."
 msgstr ""
 
 #: src/input_lock_messages.py:129
@@ -878,7 +878,7 @@ msgid "missing terminal failure recorder"
 msgstr ""
 
 #: src/input_lock_messages.py:190
-msgid "InputLock watchdog/restart contract changed"
+msgid "AAG - InputLock watchdog/restart contract changed"
 msgstr ""
 
 #: src/input_lock_messages.py:191
@@ -938,7 +938,7 @@ msgid "recovery shortcut keys (including F1-F12) cannot be added"
 msgstr ""
 
 #: src/input_lock_messages.py:209
-msgid "allowed keys need /dev/uinput; run the LockLock updater and restart"
+msgid "allowed keys need /dev/uinput; run the AAG - InputLock updater and restart"
 msgstr ""
 
 #: src/input_lock_messages.py:210
@@ -1092,12 +1092,12 @@ msgstr ""
 
 #: src/input_lock_messages.py:272
 #, python-brace-format
-msgid "InputLock root helper/timeout contract changed: {unit}"
+msgid "AAG - InputLock root helper/timeout contract changed: {unit}"
 msgstr ""
 
 #: src/input_lock_messages.py:274
 #, python-brace-format
-msgid "missing InputLock failure handler on {unit}"
+msgid "missing AAG - InputLock failure handler on {unit}"
 msgstr ""
 
 #: src/input_lock_messages.py:276
@@ -1188,7 +1188,7 @@ msgid "Ignore Lid Close (safety unavailable)"
 msgstr ""
 
 #: src/input_lock_notifier.py:85
-msgid "Quitting, stopping or restarting the Input Lock tray turns Ignore Lid Close off and unlocks input."
+msgid "Quitting, stopping or restarting the AAG - InputLock tray turns Ignore Lid Close off and unlocks input."
 msgstr ""
 
 #: src/input_lock_notifier.py:89
@@ -1204,11 +1204,11 @@ msgid "Re-enable…"
 msgstr ""
 
 #: src/input_lock_notifier.py:95
-msgid "It will not turn itself back on. To turn it on again, open the lid and choose “Re-enable…” or use the Input Lock tray menu."
+msgid "It will not turn itself back on. To turn it on again, open the lid and choose “Re-enable…” or use the AAG - InputLock tray menu."
 msgstr ""
 
 #: src/input_lock_notifier.py:101
-msgid "Turn it on again from the Input Lock tray menu if you still need it."
+msgid "Turn it on again from the AAG - InputLock tray menu if you still need it."
 msgstr ""
 
 #: src/input_lock_notifier.py:104
@@ -1241,7 +1241,7 @@ msgid "Keep the lid OPEN when enabling, keep the vents unobstructed, and NEVER p
 msgstr ""
 
 #: src/input_lock_notifier.py:126
-msgid "A language change takes effect the next time Input Lock starts, for example after you log in again."
+msgid "A language change takes effect the next time AAG - InputLock starts, for example after you log in again."
 msgstr ""
 
 #: src/input_lock_notifier.py:134
@@ -1281,11 +1281,11 @@ msgid "suspend transition confirmed"
 msgstr ""
 
 #: src/input_lock_notifier.py:556 src/input_lock_notifier.py:1314 src/input_lock_notifier.py:2251 src/input_lock_notifier.py:2298 src/input_lock_notifier.py:2366 src/input-lock-launch:23
-msgid "Input Lock"
+msgid "AAG - InputLock"
 msgstr ""
 
 #: src/input_lock_notifier.py:559
-msgid "Input Lock — Connecting…"
+msgid "AAG - InputLock — Connecting…"
 msgstr ""
 
 #: src/input_lock_notifier.py:562
@@ -1335,7 +1335,7 @@ msgid "A protective suspend was confirmed. Re-enable lid-ignore only with lid op
 msgstr ""
 
 #: src/input_lock_notifier.py:832
-msgid "Open the lid. Automatic safety protection failed; see InputLock diagnostics."
+msgid "Open the lid. Automatic safety protection failed; see AAG - InputLock diagnostics."
 msgstr ""
 
 #: src/input_lock_notifier.py:834
@@ -1373,7 +1373,7 @@ msgid "Lid safety: {state}"
 msgstr ""
 
 #: src/input_lock_notifier.py:1197
-msgid "Input Lock — Locked"
+msgid "AAG - InputLock — Locked"
 msgstr ""
 
 #: src/input_lock_notifier.py:1198
@@ -1389,7 +1389,7 @@ msgid "Input is locked"
 msgstr ""
 
 #: src/input_lock_notifier.py:1210
-msgid "Input Lock — Unlocked"
+msgid "AAG - InputLock — Unlocked"
 msgstr ""
 
 #: src/input_lock_notifier.py:1218
@@ -1401,19 +1401,19 @@ msgid "Input is unlocked"
 msgstr ""
 
 #: src/input_lock_notifier.py:1264
-msgid "Input Lock service unavailable"
+msgid "AAG - InputLock service unavailable"
 msgstr ""
 
 #: src/input_lock_notifier.py:1266
-msgid "Input Lock — Another tray is in control"
+msgid "AAG - InputLock — Another tray is in control"
 msgstr ""
 
 #: src/input_lock_notifier.py:1267
-msgid "Lid safety: managed by the other Input Lock tray"
+msgid "Lid safety: managed by the other AAG - InputLock tray"
 msgstr ""
 
 #: src/input_lock_notifier.py:1270
-msgid "Input Lock — Service unavailable"
+msgid "AAG - InputLock — Service unavailable"
 msgstr ""
 
 #: src/input_lock_notifier.py:1271
@@ -1421,11 +1421,11 @@ msgid "Lid safety: disconnected — status unknown; open the lid"
 msgstr ""
 
 #: src/input_lock_notifier.py:1280
-msgid "InputLock background service unavailable. Open the lid and check input-lock.service with systemctl status input-lock.service. After the service is repaired, the tray will reconnect automatically."
+msgid "AAG - InputLock background service unavailable. Open the lid and check input-lock.service with systemctl status input-lock.service. After the service is repaired, the tray will reconnect automatically."
 msgstr ""
 
 #: src/input_lock_notifier.py:1346
-msgid "Input Lock Settings"
+msgid "AAG - InputLock Settings"
 msgstr ""
 
 #: src/input_lock_notifier.py:1350 src/input_lock_notifier.py:1704 src/input_lock_notifier.py:1755 src/input_lock_notifier.py:1874 src/input_lock_notifier.py:2031 src/input_lock_notifier.py:2279
@@ -1472,7 +1472,7 @@ msgid "Manage Keys…"
 msgstr ""
 
 #: src/input_lock_notifier.py:1409
-msgid "Start Input Lock when I log in"
+msgid "Start AAG - InputLock when I log in"
 msgstr ""
 
 #: src/input_lock_notifier.py:1414
@@ -1607,7 +1607,7 @@ msgid "Cursor hiding extension: enabled."
 msgstr ""
 
 #: src/input_lock_notifier.py:1806
-msgid "Cursor hiding extension: disabled — the cursor will not be hidden until the Input Lock Cursor Hider GNOME extension is enabled."
+msgid "Cursor hiding extension: disabled — the cursor will not be hidden until the AAG - InputLock Cursor Hider GNOME extension is enabled."
 msgstr ""
 
 #: src/input_lock_notifier.py:1808
@@ -1696,11 +1696,11 @@ msgid "Ignore Lid Close could not be turned on."
 msgstr ""
 
 #: src/input_lock_notifier.py:2092
-msgid "The Input Lock service is not available. When the tray reconnects, turn Ignore Lid Close on from its menu."
+msgid "The AAG - InputLock service is not available. When the tray reconnects, turn Ignore Lid Close on from its menu."
 msgstr ""
 
 #: src/input_lock_notifier.py:2100
-msgid "Open the lid first, then choose “Re-enable…” again or use the Input Lock tray menu."
+msgid "Open the lid first, then choose “Re-enable…” again or use the AAG - InputLock tray menu."
 msgstr ""
 
 #: src/input_lock_notifier.py:2105
@@ -1724,11 +1724,11 @@ msgid "Safe keyboard, mouse, touchpad, and touchscreen locking for Ubuntu."
 msgstr ""
 
 #: src/input_lock_notifier.py:2273
-msgid "Quit Input Lock?"
+msgid "Quit AAG - InputLock?"
 msgstr ""
 
 #: src/input_lock_notifier.py:2275
-msgid "This will unlock all input and stop both the Input Lock service and its tray process."
+msgid "This will unlock all input and stop both the AAG - InputLock service and its tray process."
 msgstr ""
 
 #: src/input_lock_notifier.py:2348
@@ -1737,9 +1737,9 @@ msgid "Press {shortcut} to unlock."
 msgstr ""
 
 #: src/input-lock-launch:29
-msgid "Input Lock was not started. Administrator authentication was cancelled or failed."
+msgid "AAG - InputLock was not started. Administrator authentication was cancelled or failed."
 msgstr ""
 
 #: src/input-lock-launch:35
-msgid "The Input Lock service started, but the tray icon could not be opened."
+msgid "The AAG - InputLock service started, but the tray icon could not be opened."
 msgstr ""

@@ -117,7 +117,7 @@ class AgentController:
     def lock(self, kinds: frozenset[str], *, timeout: int = 0) -> dict[str, object]:
         with self._transaction():
             if self._stopping or not self.session_active:
-                raise RuntimeError("LockLock requires an active unlocked console session")
+                raise RuntimeError("AAG - InputLock requires an active unlocked console session")
             self.backend.capabilities.require_lockable(kinds)
             before = self.backend.locked_kinds
             try:

@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Restoration-only root helper for legacy LockLock UPower overrides."""
+"""Restoration-only root helper for legacy AAG - InputLock UPower overrides."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from input_lock_lid_policy import PolicyError, UPowerPolicyController
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="LockLock UPower policy helper")
+    parser = argparse.ArgumentParser(description="AAG - InputLock UPower policy helper")
     parser.add_argument("action", choices=("enable", "disable", "status"))
     parser.add_argument(
         "--no-block",
