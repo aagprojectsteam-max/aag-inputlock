@@ -20,14 +20,16 @@ if (-not (Test-Path -LiteralPath "Registry::HKEY_USERS\$TargetSid")) {
 }
 $Service = Stop-PowerServiceSafely $DataDirectory
 if ($Service) { Invoke-Checked sc.exe @('delete','AAGLockLock') | Out-Null }
-$ShortcutPath = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\AAG LockLock.lnk'
-Assert-PlainPath $ShortcutPath
-if (Test-Path -LiteralPath $ShortcutPath) { Remove-Item -LiteralPath $ShortcutPath -Force }
+foreach ($ShortcutName in @('AAG - InputLock.lnk', 'AAG LockLock.lnk')) {
+    $ShortcutPath = Join-Path $env:ProgramData ('Microsoft\Windows\Start Menu\Programs\' + $ShortcutName)
+    Assert-PlainPath $ShortcutPath
+    if (Test-Path -LiteralPath $ShortcutPath) { Remove-Item -LiteralPath $ShortcutPath -Force }
+}
 foreach ($Directory in @($InstallDirectory, $DataDirectory)) {
     if (Test-Path -LiteralPath $Directory) { Remove-Item -LiteralPath $Directory -Recurse -Force }
 }
 if (Get-ItemProperty -LiteralPath $UserRunKey -Name 'AAG LockLock' -ErrorAction SilentlyContinue) {
     Remove-ItemProperty -LiteralPath $UserRunKey -Name 'AAG LockLock'
 }
-Write-Host "AAG LockLock removed for $TargetSid. Rollback backups were preserved."
+Write-Host "AAG - InputLock removed for $TargetSid. Rollback backups were preserved."
 Write-Host 'User settings are retained. Remove them from the target user session without elevation if desired.'

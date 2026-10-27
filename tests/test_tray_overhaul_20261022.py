@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import input_lock_notifier as notifier  # noqa: E402
 from input_lock_notifier import PowerSaverGuard, TrayNotifier  # noqa: E402
+from gtk_fakes import FakeLabel  # noqa: E402
 
 
 _DIALOG_GUARD = None
@@ -27,9 +28,14 @@ def setUpModule():
 
     _DIALOG_GUARD = mock.patch.object(notifier.Gtk.Dialog, "run", refuse)
     _DIALOG_GUARD.start()
+    # The lid confirmation builds real labels; CI has no display (GTK aborts).
+    global _LABEL_GUARD
+    _LABEL_GUARD = mock.patch.object(notifier.Gtk, "Label", FakeLabel)
+    _LABEL_GUARD.start()
 
 
 def tearDownModule():
+    _LABEL_GUARD.stop()
     _DIALOG_GUARD.stop()
 
 
@@ -122,8 +128,8 @@ def bare_tray(**state):
     tray.config = mock.Mock()
     tray.current_state = dict(state)
     tray.previous_locked = None
-    for name in ("status_item", "safety_item", "toggle_item", "lid_item", "indicator",
-                 "shortcut_item"):
+    for name in ("status_item", "safety_item", "safety_detail_item", "cooling_item",
+                 "toggle_item", "lid_item", "indicator", "shortcut_item"):
         setattr(tray, name, mock.Mock())
     tray._notify = mock.Mock()
     tray._show_error = mock.Mock(return_value=False)
@@ -366,7 +372,15 @@ class ReenableActionTests(unittest.TestCase):
         dialog.run.return_value = notifier.Gtk.ResponseType.NO
         with mock.patch.object(notifier.Gtk, "MessageDialog", return_value=dialog):
             tray._on_lid_toggled(item)
-        self.assertIn(notifier.TRAY_STOP_NOTE, dialog.format_secondary_text.call_args.args[0])
+        packed = [call.args[0] for call in dialog.get_message_area().pack_start.call_args_list]
+        texts = [label.get_text() for label in packed]
+        self.assertTrue(any(text.endswith(notifier.TRAY_STOP_NOTE) for text in texts), texts)
+        self.assertTrue(any(notifier.LID_CONFIRM_WARNING in text for text in texts), texts)
+        for label in packed:
+            # An explicit width stops GTK from shaping a narrow column.
+            self.assertGreaterEqual(label.get_width_chars(), 40)
+            self.assertTrue(label.get_line_wrap())
+        dialog.add_button.assert_any_call("Turn On", notifier.Gtk.ResponseType.YES)
         self.assertIn("tray", notifier.LID_TOOLTIP)
 
     def test_notification_command_is_critical_persistent_with_action(self):
@@ -411,7 +425,7 @@ class DisconnectedStateTests(unittest.TestCase):
         self.assertIs(tray.current_state["ignore_lid_close"], False)
         self.assertTrue(tray.current_state["stale"])
         tray.indicator.set_icon_full.assert_called_with(notifier.DISCONNECTED_ICON,
-                                                        "Input Lock service unavailable")
+                                                        "AAG - InputLock service unavailable")
         tray.lid_item.set_label.assert_called_with(notifier.LID_UNAVAILABLE_LABEL)
         tray._notify.assert_called_once()
         self.assertIn("connection", tray._notify.call_args.args[1])
@@ -434,10 +448,11 @@ class CoolingLabelTests(unittest.TestCase):
     def test_cooling_suffix_only_after_verified_hold(self):
         tray = bare_tray(**ARMED, safety={"state": "LID_IGNORE_ARMED"})
         tray.connected = True
-        self.assertIn("cooling not confirmed", tray._safety_label())
+        self.assertIn("Cooling: not confirmed", tray._safety_label())
         tray._lease_ok(4, False, False)
-        self.assertIn("power-saver cooling active", tray._safety_label())
-        self.assertIn("cooling active", tray.safety_item.set_label.call_args.args[0])
+        self.assertIn("Cooling: active", tray._safety_label())
+        tray.cooling_item.set_label.assert_called_with("Cooling: active")
+        tray.cooling_item.show.assert_called()
 
 
 class EnableInFlightTests(unittest.TestCase):
@@ -545,7 +560,7 @@ class SubscriptionWorkerTests(unittest.TestCase):
         error = ValueError("a tray controller is already connected")
         tray, waits, idle, logs = self.run_worker([error, error, None])
         self.assertEqual(waits, [notifier.SECOND_INSTANCE_RETRY_SECONDS] * 2)
-        self.assertEqual(len([line for line in logs if "Another Input Lock tray" in line]), 1)
+        self.assertEqual(len([line for line in logs if "Another AAG - InputLock tray" in line]), 1)
         self.assertEqual(idle.call_args.args[1], "another-tray")
 
     def test_reconnect_is_logged(self):

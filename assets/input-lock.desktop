@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Input Lock
+Name=AAG - InputLock
 GenericName=Input Device Lock
 Comment=Lock or unlock the keyboard and pointing devices
 Exec=/usr/bin/input-lock-launch

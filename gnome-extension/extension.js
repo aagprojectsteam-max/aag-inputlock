@@ -5,22 +5,22 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 86399;
-// While the cursor is hidden (or hiding was refused because the InputLock
-// lease was not valid), re-check the lease at this low rate. No pointer
-// polling: Mutter's core idle monitor reports idle/active transitions.
-const LEASE_RECHECK_SECONDS = 2;
+// Mutter does not fire idle watches while any GNOME idle inhibitor is active
+// (Caffeine, AAG - InputLock's own lid-ignore guard, a video player...), so the
+// idle *time* is sampled instead. Sampling the core idle monitor is cheap;
+// the runtime lease file is read only once the pointer is already idle.
+const IDLE_POLL_MS = 500;
 const LEASE_MAX_AGE_SECONDS = 5;
 
 export default class InputLockCursorHider extends Extension {
     enable() {
         this._cursorTracker = global.backend.get_cursor_tracker();
         this._idleMonitor = global.backend.get_core_idle_monitor();
-        this._idleWatchId = 0;
         this._activeWatchId = 0;
-        this._recheckSource = 0;
+        this._pollSource = 0;
         this._reloadSource = 0;
         this._cursorHidden = false;
-        this._timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
+        this._timeoutMs = DEFAULT_TIMEOUT_SECONDS * 1000;
         this._runtimeState = Gio.File.new_for_path(
             '/run/input-lock/state.json');
 
@@ -29,10 +29,11 @@ export default class InputLockCursorHider extends Extension {
         this._settingsFile = this._settingsDirectory.get_child('cursor-settings.json');
         GLib.mkdir_with_parents(this._settingsDirectory.get_path(), 0o700);
         this._settingsMonitor = this._settingsDirectory.monitor_directory(
-            Gio.FileMonitorFlags.NONE, null);
+            Gio.FileMonitorFlags.WATCH_MOVES, null);
         this._settingsChangedId = this._settingsMonitor.connect(
-            'changed', (_monitor, file) => {
-                if (file?.get_basename() === 'cursor-settings.json')
+            'changed', (_monitor, file, otherFile) => {
+                if (file?.get_basename() === 'cursor-settings.json' ||
+                    otherFile?.get_basename() === 'cursor-settings.json')
                     this._queueReload();
             });
         this._reloadSettings();
@@ -78,9 +79,15 @@ export default class InputLockCursorHider extends Extension {
         this._showCursor();
         if (!settings.enabled)
             return;
-        this._timeoutSeconds = settings.seconds;
-        this._idleWatchId = this._idleMonitor.add_idle_watch(
-            this._timeoutSeconds * 1000, () => this._onIdle());
+        this._timeoutMs = settings.seconds * 1000;
+        this._pollSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, IDLE_POLL_MS, () => {
+            if (!this._cursorTracker || !this._idleMonitor) {
+                this._pollSource = 0;
+                return GLib.SOURCE_REMOVE;
+            }
+            this._poll();
+            return GLib.SOURCE_CONTINUE;
+        });
     }
 
     _queueReload() {
@@ -109,63 +116,43 @@ export default class InputLockCursorHider extends Extension {
         }
     }
 
-    _onIdle() {
-        // Fired once each time the session has been idle for the timeout.
-        this._ensureActiveWatch();
-        this._evaluateWhileIdle();
-    }
-
-    _evaluateWhileIdle() {
-        if (this._leaseValid())
-            this._hideCursor();
-        else
+    _poll() {
+        let idle;
+        try {
+            idle = this._idleMonitor.get_idletime();
+        } catch (_error) {
             this._showCursor();
-        this._ensureRecheck();
+            return;
+        }
+        if (idle < this._timeoutMs) {
+            this._showCursor();
+            return;
+        }
+        if (this._leaseValid()) {
+            this._hideCursor();
+            this._ensureActiveWatch();
+        } else {
+            this._showCursor();
+        }
     }
 
     _ensureActiveWatch() {
         if (this._activeWatchId || !this._idleMonitor)
             return;
+        // Shows the pointer on the very first movement (fires even while
+        // idle is inhibited); one-shot, Mutter removes it after it fires.
         this._activeWatchId = this._idleMonitor.add_user_active_watch(() => {
-            // One-shot watch: Mutter removes it after it fires.
             this._activeWatchId = 0;
-            this._stopRecheck();
             this._showCursor();
         });
     }
 
-    _ensureRecheck() {
-        if (this._recheckSource)
-            return;
-        this._recheckSource = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT, LEASE_RECHECK_SECONDS, () => {
-                if (!this._cursorTracker) {
-                    this._recheckSource = 0;
-                    return GLib.SOURCE_REMOVE;
-                }
-                if (this._leaseValid())
-                    this._hideCursor();
-                else
-                    this._showCursor();
-                return GLib.SOURCE_CONTINUE;
-            });
-    }
-
-    _stopRecheck() {
-        if (this._recheckSource)
-            GLib.Source.remove(this._recheckSource);
-        this._recheckSource = 0;
-    }
-
     _stopWatching() {
-        this._stopRecheck();
-        if (this._idleMonitor) {
-            if (this._idleWatchId)
-                this._idleMonitor.remove_watch(this._idleWatchId);
-            if (this._activeWatchId)
-                this._idleMonitor.remove_watch(this._activeWatchId);
-        }
-        this._idleWatchId = 0;
+        if (this._pollSource)
+            GLib.Source.remove(this._pollSource);
+        this._pollSource = 0;
+        if (this._idleMonitor && this._activeWatchId)
+            this._idleMonitor.remove_watch(this._activeWatchId);
         this._activeWatchId = 0;
     }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-# Translate a message into the user's Input Lock language (gettext domain
+# Translate a message into the user's AAG - InputLock language (gettext domain
 # input-lock). A source checkout uses its own module; the installed launcher
 # uses /usr/lib/input-lock. Any failure shows the English text.
 _t() {
@@ -20,19 +20,19 @@ _t() {
 
 notify_error() {
     if command -v notify-send >/dev/null 2>&1; then
-        notify-send --urgency=critical "$(_t 'Input Lock')" "$1"
+        notify-send --urgency=critical "$(_t 'AAG - InputLock')" "$1"
     fi
 }
 
 if ! systemctl is-active --quiet input-lock.service; then
     if ! pkexec /usr/bin/systemctl start input-lock.service; then
-        notify_error "$(_t 'Input Lock was not started. Administrator authentication was cancelled or failed.')"
+        notify_error "$(_t 'AAG - InputLock was not started. Administrator authentication was cancelled or failed.')"
         exit 1
     fi
 fi
 
 if ! systemctl --user start input-lock-notifier.service; then
-    notify_error "$(_t 'The Input Lock service started, but the tray icon could not be opened.')"
+    notify_error "$(_t 'The AAG - InputLock service started, but the tray icon could not be opened.')"
     exit 1
 fi
 

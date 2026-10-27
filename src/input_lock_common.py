@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Shared configuration and protocol helpers for Input Lock.
+"""Shared configuration and protocol helpers for AAG - InputLock.
 
 This module deliberately has no evdev/udev dependency, so configuration and
 CLI tests can run without access to physical input devices.

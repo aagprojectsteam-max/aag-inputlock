@@ -1,5 +1,5 @@
 [Unit]
-Description=InputLock final ordinary suspend recovery after releasing input
+Description=AAG - InputLock final ordinary suspend recovery after releasing input
 After=input-lock.service input-lock-protect.service
 
 [Service]

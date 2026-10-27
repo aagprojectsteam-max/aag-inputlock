@@ -32,8 +32,8 @@ if os.name == "nt":
 
     class LockLockPowerService(win32serviceutil.ServiceFramework):
         _svc_name_ = "AAGLockLock"
-        _svc_display_name_ = "AAG LockLock Power Helper"
-        _svc_description_ = "Restores temporary LockLock lid power-policy changes."
+        _svc_display_name_ = "AAG - InputLock Power Helper"
+        _svc_description_ = "Restores temporary AAG - InputLock lid power-policy changes."
 
         def __init__(self, arguments):
             super().__init__(arguments)
@@ -80,7 +80,7 @@ if os.name == "nt":
                 pipe_name_for_sid(sid, service=True), sid, self._dispatch
             )
             self.pipe.start()
-            servicemanager.LogInfoMsg("AAG LockLock power helper started")
+            servicemanager.LogInfoMsg("AAG - InputLock power helper started")
             try:
                 while win32event.WaitForSingleObject(self.stop_event, 5000) == win32event.WAIT_TIMEOUT:
                     if self.pipe.error:
@@ -93,7 +93,7 @@ if os.name == "nt":
 
 def main() -> int:
     if os.name != "nt":
-        print("The LockLock Windows service can run only on Windows.", file=sys.stderr)
+        print("The AAG - InputLock Windows service can run only on Windows.", file=sys.stderr)
         return 2
     import servicemanager
     import win32serviceutil

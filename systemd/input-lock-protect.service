@@ -1,5 +1,5 @@
 [Unit]
-Description=InputLock ordinary suspend protection
+Description=AAG - InputLock ordinary suspend protection
 OnFailure=input-lock-failsafe.service
 
 [Service]

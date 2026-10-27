@@ -1,10 +1,10 @@
 # Continuous lid-ignore with independent safety supervision
 
-InputLock owns a logind `handle-lid-switch` inhibitor and evdev lid grabs
+AAG - InputLock owns a logind `handle-lid-switch` inhibitor and evdev lid grabs
 while the explicitly armed local tray lease is active. Disabling the option
 releases these restrictions immediately. The normal logind policy or another
 installed lid manager (including AAG Power) can resume ownership.
-InputLock does not call AAG Power APIs or depend on retired AAG services.
+AAG - InputLock does not call AAG Power APIs or depend on retired AAG services.
 
 ## No timeout while healthy
 
@@ -19,7 +19,7 @@ Arming requires an open lid, fresh CPU/chassis/battery telemetry, an
 authorized active graphical session and a connected tray controller.
 While the lid is closed, high-risk temperature or emergency temperature
 (with hysteresis/dwell) and genuinely critical battery cause ordinary
-system suspend after InputLock has released its inhibitor and device grabs.
+system suspend after AAG - InputLock has released its inhibitor and device grabs.
 Low battery (above the critical threshold), elevated-but-noncritical
 temperature, AC changes and high CPU load may generate warnings but do
 **not** start any closed-lid countdown. Telemetry counts as lost only
@@ -209,7 +209,7 @@ Lid-ignore is never re-armed automatically. Stopping the tray
 
 ## Preventive CPU cooling without bypassing thermal protection
 
-A short, elevated CPU-package reading can cross the existing InputLock software
+A short, elevated CPU-package reading can cross the existing AAG - InputLock software
 thermal-emergency limit even when total CPU utilization is low, and then trigger
 an ordinary OS safety suspend. Removing the old timed lid deadline did not
 remove this explicitly approved safety intervention.
@@ -239,7 +239,7 @@ names that reason. There are no privileged daemon writes to sysfs.
 
 **No thermal thresholds, hysteresis/dwell, systemd sleep hooks, root safety
 units, battery-critical rules or genuine sleep inhibitors are bypassed.** If
-the CPU/chassis really remain dangerously hot even under cooling, InputLock
+the CPU/chassis really remain dangerously hot even under cooling, AAG - InputLock
 will still request protective suspend. Users must not close an unventilated
 laptop inside a bag; a software hold cannot guarantee hardware cooling.
 
@@ -255,7 +255,7 @@ high-frequency temperature recording is introduced.
 
 The inspected GNOME power configuration has
 `sleep-inactive-battery-type='suspend'` and
-`sleep-inactive-battery-timeout=900`. Removing the InputLock timer
+`sleep-inactive-battery-timeout=900`. Removing the AAG - InputLock timer
 alone cannot satisfy continuous operation, since GNOME could otherwise
 request ordinary idle sleep after 15 minutes on battery.
 
@@ -278,7 +278,7 @@ its controller connection to engage the existing daemon
 already-required session controller, not on any AAG Power process.
 
 The setting is **continuous while healthy**, not persistent across
-logouts, InputLock daemon restarts, reboot, missing telemetry or safety
+logouts, AAG - InputLock daemon restarts, reboot, missing telemetry or safety
 actions. A new session/daemon starts disarmed and must be explicitly
 armed again with the lid open. Firmware emergency shutdowns and explicit
 operator sleep remain under the operating system's authority. Never use
@@ -301,7 +301,7 @@ No normal `CLOSED_LID_DEADLINE` or
 The compatibility wire field `stack_ready` now means native protection readiness.
 `sample.protection_errors` reports the actual refusal. The probe checks logind
 ordinary suspend support, blocking sleep inhibitors, the kernel suspend-success
-counter and effective InputLock service/failure/watchdog configuration. Logind's
+counter and effective AAG - InputLock service/failure/watchdog configuration. Logind's
 `challenge` capability result is valid for the unprivileged monitor: only the
 fixed root helper requests suspend, with interactive authentication disabled.
 There is no AAG readiness exemption that simply sets this field true.
@@ -332,7 +332,7 @@ There is no AAG readiness exemption that simply sets this field true.
    systemd's result.
 4. Primary failure, daemon crash or the 60-second watchdog (300 seconds during
    a sleep transition, until logind stops preparing) starts
-   `input-lock-failsafe.service`. It stops InputLock synchronously before one
+   `input-lock-failsafe.service`. It stops AAG - InputLock synchronously before one
    final ordinary suspend attempt, including when the journal is corrupt or
    missing (a missing journal means nothing was pending: no request, no latch).
    Both helper units use `TimeoutStartSec=330s`, the 240-second observation
@@ -367,7 +367,7 @@ There is no AAG readiness exemption that simply sets this field true.
   most 1 MiB. The tray shows a failure state when the daemon is available
   to receive it.
 - **Narrow latching.** `/var/lib/input-lock-protection/failure.json` is written
-  only when InputLock's **own** suspend request was accepted by logind and the
+  only when AAG - InputLock's **own** suspend request was accepted by logind and the
   kernel transition then failed or was never confirmed. Refusals before
   dispatch, deferrals and cancellations do not latch.
 - **No overwrite.** An existing latch keeps its first error as the headline;
@@ -391,7 +391,7 @@ There is no AAG readiness exemption that simply sets this field true.
   /usr/bin/python3 /usr/lib/input-lock/input_lock_safety.py check
   ```
 
-InputLock cannot guarantee physical sleep when the kernel, logind, systemd, an
+AAG - InputLock cannot guarantee physical sleep when the kernel, logind, systemd, an
 administrator's inhibitor or a native hook refuses it. In that case its own
 suppression is released and re-arming is blocked; the machine may still be awake.
 There is no forced suspend, shutdown, hibernate, inhibitor bypass or infinite retry.

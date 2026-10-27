@@ -40,7 +40,7 @@ jobs:
                   })
           manifest = {
               "schema": 1,
-              "product": "AAG LockLock",
+              "product": "AAG - InputLock",
               "version": Path("VERSION").read_text().strip(),
               "tag": "${{ github.ref_name }}",
               "assets": assets,
@@ -57,6 +57,6 @@ jobs:
           test -f "docs/RELEASE-NOTES-${GITHUB_REF_NAME}.md"
           gh release create "$GITHUB_REF_NAME" \
             dist/*.whl dist/*.tar.gz dist/SHA256SUMS dist/release-manifest.json \
-            --title "AAG LockLock ${GITHUB_REF_NAME}" \
+            --title "AAG - InputLock ${GITHUB_REF_NAME}" \
             --notes-file "docs/RELEASE-NOTES-${GITHUB_REF_NAME}.md" \
             --prerelease

@@ -17,7 +17,7 @@ polkit.addRule(function(action, subject) {
     }
 });
 
-// Only this fixed LockLock adapter may be started; no general unit management.
+// Only this fixed AAG - InputLock adapter may be started; no general unit management.
 polkit.addRule(function(action, subject) {
     if (subject.user === "input-lockd" &&
         action.id === "org.freedesktop.systemd1.manage-units" &&

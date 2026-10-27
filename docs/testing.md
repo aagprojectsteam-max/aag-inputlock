@@ -36,9 +36,9 @@ reference result is recorded in
 
 1. Authenticate for a complete root-readable installed-code/configuration/unit/recovery-state backup before replacement.
 2. Run `sudo ./update.sh`. It must finish unlocked, with effective lid-ignore off. Post-install warnings must be resolved; `tools/legacy/install_native_lid.py` is retired and must not be used. Do not run `input-lock-protect.service` directly.
-3. Compare source/installed hashes and inspect unit ownership/hardening. Check `input-lock status --json`, `input-lock doctor`, both LockLock journals and `systemd-inhibit --list`.
+3. Compare source/installed hashes and inspect unit ownership/hardening. Check `input-lock status --json`, `input-lock doctor`, both AAG - InputLock journals and `systemd-inhibit --list`.
 4. Verify no owned legacy `CriticalPowerAction=Ignore` drop-in remains, GNOME recovery completed, and live UPower critical action is non-Ignore. **Separately qualify the pre-existing OS critical action against the AAG platform acceptance record**; the observed HybridSleep baseline is not accepted by the inspected plain-hibernate report.
-5. Confirm the daemon sees CPU and both chassis sensors, AC/battery, current UPower/logind observations and the effective InputLock protection/recovery units and native suspend capability. Unsupported prerequisites must prevent arming.
+5. Confirm the daemon sees CPU and both chassis sensors, AC/battery, current UPower/logind observations and the effective AAG - InputLock protection/recovery units and native suspend capability. Unsupported prerequisites must prevent arming.
 
 ## Short supervised lid acceptance — not performed by development tests
 
@@ -46,7 +46,7 @@ Use a ventilated desk, an open lid, idle/light work and a present operator. Keep
 
 1. With lid open, explicitly enable continuous lid-ignore from the tray. Confirm `LID_IGNORE_ARMED`, a connected controller, GNOME's idle-only session inhibitor (flag 8), a temporary **effective `power-saver` profile hold** and the lid-switch inhibitor. The cooling hold must have been obtained **before** the lid inhibitor. Native suspend and critical-battery protection must remain enabled.
 2. Close for **5–10 seconds only** during supervised acceptance. Observe `LID_CLOSED_MONITORED`, fresh sensor values, `lid_ignore_mode=continuous_until_disabled`, `deadline=null`, and no timed protective action. Do **not** physically test hours of closure; source tests simulate that with injected monotonic clocks.
-3. Reopen immediately. Confirm monitoring ended and return to armed/open state. Disable lid-ignore and confirm InputLock lid-grab, GNOME idle-only inhibitor and power-saver hold all disappeared; the originally selected `balanced`/`performance` profile and GNOME idle policy must be unchanged.
+3. Reopen immediately. Confirm monitoring ended and return to armed/open state. Disable lid-ignore and confirm AAG - InputLock lid-grab, GNOME idle-only inhibitor and power-saver hold all disappeared; the originally selected `balanced`/`performance` profile and GNOME idle policy must be unchanged.
 4. Exercise warning/high-risk/emergency and failure paths through the automated simulations, not by raising the machine's temperature or waiting for an unattended shutdown.
 
 Actual suspend/resume, storage release/recovery, modem/GNSS recovery, session logout and reboot acceptance must be scheduled separately with the existing AAG procedures. Development did none of these. A queued systemd transition may already be beyond cancellation when the lid reopens.

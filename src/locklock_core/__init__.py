@@ -1,4 +1,4 @@
-"""Platform-independent contracts and policy for LockLock."""
+"""Platform-independent contracts and policy for AAG - InputLock."""
 
 from .contracts import (
     CapabilityLevel,

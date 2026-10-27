@@ -19,7 +19,7 @@ class CopyablePathTests(unittest.TestCase):
         import po_compile
         entries = {entry.msgid: entry for entry in
                    po_compile.parse_po((REPO / "po" / "he.po").read_text(encoding="utf-8"))}
-        text = entries["cannot connect to the Input Lock daemon at {path} ({error}; {unit} is {state}). "
+        text = entries["cannot connect to the AAG - InputLock daemon at {path} ({error}; {unit} is {state}). "
                        "Check: systemctl status {unit}"].msgstr[0]
         lines = text.split("\n")
         self.assertIn("{path}", lines)

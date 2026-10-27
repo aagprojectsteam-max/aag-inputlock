@@ -53,7 +53,7 @@ def main(arguments: list[str] | None = None) -> int:
 
 def doctor() -> int:
     failures = 0
-    print("AAG LockLock Doctor — Windows")
+    print("AAG - InputLock Doctor — Windows")
     print("-----------------------------")
     release = platform.platform()
     supported = platform.system() == "Windows" and platform.machine().endswith("64")

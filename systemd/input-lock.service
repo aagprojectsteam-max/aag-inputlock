@@ -1,5 +1,5 @@
 [Unit]
-Description=Input Lock evdev daemon
+Description=AAG - InputLock evdev daemon
 Documentation=file:/usr/share/doc/input-lock/README.md
 After=systemd-udevd.service systemd-user-sessions.service upower.service
 Wants=systemd-udevd.service upower.service

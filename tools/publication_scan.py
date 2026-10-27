@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed if private host evidence enters the public LockLock tree."""
+"""Fail closed if private host evidence enters the public AAG - InputLock tree."""
 from pathlib import Path
 import re
 

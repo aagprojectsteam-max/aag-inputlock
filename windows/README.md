@@ -1,4 +1,4 @@
-# AAG LockLock for Windows 11 x64 — beta validation build
+# AAG - InputLock for Windows 11 x64 — beta validation build
 
 This build runs without a terminal. `LockLockAgent.exe` owns the notification
 area icon and documented low-level input hooks in the interactive user session.
@@ -73,7 +73,7 @@ replacing/removing binaries if the power restoration journal still exists.
 
 ## Beta.2 remediation and acceptance
 
-Run the installer elevated with an explicit `-TargetSid` obtained from the intended user's non-elevated session (`whoami /user`). Exit running LockLock agents first. The installer never launches an elevated input agent; launch the Start Menu shortcut from the target user's desktop afterward. Uninstall also requires the installed `-TargetSid` and its loaded user registry hive. Service ACLs use well-known numeric SIDs and every native command exit is checked. Backups and failed power-restoration journals are retained.
+Run the installer elevated with an explicit `-TargetSid` obtained from the intended user's non-elevated session (`whoami /user`). Exit running AAG - InputLock agents first. The installer never launches an elevated input agent; launch the Start Menu shortcut from the target user's desktop afterward. Uninstall also requires the installed `-TargetSid` and its loaded user registry hive. Service ACLs use well-known numeric SIDs and every native command exit is checked. Backups and failed power-restoration journals are retained.
 
 Global cursor hiding is unsupported and disabled. Input remains experimental until native hardware acceptance. Run `python tools/run_tests.py shared`, then `python tools/run_tests.py windows-native` before building. Pipe I/O uses a single deadline and nonblocking message mode with a bounded consumption ACK. No worker calls Tk directly. The session monitor requires the active console's ordinary input desktop; disconnect/secure-desktop transitions disable locking eligibility.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Per-user tray indicator and notification bridge for Input Lock."""
+"""Per-user tray indicator and notification bridge for AAG - InputLock."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import signal
 import socket
@@ -25,7 +26,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("AyatanaAppIndicator3", "0.1")
-from gi.repository import AyatanaAppIndicator3, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import AyatanaAppIndicator3, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from input_lock_common import (  # noqa: E402
     MAX_MESSAGE_BYTES,
@@ -78,11 +79,11 @@ CURSOR_EXTENSION_UUID: Final = "input-lock-cursor@aag-projects-team"
 # applies (review U7). Log lines stay English.
 # ---------------------------------------------------------------------------
 LID_LABEL: Final = N_("Ignore Lid Close")
-CONTINUOUS_LID_LABEL: Final = N_("Ignore Lid Close (continuous, safety-monitored)")
+CONTINUOUS_LID_LABEL: Final = N_("Ignore Lid Close (continuous)")
 LID_UNAVAILABLE_LABEL: Final = N_("Ignore Lid Close (service unavailable)")
 LID_SAFETY_UNAVAILABLE_LABEL: Final = N_("Ignore Lid Close (safety unavailable)")
 TRAY_STOP_NOTE: Final = N_(
-    "Quitting, stopping or restarting the Input Lock tray turns Ignore Lid Close off "
+    "Quitting, stopping or restarting the AAG - InputLock tray turns Ignore Lid Close off "
     "and unlocks input."
 )
 LID_TOOLTIP_TEXT: Final = N_(
@@ -93,11 +94,11 @@ LID_LOST_TITLE: Final = N_("Ignore Lid Close was turned off")
 REENABLE_ACTION_LABEL: Final = N_("Re-enable…")
 REENABLE_HINT: Final = N_(
     "It will not turn itself back on. To turn it on again, open the lid and choose "
-    "“Re-enable…” or use the Input Lock tray menu."
+    "“Re-enable…” or use the AAG - InputLock tray menu."
 )
 # Informational notice for a loss the user caused with another action, such
 # as the emergency shortcut (review U-R5): the body names that action.
-LID_OFF_INFO_HINT: Final = N_("Turn it on again from the Input Lock tray menu if you still need it.")
+LID_OFF_INFO_HINT: Final = N_("Turn it on again from the AAG - InputLock tray menu if you still need it.")
 # One corrected notice after "connection lost" turned out to have a real
 # cause reported by the daemon on reconnect (review U-R1).
 LID_CORRECTION_TEXT: Final = N_("Correction to the previous notice: {cause}")
@@ -123,7 +124,7 @@ LID_CONFIRM_WARNING: Final = N_(
     "Keep the lid OPEN when enabling, keep the vents unobstructed, and NEVER put the running laptop in a bag."
 )
 LANGUAGE_NOTE: Final = N_(
-    "A language change takes effect the next time Input Lock starts, for example after you "
+    "A language change takes effect the next time AAG - InputLock starts, for example after you "
     "log in again."
 )
 # Language names are shown in their own language, never translated.
@@ -416,7 +417,7 @@ class PowerSaverGuard:
             reply = self.proxy.call_sync(
                 "HoldProfile", GLib.Variant("(sss)", (
                     "power-saver",
-                    "Keep closed-lid laptop cool during supervised InputLock",
+                    "Keep closed-lid laptop cool during supervised AAG - InputLock",
                     "org.aag.InputLock",
                 )), Gio.DBusCallFlags.NONE, 3000, None,
             )
@@ -552,15 +553,24 @@ class TrayNotifier:
         # otherwise GNOME may display its three-dot missing-icon placeholder.
         self.indicator.set_icon_theme_path("/usr/share/icons/hicolor/scalable/status")
         self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
-        self.indicator.set_title(_("Input Lock"))
+        self.indicator.set_title(_("AAG - InputLock"))
 
         self.menu = Gtk.Menu()
-        self.status_item = Gtk.MenuItem(label=_("Input Lock — Connecting…"))
+        self.status_item = Gtk.MenuItem(label=_("AAG - InputLock — Connecting…"))
         self.status_item.set_sensitive(False)
         self.menu.append(self.status_item)
         self.safety_item = Gtk.MenuItem(label=_("Lid safety: connecting…"))
         self.safety_item.set_sensitive(False)
         self.menu.append(self.safety_item)
+        # Narrow tray (2026-10-27): details on their own short lines.
+        self.safety_detail_item = Gtk.MenuItem(label="")
+        self.safety_detail_item.set_sensitive(False)
+        self.safety_detail_item.set_no_show_all(True)
+        self.menu.append(self.safety_detail_item)
+        self.cooling_item = Gtk.MenuItem(label="")
+        self.cooling_item.set_sensitive(False)
+        self.cooling_item.set_no_show_all(True)
+        self.menu.append(self.cooling_item)
 
         self.menu.append(Gtk.SeparatorMenuItem())
         self.toggle_item = Gtk.MenuItem(label=_("Lock Input"))
@@ -694,7 +704,7 @@ class TrayNotifier:
                     last_reminder = now
                     delay = 1.0
                     if second_instance:
-                        LOG.warning("Another Input Lock tray is already the controller; "
+                        LOG.warning("Another AAG - InputLock tray is already the controller; "
                                     "this instance retries every %d s", SECOND_INSTANCE_RETRY_SECONDS)
                     elif isinstance(exc, (OSError, ValueError)):
                         LOG.warning("Daemon subscription unavailable: %s", exc)
@@ -820,7 +830,7 @@ class TrayNotifier:
                     "A protective suspend was confirmed. Re-enable lid-ignore only with lid open."))
             elif safety_state == "PROTECTIVE_ACTION_FAILED":
                 message = safe_format(N_(
-                    "Open the lid. Automatic safety protection failed; see InputLock diagnostics."))
+                    "Open the lid. Automatic safety protection failed; see AAG - InputLock diagnostics."))
             self._notify(safe_format(N_("Lid safety")), message, locked=bool(locked))
         return False
 
@@ -1130,36 +1140,61 @@ class TrayNotifier:
                                "Open the lid.")),
             )
 
-    def _safety_label(self) -> str | None:
+    def _safety_lines(self) -> tuple[str, str, str | None] | None:
+        """(state line, temperature/protection line, cooling line or None)."""
         safety = self.current_state.get("safety", {})
         if not isinstance(safety, dict):
             return None
-        label = _(SAFETY_STATE_NAMES.get(safety.get("state"), N_("unavailable")))
+        state = _(SAFETY_STATE_NAMES.get(safety.get("state"), N_("unavailable")))
+        detail = safe_format(N_("Temperature: {thermal} · Protection: {protection}"),
+                             thermal=thermal_text(safety.get("thermal", "UNKNOWN")),
+                             protection=protection_text(safety.get("thermal_protection", "UNKNOWN")))
+        cooling = None
         if self.current_state.get("ignore_lid_close"):
             # U2: claim active cooling only once the hold has been verified.
-            label = safe_format(N_("{state} (continuous; power-saver cooling active)") if self.cooling_verified
-                                else N_("{state} (continuous; power-saver cooling not confirmed)"), state=label)
-        return safe_format(N_("Lid safety: {state} | Temperature: {thermal} | Protection: {protection}"),
-                           state=label,
-                           thermal=thermal_text(safety.get("thermal", "UNKNOWN")),
-                           protection=protection_text(safety.get("thermal_protection", "UNKNOWN")))
+            cooling = _(N_("Cooling: active") if self.cooling_verified else N_("Cooling: not confirmed"))
+        return safe_format(N_("Lid safety: {state}"), state=state), detail, cooling
+
+    def _safety_label(self) -> str | None:
+        lines = self._safety_lines()
+        if lines is None:
+            return None
+        return " | ".join(part for part in lines if part)
+
+    def _apply_safety_lines(self) -> None:
+        lines = self._safety_lines()
+        if lines is None:
+            return
+        head, detail, cooling = lines
+        self.safety_item.set_label(head)
+        for item, text in ((getattr(self, "safety_detail_item", None), detail),
+                           (getattr(self, "cooling_item", None), cooling)):
+            if item is None:
+                continue
+            if text:
+                item.set_label(text)
+                item.show()
+            else:
+                item.hide()
+
+    def _hide_safety_details(self) -> None:
+        for name in ("safety_detail_item", "cooling_item"):
+            item = getattr(self, name, None)
+            if item is not None:
+                item.hide()
 
     def _refresh_safety_label(self) -> None:
         item = getattr(self, "safety_item", None)
         if item is None or not self.connected:
             return
-        label = self._safety_label()
-        if label is not None:
-            item.set_label(label)
+        self._apply_safety_lines()
 
     def _update_menu(self, locked: frozenset[str], hotkey: str) -> None:
-        label = self._safety_label()
-        if label is not None:
-            self.safety_item.set_label(label)
+        self._apply_safety_lines()
         ignore_lid = self.current_state.get("ignore_lid_close") is True
         policy_healthy = self.current_state.get("lid_policy_healthy") is True
         if locked:
-            self.status_item.set_label(_("Input Lock — Locked"))
+            self.status_item.set_label(_("AAG - InputLock — Locked"))
             self.toggle_item.set_label(_("Unlock Input"))
             icon = (
                 "input-lock-locked-lid-ignored"
@@ -1172,7 +1207,7 @@ class TrayNotifier:
                 else _("Input is locked")
             )
         else:
-            self.status_item.set_label(_("Input Lock — Unlocked"))
+            self.status_item.set_label(_("AAG - InputLock — Unlocked"))
             self.toggle_item.set_label(_("Lock Input"))
             icon = (
                 "input-lock-unlocked-lid-ignored"
@@ -1226,13 +1261,15 @@ class TrayNotifier:
         if self.idle_guard is not None and not self.enable_in_flight:
             keep_idle = self.grace_until is not None
             self._run_lease(self._release_leases_job, not keep_idle, True)
-        self.indicator.set_icon_full(DISCONNECTED_ICON, _("Input Lock service unavailable"))
+        self.indicator.set_icon_full(DISCONNECTED_ICON, _("AAG - InputLock service unavailable"))
         if detail == "another-tray":
-            self.status_item.set_label(_("Input Lock — Another tray is in control"))
-            self.safety_item.set_label(_("Lid safety: managed by the other Input Lock tray"))
+            self.status_item.set_label(_("AAG - InputLock — Another tray is in control"))
+            self.safety_item.set_label(_("Lid safety: managed by the other AAG - InputLock tray"))
+            self._hide_safety_details()
         else:
-            self.status_item.set_label(_("Input Lock — Service unavailable"))
+            self.status_item.set_label(_("AAG - InputLock — Service unavailable"))
             self.safety_item.set_label(_("Lid safety: disconnected — status unknown; open the lid"))
+            self._hide_safety_details()
         self.toggle_item.set_sensitive(False)
         self._restore_lid_item()
         return False
@@ -1241,7 +1278,7 @@ class TrayNotifier:
         if isinstance(error, OSError) and error.errno in {errno.ENOENT, errno.ECONNREFUSED}:
             self._show_disconnected()
             return self._show_error(title, _(
-                "InputLock background service unavailable. Open the lid and check "
+                "AAG - InputLock background service unavailable. Open the lid and check "
                 "input-lock.service with systemctl status input-lock.service. "
                 "After the service is repaired, the tray will reconnect automatically."))
         self.toggle_item.set_sensitive(getattr(self, "connected", False))
@@ -1274,7 +1311,7 @@ class TrayNotifier:
                 )
             )
         except Exception as exc:
-            GLib.idle_add(self._action_error, _("Input Lock"), exc)
+            GLib.idle_add(self._action_error, _("AAG - InputLock"), exc)
 
     @staticmethod
     def _event_hotkey(event: Gdk.EventKey) -> str | None:
@@ -1306,7 +1343,7 @@ class TrayNotifier:
         return "+".join([*modifiers, key])
 
     def _on_settings(self, _item: Gtk.MenuItem) -> None:
-        dialog = Gtk.Dialog(title=_("Input Lock Settings"), flags=Gtk.DialogFlags.MODAL)
+        dialog = Gtk.Dialog(title=_("AAG - InputLock Settings"), flags=Gtk.DialogFlags.MODAL)
         dialog.set_default_size(480, 380)
         dialog.set_position(Gtk.WindowPosition.CENTER)
         dialog.set_keep_above(True)
@@ -1369,7 +1406,7 @@ class TrayNotifier:
         allowed_row.pack_end(allowed_button, False, False, 0)
         box.add(allowed_row)
 
-        startup = Gtk.CheckButton(label=_("Start Input Lock when I log in"))
+        startup = Gtk.CheckButton(label=_("Start AAG - InputLock when I log in"))
         startup.set_active(self.autostart_cached)
         box.add(startup)
 
@@ -1767,7 +1804,7 @@ class TrayNotifier:
             return _("Cursor hiding extension: enabled.")
         if enabled is False:
             return _("Cursor hiding extension: disabled — the cursor will not be hidden "
-                     "until the Input Lock Cursor Hider GNOME extension is enabled.")
+                     "until the AAG - InputLock Cursor Hider GNOME extension is enabled.")
         return _("Cursor hiding extension: status unknown (GNOME Shell settings unavailable).")
 
     @staticmethod
@@ -1921,11 +1958,10 @@ class TrayNotifier:
             dialog = Gtk.MessageDialog(
                 flags=Gtk.DialogFlags.MODAL,
                 message_type=Gtk.MessageType.WARNING,
-                buttons=Gtk.ButtonsType.YES_NO,
+                buttons=Gtk.ButtonsType.NONE,
                 text=_(LID_CONFIRM_TITLE),
             )
-            dialog.format_secondary_text(" ".join(
-                (_(LID_CONFIRM_BODY), _(TRAY_STOP_NOTE), _(LID_CONFIRM_WARNING))))
+            self._fill_lid_confirm(dialog)
             dialog.set_keep_above(True)
             response = dialog.run()
             dialog.destroy()
@@ -1953,6 +1989,48 @@ class TrayNotifier:
             name="input-lock-lid-change",
             daemon=True,
         ).start()
+
+    @staticmethod
+    def _wrap_label(text: str, *, markup: bool = False) -> Gtk.Label:
+        label = Gtk.Label()
+        if markup:
+            label.set_markup(text)
+        else:
+            label.set_text(text)
+        label.set_line_wrap(True)
+        label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        # Without an explicit width GTK sizes a long wrapped label as a
+        # narrow, very tall column (2026-10-27 fix).
+        label.set_width_chars(58)
+        label.set_max_width_chars(72)
+        label.set_xalign(0.0)  # start edge; GTK mirrors it for RTL
+        label.set_halign(Gtk.Align.FILL)
+        return label
+
+    @staticmethod
+    def _widen_message_dialog(dialog: Gtk.MessageDialog) -> None:
+        for child in dialog.get_message_area().get_children():
+            if isinstance(child, Gtk.Label):
+                child.set_width_chars(50)
+                child.set_max_width_chars(72)
+
+    def _fill_lid_confirm(self, dialog: Gtk.MessageDialog) -> None:
+        # RLM keeps leading bullets/icons on the right in Hebrew.
+        mark = "\u200f" if i18n.is_rtl() else ""
+        title = GLib.markup_escape_text(_(LID_CONFIRM_TITLE))
+        dialog.set_markup(f"<span weight='bold' size='large'>{title}</span>")
+        area = dialog.get_message_area()
+        area.set_spacing(12)
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", _(LID_CONFIRM_BODY)) if s.strip()]
+        bullets = "\n".join(mark + "•  " + s for s in sentences)
+        area.pack_start(self._wrap_label(bullets), False, False, 0)
+        area.pack_start(self._wrap_label(mark + _(TRAY_STOP_NOTE)), False, False, 0)
+        warning = GLib.markup_escape_text(mark + "⚠  " + _(LID_CONFIRM_WARNING))
+        area.pack_start(self._wrap_label(f"<b>{warning}</b>", markup=True), False, False, 0)
+        area.show_all()
+        dialog.add_button(_("Cancel"), Gtk.ResponseType.NO)
+        dialog.add_button(_("Turn On"), Gtk.ResponseType.YES)
+        dialog.set_default_response(Gtk.ResponseType.NO)
 
     def _enable_job(self, generation: int | None) -> None:
         cooling = self.power_guard
@@ -2011,7 +2089,7 @@ class TrayNotifier:
     def _offer_reenable(self) -> bool:
         """Handle the "Re-enable…" action: same dialog, open lid, no auto-arm."""
         if not self.connected:
-            self._show_error(_(LID_LABEL), _("The Input Lock service is not available. "
+            self._show_error(_(LID_LABEL), _("The AAG - InputLock service is not available. "
                                              "When the tray reconnects, turn Ignore Lid Close on "
                                              "from its menu."))
             return False
@@ -2020,7 +2098,7 @@ class TrayNotifier:
             return False
         if state.get("lid_is_closed") is True:
             self._show_error(_(LID_LABEL), _("Open the lid first, then choose “Re-enable…” again "
-                                             "or use the Input Lock tray menu."))
+                                             "or use the AAG - InputLock tray menu."))
             return False
         lid_count = state.get("lid_switch_devices", 0)
         if not isinstance(lid_count, int) or lid_count <= 0:
@@ -2170,7 +2248,7 @@ class TrayNotifier:
 
     def _on_about(self, _item: Gtk.MenuItem) -> None:
         dialog = Gtk.AboutDialog()
-        dialog.set_program_name(_("Input Lock"))
+        dialog.set_program_name(_("AAG - InputLock"))
         dialog.set_version(VERSION)
         dialog.set_comments(_("Safe keyboard, mouse, touchpad, and touchscreen locking for Ubuntu."))
         logo = self._about_logo()
@@ -2192,10 +2270,10 @@ class TrayNotifier:
             modal=True,
             message_type=Gtk.MessageType.WARNING,
             buttons=Gtk.ButtonsType.NONE,
-            text=_("Quit Input Lock?"),
+            text=_("Quit AAG - InputLock?"),
         )
         dialog.format_secondary_text(_(
-            "This will unlock all input and stop both the Input Lock service "
+            "This will unlock all input and stop both the AAG - InputLock service "
             "and its tray process."
         ))
         dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
@@ -2217,7 +2295,7 @@ class TrayNotifier:
             response_ok(send_request({"cmd": "emergency-unlock"}, socket_path=self.config.socket_path, timeout=5.0))
             response_ok(send_request({"cmd": "quit"}, socket_path=self.config.socket_path, timeout=5.0))
         except Exception as exc:
-            GLib.idle_add(self._show_error, _("Input Lock"), daemon_text(str(exc)))
+            GLib.idle_add(self._show_error, _("AAG - InputLock"), daemon_text(str(exc)))
             GLib.idle_add(self.quit_item.set_sensitive, True)
             return
         self.running = False
@@ -2238,6 +2316,7 @@ class TrayNotifier:
             text=title,
         )
         dialog.format_secondary_text(body)
+        TrayNotifier._widen_message_dialog(dialog)
         dialog.set_keep_above(True)
         dialog.run()
         dialog.destroy()
@@ -2284,7 +2363,7 @@ class TrayNotifier:
                         critical: bool, reenable: bool) -> list[str]:
         command = [
             notify_send,
-            "--app-name=" + _("Input Lock"),
+            "--app-name=" + _("AAG - InputLock"),
             "--icon=input-lock-locked" if locked else "--icon=input-lock-unlocked",
         ]
         if critical:

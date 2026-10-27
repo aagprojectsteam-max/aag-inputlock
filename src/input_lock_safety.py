@@ -1,6 +1,6 @@
 """Supervised lid suppression, not a replacement machine power controller.
 
-Pure decisions are separate from telemetry and InputLock's native suspend adapter.
+Pure decisions are separate from telemetry and AAG - InputLock's native suspend adapter.
 No incident-time thermal evidence established the cause of the 2026-09-11 stop.
 """
 from __future__ import annotations
@@ -1205,9 +1205,9 @@ def protection_report(run=subprocess.run, status=native_status, counter=None) ->
                 if (props.get("User") not in {"", "root"} or props.get("Type") != "oneshot"
                         or props.get("Restart") != "no" or timeout is None
                         or not HELPER_START_TIMEOUT_MIN_SECONDS <= timeout <= HELPER_START_TIMEOUT_MAX_SECONDS):
-                    return {"errors": ["InputLock root helper/timeout contract changed: " + unit], "info": info}
+                    return {"errors": ["AAG - InputLock root helper/timeout contract changed: " + unit], "info": info}
             if unit in {PROTECT_UNIT, "input-lock.service"} and props.get("OnFailure", "").split() != [FAILSAFE_UNIT]:
-                return {"errors": ["missing InputLock failure handler on " + unit], "info": info}
+                return {"errors": ["missing AAG - InputLock failure handler on " + unit], "info": info}
             if unit == FAILSAFE_UNIT and props.get("OnFailure"):
                 return {"errors": ["unexpected recursive failure handler"], "info": info}
             if unit == FAILSAFE_UNIT and "/usr/lib/input-lock/input_lock_safety.py record-failure" not in props.get("ExecStopPost", ""):
@@ -1223,7 +1223,7 @@ def protection_report(run=subprocess.run, status=native_status, counter=None) ->
                         or watchdog is None
                         or not DAEMON_WATCHDOG_MIN_SECONDS <= watchdog <= DAEMON_WATCHDOG_MAX_SECONDS
                         or stop is None or not 0 < stop <= 30):
-                    return {"errors": ["InputLock watchdog/restart contract changed"], "info": info}
+                    return {"errors": ["AAG - InputLock watchdog/restart contract changed"], "info": info}
         return {"errors": errors, "info": info}
     except Exception as exc:
         return {"errors": ["native protection probe failed: " + str(exc)], "info": info}
@@ -1497,7 +1497,7 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
 
     Never requests a sleep while the OS sleep path is already busy or has
     just failed (see os_sleep_in_progress). The terminal failure latch is
-    written only when InputLock's own request was accepted by logind and the
+    written only when AAG - InputLock's own request was accepted by logind and the
     kernel transition then failed or was never confirmed.
     """
     latch = FAILURE_LATCH if latch is None else latch
@@ -1537,7 +1537,7 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
                 # read evidence must never leave this process's lid suppression.
                 result = run(["/usr/bin/systemctl", "stop", "input-lock.service"], timeout=10, check=False)
                 if result.returncode or unit_properties(run, "input-lock.service").get("ActiveState") not in {"inactive", "failed"}:
-                    raise RuntimeError("cannot confirm InputLock stopped; no sleep dispatched")
+                    raise RuntimeError("cannot confirm AAG - InputLock stopped; no sleep dispatched")
         else:
             state = _read_bounded_json(path)
         if not isinstance(state, dict):
@@ -1565,7 +1565,7 @@ def protect_main(run=subprocess.run, probe=stack_ready, telemetry=None, path=BRE
                 record(DEFERRED_OS_SLEEP, "input-lock.service Result=watchdog")
                 return 0
         elif state.get("effective") is not False or state.get("restrictions_released") is not True:
-            raise RuntimeError("InputLock restrictions have not been released")
+            raise RuntimeError("AAG - InputLock restrictions have not been released")
         if telemetry.read().lid_closed is False:
             record("cancelled-lid-open")
             return 0
@@ -1630,7 +1630,7 @@ def record_failure(service_result: str, *, latch: Path | None = None, receipt: P
 
     Appends the SERVICE_RESULT to an existing latch, never overwriting it.
     Without one, it latches only if this boot's root-owned receipt shows an
-    accepted InputLock suspend request that was never confirmed.
+    accepted AAG - InputLock suspend request that was never confirmed.
     """
     if service_result == "success":
         return "no-failure"
@@ -1653,7 +1653,7 @@ def record_failure(service_result: str, *, latch: Path | None = None, receipt: P
                             counter=counter, boot=boot, now=now,
                             extra={"service_result": service_result, "generation": evidence.get("generation")})
     LOG.warning("event=RECOVERY_UNIT_FAILED result=%s latched=no "
-                "reason=no accepted InputLock suspend request", service_result)
+                "reason=no accepted AAG - InputLock suspend request", service_result)
     return "not-latched"
 
 
@@ -1736,7 +1736,7 @@ def acknowledge_failure(run=subprocess.run, latch=None, archive=None,
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="InputLock ordinary suspend protection")
+    parser = argparse.ArgumentParser(description="AAG - InputLock ordinary suspend protection")
     parser.add_argument("action", choices=("protect", "recover", "check", "record-failure", "acknowledge-failure"))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")

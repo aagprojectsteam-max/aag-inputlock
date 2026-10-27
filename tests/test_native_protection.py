@@ -194,7 +194,7 @@ class ProtectionTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
     def test_refused_request_is_not_latched(self):
-        # A9: latch only when InputLock's own request was accepted.
+        # A9: latch only when AAG - InputLock's own request was accepted.
         result, calls, records, _ = self.request(recovery=True, dispatch=1)
         self.assertEqual(result, 1)
         self.assertFalse(any(call.args[0].name == 'failure.json' for call in records))

@@ -33,21 +33,21 @@ LID_DISABLE_REASON_TEXT: Final = {
     # Emitted by the daemon when it drops the controller (review U-R1): lease
     # expiry, and a connection the tray side closed or lost.
     "controller-lease-expired": N_(
-        "The Input Lock tray did not check in with the background service in time "
+        "The AAG - InputLock tray did not check in with the background service in time "
         "(for example, the tray stopped responding, or the computer was going to sleep "
         "or waking up)."),
     "controller-disconnected": N_(
-        "The Input Lock tray's connection to the background service was closed "
+        "The AAG - InputLock tray's connection to the background service was closed "
         "(the tray was stopped, restarted or crashed)."),
     "session-inactive": N_("Your desktop session stopped being active (user switch, logout or a session problem)."),
     "authorized-session-inactive": N_(
         "Your desktop session stopped being active (user switch, logout or a session problem)."),
-    "user-session-ended": N_("The Input Lock tray was stopped or your desktop session ended."),
-    "daemon-shutdown": N_("The Input Lock background service was stopped or restarted."),
+    "user-session-ended": N_("The AAG - InputLock tray was stopped or your desktop session ended."),
+    "daemon-shutdown": N_("The AAG - InputLock background service was stopped or restarted."),
     "daemon-unavailable": N_(
-        "The connection to the Input Lock background service was lost (the service stopped or crashed)."),
+        "The connection to the AAG - InputLock background service was lost (the service stopped or crashed)."),
     "daemon-restarted": N_(
-        "The Input Lock background service restarted; Ignore Lid Close always starts off "
+        "The AAG - InputLock background service restarted; Ignore Lid Close always starts off "
         "after a restart."),
     "ipc-emergency-unlock": N_(
         "Input was unlocked with an emergency unlock, which also turns Ignore Lid Close off."),
@@ -59,17 +59,17 @@ LID_DISABLE_REASON_TEXT: Final = {
     "hotkey-change": N_("The lock shortcut was changed, which resets all locks."),
     "lock-kinds-change": N_("The devices to lock were changed, which resets all locks."),
     "allowed-keys-change": N_("The keys allowed while locked were changed, which resets all locks."),
-    "configuration-reload": N_("The Input Lock configuration was reloaded, which resets all locks."),
-    "invalid-config-reload": N_("The Input Lock configuration could not be reloaded, so all locks were reset."),
+    "configuration-reload": N_("The AAG - InputLock configuration was reloaded, which resets all locks."),
+    "invalid-config-reload": N_("The AAG - InputLock configuration could not be reloaded, so all locks were reset."),
     "release-all": N_("All locks were released."),
     # Normalised keys published by the daemon in last_lid_disable.reason.
     "emergency-unlock": N_(
         "Input was unlocked with an emergency unlock, which also turns Ignore Lid Close off."),
-    "settings-reset": N_("Input Lock settings were changed or reloaded, which resets all locks."),
+    "settings-reset": N_("AAG - InputLock settings were changed or reloaded, which resets all locks."),
     "auto-unlock-timer": N_(
         "The auto-unlock safety timer released input, which also turns Ignore Lid Close off."),
     "safety-journal-failed": N_(
-        "Input Lock could not save its safety record, so it stopped ignoring the lid."),
+        "AAG - InputLock could not save its safety record, so it stopped ignoring the lid."),
     "power-saver-ineffective": N_("The power-saver cooling hold could not be kept."),
     "lease-unavailable": N_("GNOME idle protection or power-saver cooling stopped working."),
 }
@@ -122,9 +122,9 @@ def _describe(reason: str, state: dict[str, object], detail: str, tr) -> str:
         elif "restart" in lowered or "shutdown" in lowered:
             text = tr(LID_DISABLE_REASON_TEXT["daemon-shutdown"])
         elif reason:
-            text = tr(N_("The Input Lock service turned it off (reason: {reason}).")).format(reason=reason)
+            text = tr(N_("The AAG - InputLock service turned it off (reason: {reason}).")).format(reason=reason)
         else:
-            text = tr(N_("The Input Lock service turned it off without giving a reason."))
+            text = tr(N_("The AAG - InputLock service turned it off without giving a reason."))
     if detail:
         text = tr(N_("{text} Details: {detail}")).format(text=text.rstrip(), detail=detail)
     return text
@@ -187,7 +187,7 @@ KNOWN_DAEMON_TEXTS: Final = frozenset({
     N_("ordinary suspend unavailable, blocked, or already in progress"),
     N_("unexpected recursive failure handler"),
     N_("missing terminal failure recorder"),
-    N_("InputLock watchdog/restart contract changed"),
+    N_("AAG - InputLock watchdog/restart contract changed"),
     N_("unreadable failure latch"),
     N_("failure latch from a previous boot (informational; acknowledge to archive it)"),
     N_("failure latch predates a later successful suspend (informational; acknowledge to archive it)"),
@@ -206,7 +206,7 @@ KNOWN_DAEMON_TEXTS: Final = frozenset({
     N_("the shortcut key cannot also be an allowed key"),
     N_("Copilot and F23 represent the same physical key"),
     N_("recovery shortcut keys (including F1-F12) cannot be added"),
-    N_("allowed keys need /dev/uinput; run the LockLock updater and restart"),
+    N_("allowed keys need /dev/uinput; run the AAG - InputLock updater and restart"),
     N_("mouse and touchpad must be configured together"),
     N_("mode must be all, all-input, keyboard, mouse, touchpad, or touchscreen"),
     N_("timeout must be between 0 and 86400 seconds"),
@@ -268,10 +268,10 @@ _PATTERNS: Final = (
      N_("restart required for: {settings}"), ()),
     (re.compile(r"missing or incompatible (?P<unit>\S+)"),
      N_("missing or incompatible {unit}"), ()),
-    (re.compile(r"InputLock root helper/timeout contract changed: (?P<unit>\S+)"),
-     N_("InputLock root helper/timeout contract changed: {unit}"), ()),
-    (re.compile(r"missing InputLock failure handler on (?P<unit>\S+)"),
-     N_("missing InputLock failure handler on {unit}"), ()),
+    (re.compile(r"AAG - InputLock root helper/timeout contract changed: (?P<unit>\S+)"),
+     N_("AAG - InputLock root helper/timeout contract changed: {unit}"), ()),
+    (re.compile(r"missing AAG - InputLock failure handler on (?P<unit>\S+)"),
+     N_("missing AAG - InputLock failure handler on {unit}"), ()),
     (re.compile(r"native protection probe failed: (?P<error>.+)", re.S),
      N_("native protection probe failed: {error}"), ()),
     (re.compile(r"(?P<unit>\S+\.service) has drop-ins: (?P<paths>.+)"),

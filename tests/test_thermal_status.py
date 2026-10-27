@@ -32,10 +32,11 @@ class ThermalConsumerTests(unittest.TestCase):
     def test_tray_does_not_hide_hot_sample_behind_normal_os_behavior(self):
         tray=TrayNotifier.__new__(TrayNotifier)
         tray.current_state={'safety':hot_policy().snapshot()}
-        for name in ('safety_item','status_item','toggle_item','indicator','shortcut_item','lid_item'):
+        for name in ('safety_item','safety_detail_item','cooling_item','status_item','toggle_item',
+                     'indicator','shortcut_item','lid_item'):
             setattr(tray,name,Mock())
         tray._update_menu(frozenset(),'CTRL+ALT+Z')
-        label=tray.safety_item.set_label.call_args.args[0]
+        label=tray.safety_detail_item.set_label.call_args.args[0]
         self.assertIn('Temperature: HIGH_RISK',label)
         self.assertIn('Protection: DISARMED',label)
 

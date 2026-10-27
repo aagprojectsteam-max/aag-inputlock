@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update an existing Input Lock installation from this checkout.
+# Update an existing AAG - InputLock installation from this checkout.
 set -Eeuo pipefail
 umask 022
 
