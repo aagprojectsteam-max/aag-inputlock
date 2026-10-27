@@ -19,6 +19,18 @@ sys.path.insert(0, str(SOURCE))
 
 import input_lock_notifier as notifier_module  # noqa: E402
 from input_lock_notifier import TrayNotifier  # noqa: E402
+from gtk_fakes import FakeLabel  # noqa: E402
+
+
+def setUpModule():
+    # The lid confirmation builds real labels; CI has no display (GTK aborts).
+    global _LABEL_GUARD
+    _LABEL_GUARD = mock.patch.object(notifier_module.Gtk, "Label", FakeLabel)
+    _LABEL_GUARD.start()
+
+
+def tearDownModule():
+    _LABEL_GUARD.stop()
 
 
 class DisconnectTests(unittest.TestCase):

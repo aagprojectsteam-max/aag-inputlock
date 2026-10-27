@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import input_lock_notifier as notifier  # noqa: E402
 from input_lock_notifier import PowerSaverGuard, TrayNotifier  # noqa: E402
+from gtk_fakes import FakeLabel  # noqa: E402
 
 
 _DIALOG_GUARD = None
@@ -27,9 +28,14 @@ def setUpModule():
 
     _DIALOG_GUARD = mock.patch.object(notifier.Gtk.Dialog, "run", refuse)
     _DIALOG_GUARD.start()
+    # The lid confirmation builds real labels; CI has no display (GTK aborts).
+    global _LABEL_GUARD
+    _LABEL_GUARD = mock.patch.object(notifier.Gtk, "Label", FakeLabel)
+    _LABEL_GUARD.start()
 
 
 def tearDownModule():
+    _LABEL_GUARD.stop()
     _DIALOG_GUARD.stop()
 
 
