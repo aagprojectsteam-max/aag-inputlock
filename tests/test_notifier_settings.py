@@ -27,7 +27,8 @@ class DisconnectTests(unittest.TestCase):
         tray.connected = True
         tray.current_state = {'lid_switch_devices': 1, 'ignore_lid_close': True, 'lid_policy_healthy': True}
         tray.previous_locked = None
-        for name in ('status_item', 'safety_item', 'toggle_item', 'lid_item', 'indicator', 'shortcut_item', 'config'):
+        for name in ('status_item', 'safety_item', 'safety_detail_item', 'cooling_item', 'toggle_item',
+                     'lid_item', 'indicator', 'shortcut_item', 'config'):
             setattr(tray, name, mock.Mock())
         tray._show_error = mock.Mock(return_value=False)
         # A disconnect while lid-ignore is on now raises a critical
@@ -75,8 +76,9 @@ class DisconnectTests(unittest.TestCase):
 class ContinuousLidDisplayTests(unittest.TestCase):
     def test_checkbox_explicitly_advertises_continuous_mode(self):
         self.assertIn("continuous", notifier_module.CONTINUOUS_LID_LABEL)
-        self.assertIn("safety-monitored", notifier_module.CONTINUOUS_LID_LABEL)
         self.assertNotIn("2–4", notifier_module.CONTINUOUS_LID_LABEL)
+        # Tray menus must stay narrow (2026-10-27).
+        self.assertLessEqual(len(notifier_module.CONTINUOUS_LID_LABEL), 32)
 
     def test_closed_lid_has_no_countdown_in_tray_status(self):
         tray = DisconnectTests().tray()
@@ -88,8 +90,12 @@ class ContinuousLidDisplayTests(unittest.TestCase):
         })
         tray.updating_lid_item = False
         tray._update_menu(frozenset(), "CTRL+ALT+Z")
-        self.assertIn("continuous", tray.safety_item.set_label.call_args.args[0])
-        self.assertNotIn("remaining", tray.safety_item.set_label.call_args.args[0])
+        rows = [item.set_label.call_args.args[0]
+                for item in (tray.safety_item, tray.safety_detail_item, tray.cooling_item)]
+        for row in rows:
+            self.assertNotIn("remaining", row)
+            self.assertLessEqual(len(row), 60, row)
+        tray.cooling_item.show.assert_called()
         tray.lid_item.set_label.assert_called_with(notifier_module.CONTINUOUS_LID_LABEL)
 
 

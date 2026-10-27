@@ -3,5 +3,5 @@
   "name": "Input Lock Cursor Hider",
   "description": "Hides the pointer after the inactivity interval configured by Input Lock.",
   "shell-version": ["50"],
-  "version": 4
+  "version": 5
 }

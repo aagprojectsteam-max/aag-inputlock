@@ -207,7 +207,7 @@ class CatalogueTests(unittest.TestCase):
     def test_status_labels_keep_their_identity_with_the_ignore_lid_close_label(self):
         hebrew = catalogue(HE_PO)
         label = hebrew[(None, "Ignore Lid Close")].msgstr[0]
-        for msgid in ("Ignore Lid Close (continuous, safety-monitored)",
+        for msgid in ("Ignore Lid Close (continuous)",
                       "Ignore Lid Close (service unavailable)", "Ignore Lid Close (safety unavailable)"):
             self.assertTrue(hebrew[(None, msgid)].msgstr[0].startswith(label))
 
@@ -582,9 +582,10 @@ class TrayLanguageTests(unittest.TestCase):
                                          "thermal_protection": "ARMED"}, "ignore_lid_close": True}
         tray.cooling_verified = True
         with HebrewSession():
-            label = tray._safety_label()
-            self.assertTrue(label.startswith("בטיחות המכסה: \u2068ניטור מכסה סגור (רציף;"), label)
-            self.assertIn("טמפרטורה: " + FSI + "תקינה" + PDI, label)
+            head, detail, cooling = tray._safety_lines()
+            self.assertEqual(head, "בטיחות המכסה: " + FSI + "ניטור מכסה סגור" + PDI)
+            self.assertTrue(detail.startswith("טמפרטורה: " + FSI + "תקינה" + PDI), detail)
+            self.assertEqual(cooling, "קירור: פעיל")
             command = notifier.TrayNotifier._notify_command("/usr/bin/notify-send", "T", "B", False, True, True)
             self.assertIn("--app-name=נעילת קלט", command)
             self.assertIn("--action=reenable=הפעלה מחדש…", command)

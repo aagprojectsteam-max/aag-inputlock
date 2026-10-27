@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import signal
 import socket
@@ -25,7 +26,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("AyatanaAppIndicator3", "0.1")
-from gi.repository import AyatanaAppIndicator3, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import AyatanaAppIndicator3, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from input_lock_common import (  # noqa: E402
     MAX_MESSAGE_BYTES,
@@ -78,7 +79,7 @@ CURSOR_EXTENSION_UUID: Final = "input-lock-cursor@aag-projects-team"
 # applies (review U7). Log lines stay English.
 # ---------------------------------------------------------------------------
 LID_LABEL: Final = N_("Ignore Lid Close")
-CONTINUOUS_LID_LABEL: Final = N_("Ignore Lid Close (continuous, safety-monitored)")
+CONTINUOUS_LID_LABEL: Final = N_("Ignore Lid Close (continuous)")
 LID_UNAVAILABLE_LABEL: Final = N_("Ignore Lid Close (service unavailable)")
 LID_SAFETY_UNAVAILABLE_LABEL: Final = N_("Ignore Lid Close (safety unavailable)")
 TRAY_STOP_NOTE: Final = N_(
@@ -561,6 +562,15 @@ class TrayNotifier:
         self.safety_item = Gtk.MenuItem(label=_("Lid safety: connecting…"))
         self.safety_item.set_sensitive(False)
         self.menu.append(self.safety_item)
+        # Narrow tray (2026-10-27): details on their own short lines.
+        self.safety_detail_item = Gtk.MenuItem(label="")
+        self.safety_detail_item.set_sensitive(False)
+        self.safety_detail_item.set_no_show_all(True)
+        self.menu.append(self.safety_detail_item)
+        self.cooling_item = Gtk.MenuItem(label="")
+        self.cooling_item.set_sensitive(False)
+        self.cooling_item.set_no_show_all(True)
+        self.menu.append(self.cooling_item)
 
         self.menu.append(Gtk.SeparatorMenuItem())
         self.toggle_item = Gtk.MenuItem(label=_("Lock Input"))
@@ -1130,32 +1140,57 @@ class TrayNotifier:
                                "Open the lid.")),
             )
 
-    def _safety_label(self) -> str | None:
+    def _safety_lines(self) -> tuple[str, str, str | None] | None:
+        """(state line, temperature/protection line, cooling line or None)."""
         safety = self.current_state.get("safety", {})
         if not isinstance(safety, dict):
             return None
-        label = _(SAFETY_STATE_NAMES.get(safety.get("state"), N_("unavailable")))
+        state = _(SAFETY_STATE_NAMES.get(safety.get("state"), N_("unavailable")))
+        detail = safe_format(N_("Temperature: {thermal} · Protection: {protection}"),
+                             thermal=thermal_text(safety.get("thermal", "UNKNOWN")),
+                             protection=protection_text(safety.get("thermal_protection", "UNKNOWN")))
+        cooling = None
         if self.current_state.get("ignore_lid_close"):
             # U2: claim active cooling only once the hold has been verified.
-            label = safe_format(N_("{state} (continuous; power-saver cooling active)") if self.cooling_verified
-                                else N_("{state} (continuous; power-saver cooling not confirmed)"), state=label)
-        return safe_format(N_("Lid safety: {state} | Temperature: {thermal} | Protection: {protection}"),
-                           state=label,
-                           thermal=thermal_text(safety.get("thermal", "UNKNOWN")),
-                           protection=protection_text(safety.get("thermal_protection", "UNKNOWN")))
+            cooling = _(N_("Cooling: active") if self.cooling_verified else N_("Cooling: not confirmed"))
+        return safe_format(N_("Lid safety: {state}"), state=state), detail, cooling
+
+    def _safety_label(self) -> str | None:
+        lines = self._safety_lines()
+        if lines is None:
+            return None
+        return " | ".join(part for part in lines if part)
+
+    def _apply_safety_lines(self) -> None:
+        lines = self._safety_lines()
+        if lines is None:
+            return
+        head, detail, cooling = lines
+        self.safety_item.set_label(head)
+        for item, text in ((getattr(self, "safety_detail_item", None), detail),
+                           (getattr(self, "cooling_item", None), cooling)):
+            if item is None:
+                continue
+            if text:
+                item.set_label(text)
+                item.show()
+            else:
+                item.hide()
+
+    def _hide_safety_details(self) -> None:
+        for name in ("safety_detail_item", "cooling_item"):
+            item = getattr(self, name, None)
+            if item is not None:
+                item.hide()
 
     def _refresh_safety_label(self) -> None:
         item = getattr(self, "safety_item", None)
         if item is None or not self.connected:
             return
-        label = self._safety_label()
-        if label is not None:
-            item.set_label(label)
+        self._apply_safety_lines()
 
     def _update_menu(self, locked: frozenset[str], hotkey: str) -> None:
-        label = self._safety_label()
-        if label is not None:
-            self.safety_item.set_label(label)
+        self._apply_safety_lines()
         ignore_lid = self.current_state.get("ignore_lid_close") is True
         policy_healthy = self.current_state.get("lid_policy_healthy") is True
         if locked:
@@ -1230,9 +1265,11 @@ class TrayNotifier:
         if detail == "another-tray":
             self.status_item.set_label(_("Input Lock — Another tray is in control"))
             self.safety_item.set_label(_("Lid safety: managed by the other Input Lock tray"))
+            self._hide_safety_details()
         else:
             self.status_item.set_label(_("Input Lock — Service unavailable"))
             self.safety_item.set_label(_("Lid safety: disconnected — status unknown; open the lid"))
+            self._hide_safety_details()
         self.toggle_item.set_sensitive(False)
         self._restore_lid_item()
         return False
@@ -1921,11 +1958,10 @@ class TrayNotifier:
             dialog = Gtk.MessageDialog(
                 flags=Gtk.DialogFlags.MODAL,
                 message_type=Gtk.MessageType.WARNING,
-                buttons=Gtk.ButtonsType.YES_NO,
+                buttons=Gtk.ButtonsType.NONE,
                 text=_(LID_CONFIRM_TITLE),
             )
-            dialog.format_secondary_text(" ".join(
-                (_(LID_CONFIRM_BODY), _(TRAY_STOP_NOTE), _(LID_CONFIRM_WARNING))))
+            self._fill_lid_confirm(dialog)
             dialog.set_keep_above(True)
             response = dialog.run()
             dialog.destroy()
@@ -1953,6 +1989,48 @@ class TrayNotifier:
             name="input-lock-lid-change",
             daemon=True,
         ).start()
+
+    @staticmethod
+    def _wrap_label(text: str, *, markup: bool = False) -> Gtk.Label:
+        label = Gtk.Label()
+        if markup:
+            label.set_markup(text)
+        else:
+            label.set_text(text)
+        label.set_line_wrap(True)
+        label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        # Without an explicit width GTK sizes a long wrapped label as a
+        # narrow, very tall column (2026-10-27 fix).
+        label.set_width_chars(58)
+        label.set_max_width_chars(72)
+        label.set_xalign(0.0)  # start edge; GTK mirrors it for RTL
+        label.set_halign(Gtk.Align.FILL)
+        return label
+
+    @staticmethod
+    def _widen_message_dialog(dialog: Gtk.MessageDialog) -> None:
+        for child in dialog.get_message_area().get_children():
+            if isinstance(child, Gtk.Label):
+                child.set_width_chars(50)
+                child.set_max_width_chars(72)
+
+    def _fill_lid_confirm(self, dialog: Gtk.MessageDialog) -> None:
+        # RLM keeps leading bullets/icons on the right in Hebrew.
+        mark = "\u200f" if i18n.is_rtl() else ""
+        title = GLib.markup_escape_text(_(LID_CONFIRM_TITLE))
+        dialog.set_markup(f"<span weight='bold' size='large'>{title}</span>")
+        area = dialog.get_message_area()
+        area.set_spacing(12)
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", _(LID_CONFIRM_BODY)) if s.strip()]
+        bullets = "\n".join(mark + "•  " + s for s in sentences)
+        area.pack_start(self._wrap_label(bullets), False, False, 0)
+        area.pack_start(self._wrap_label(mark + _(TRAY_STOP_NOTE)), False, False, 0)
+        warning = GLib.markup_escape_text(mark + "⚠  " + _(LID_CONFIRM_WARNING))
+        area.pack_start(self._wrap_label(f"<b>{warning}</b>", markup=True), False, False, 0)
+        area.show_all()
+        dialog.add_button(_("Cancel"), Gtk.ResponseType.NO)
+        dialog.add_button(_("Turn On"), Gtk.ResponseType.YES)
+        dialog.set_default_response(Gtk.ResponseType.NO)
 
     def _enable_job(self, generation: int | None) -> None:
         cooling = self.power_guard
@@ -2238,6 +2316,7 @@ class TrayNotifier:
             text=title,
         )
         dialog.format_secondary_text(body)
+        TrayNotifier._widen_message_dialog(dialog)
         dialog.set_keep_above(True)
         dialog.run()
         dialog.destroy()

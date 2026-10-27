@@ -48,7 +48,8 @@ def bare_tray(**state):
     tray.config = mock.Mock()
     tray.current_state = dict(state)
     tray.previous_locked = None
-    for name in ("status_item", "safety_item", "toggle_item", "lid_item", "indicator", "shortcut_item"):
+    for name in ("status_item", "safety_item", "safety_detail_item", "cooling_item", "toggle_item",
+                 "lid_item", "indicator", "shortcut_item"):
         setattr(tray, name, mock.Mock())
     tray._notify = mock.Mock()
     tray._show_error = mock.Mock(return_value=False)

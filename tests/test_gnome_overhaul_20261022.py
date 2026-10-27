@@ -101,15 +101,24 @@ class ExtensionSourceTests(unittest.TestCase):
         self.assertNotIn("POINTER_POLL_INTERVAL_MS", text)
         self.assertNotIn("get_pointer", text)
         self.assertIn("get_core_idle_monitor", text)
-        self.assertIn("add_idle_watch", text)
         self.assertIn("add_user_active_watch", text)
         disable = text[text.index("    disable() {"):text.index("    _readSettings()")]
         self.assertIn("_stopWatching()", disable)
         self.assertIn("_showCursor()", disable)
         stop = text[text.index("    _stopWatching() {"):text.index("    _hideCursor()")]
-        self.assertIn("remove_watch(this._idleWatchId)", stop)
+        self.assertIn("GLib.Source.remove(this._pollSource)", stop)
         self.assertIn("remove_watch(this._activeWatchId)", stop)
-        self.assertIn("_stopRecheck()", stop)
+
+    def test_idle_time_is_sampled_because_inhibitors_block_idle_watches(self):
+        # Mutter never fires idle watches while a GNOME idle inhibitor exists
+        # (Caffeine, Input Lock's own lid-ignore guard); the pointer then
+        # never hid (2026-10-27).
+        text = self.SOURCE.read_text()
+        self.assertNotIn("add_idle_watch", text)
+        self.assertIn("get_idletime()", text)
+        poll = text[text.index("    _poll() {"):text.index("    _ensureActiveWatch()")]
+        self.assertLess(poll.index("this._timeoutMs"), poll.index("_leaseValid()"))
+        self.assertIn("_showCursor()", poll)
 
 
 if __name__ == "__main__":
