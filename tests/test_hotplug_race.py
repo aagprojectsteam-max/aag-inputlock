@@ -41,6 +41,46 @@ class HotplugRaceTests(unittest.TestCase):
         daemon._handle_udev()  # must not raise
         daemon._rescan_devices.assert_called_once()
 
+    def test_handle_udev_survives_evdev_systemerror(self):
+        # 2026-10-28: input_props() on a vanished node raised SystemError.
+        daemon = InputLockDaemon.__new__(InputLockDaemon)
+        monitor = mock.Mock()
+        monitor.poll.side_effect = [object(), None]
+        daemon.udev_monitor = monitor
+        daemon._rescan_devices = mock.Mock(side_effect=SystemError(
+            "<built-in function ioctl_EVIOCGPROP> returned NULL without setting an exception"))
+        daemon._handle_udev()  # must not raise
+        daemon._rescan_devices.assert_called_once()
+
+    def _attach_with(self, device):
+        daemon = InputLockDaemon.__new__(InputLockDaemon)
+        daemon.devices = {}
+        daemon.selector = mock.Mock()
+        daemon.udev_context = None
+        with mock.patch.object(daemon_module.evdev, "InputDevice", return_value=device, create=True), \
+             mock.patch.object(daemon_module.pyudev.Devices, "from_device_file",
+                               side_effect=OSError("gone"), create=True):
+            daemon._attach_device("/dev/input/event20")
+        return daemon
+
+    def test_attach_skips_and_closes_device_that_vanishes_during_classify(self):
+        device = mock.Mock()
+        device.capabilities.return_value = {}
+        device.input_props.side_effect = SystemError(
+            "<built-in function ioctl_EVIOCGPROP> returned NULL without setting an exception")
+        daemon = self._attach_with(device)  # must not raise
+        self.assertEqual(daemon.devices, {})
+        device.close.assert_called()
+        daemon.selector.register.assert_not_called()
+
+    def test_attach_closes_device_when_open_query_fails_with_oserror(self):
+        device = mock.Mock()
+        device.capabilities.side_effect = OSError(19, "No such device")
+        device.input_props.return_value = []
+        daemon = self._attach_with(device)
+        self.assertEqual(daemon.devices, {})
+        device.close.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()

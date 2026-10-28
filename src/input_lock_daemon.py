@@ -47,6 +47,11 @@ LOG = logging.getLogger("input-lock-daemon")
 PEERCRED_FORMAT: Final = "3i"
 PEERCRED_SIZE: Final = struct.calcsize(PEERCRED_FORMAT)
 LOCKABLE_KINDS: Final = frozenset({"keyboard", "mouse", "touchpad", "touchscreen"})
+# A failed evdev query on a node that just vanished. python-evdev 1.9.x
+# raises OSError for most ioctls, but EVIOCGPROP (input_props()) returns NULL
+# without setting an exception, which surfaces as SystemError; it killed the
+# daemon during a hotplug rescan on 2026-10-28.
+EVDEV_QUERY_ERRORS: Final = (OSError, SystemError)
 BASE_ALL_KINDS: Final = frozenset({"keyboard", "mouse", "touchpad"})
 ALL_INPUT_KINDS: Final = LOCKABLE_KINDS
 RELEASE_WAIT_SECONDS: Final = 2.0
@@ -2233,6 +2238,7 @@ class InputLockDaemon:
         self._write_state()
 
     def _attach_device(self, path: str) -> None:
+        device = None
         try:
             device = evdev.InputDevice(path)
             kinds = self._classify_device(path, device)
@@ -2246,7 +2252,7 @@ class InputLockDaemon:
             )
             try:
                 pressed = set(int(code) for code in device.active_keys())
-            except OSError:
+            except EVDEV_QUERY_ERRORS:
                 pressed = set()
             record = DeviceRecord(
                 path=path,
@@ -2285,8 +2291,13 @@ class InputLockDaemon:
                         path,
                         exc,
                     )
-        except (OSError, PermissionError) as exc:
+        except EVDEV_QUERY_ERRORS as exc:
             LOG.warning("Cannot open input device %s: %s", path, exc)
+            if device is not None and path not in self.devices:
+                try:
+                    device.close()
+                except Exception:
+                    pass
 
     def _detach_device(self, path: str) -> None:
         record = self.devices.pop(path, None)
@@ -2331,7 +2342,7 @@ class InputLockDaemon:
         if saw_event:
             try:
                 self._rescan_devices()
-            except OSError:
+            except EVDEV_QUERY_ERRORS:
                 LOG.warning("Transient error during device rescan; will retry on next udev event", exc_info=True)
 
     def _read_device(self, path: str) -> None:
@@ -2359,7 +2370,7 @@ class InputLockDaemon:
                     record.synchronizing = False
                     try:
                         record.pressed = set(int(code) for code in record.device.active_keys())
-                    except OSError:
+                    except EVDEV_QUERY_ERRORS:
                         record.pressed.clear()
                     for code in record.pressed & self.allowed_key_codes:
                         from types import SimpleNamespace
@@ -2369,7 +2380,7 @@ class InputLockDaemon:
                         # Unreadable is treated as telemetry loss (fail safe).
                         try:
                             closed = read_lid_switch(record.device)
-                        except (OSError, AttributeError, TypeError, ValueError):
+                        except (*EVDEV_QUERY_ERRORS, AttributeError, TypeError, ValueError):
                             if self.ignore_lid_close:
                                 self._start_protection("LID_TELEMETRY_LOST")
                         else:
@@ -2449,7 +2460,7 @@ class InputLockDaemon:
             absolute = set(capabilities.get(ecodes.EV_ABS, []))
             switches = set(capabilities.get(ecodes.EV_SW, []))
             input_props = set(device.input_props())
-        except OSError:
+        except EVDEV_QUERY_ERRORS:
             return frozenset(kinds)
 
         letter_codes = {_key_code(f"KEY_{letter}") for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
@@ -2595,7 +2606,7 @@ class InputLockDaemon:
                     record.pressed = set(
                         int(code) for code in record.device.active_keys()
                     )
-                except OSError as exc:
+                except EVDEV_QUERY_ERRORS as exc:
                     LOG.warning("Could not refresh key state for %s: %s", record.path, exc)
         now = time.monotonic()
         debounce = self.config.debounce_ms / 1000.0
@@ -2712,7 +2723,7 @@ class InputLockDaemon:
                     record.pressed = set(
                         int(code) for code in record.device.active_keys()
                     )
-                except OSError as exc:
+                except EVDEV_QUERY_ERRORS as exc:
                     raise TransitionError(
                         f"cannot verify released-key state for {record.path}: {exc}"
                     ) from exc
