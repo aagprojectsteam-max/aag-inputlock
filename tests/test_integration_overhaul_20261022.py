@@ -678,6 +678,22 @@ class InstallPayloadTests(unittest.TestCase):
             self.assertIn(f'"$STAGE/gnome-extension/{path.name}"', self.install)
             self.assertIn(f'"$PROJECT_DIR/gnome-extension/{path.name}"', self.install)
 
+    def test_clean_maximize_is_staged_installed_and_never_switched_by_the_installer(self):
+        uuid = "aag-clean-maximize-v6@aag.local"
+        folder = REPO / "gnome-extension-maximize"
+        self.assertEqual(json.loads((folder / "metadata.json").read_text())["uuid"], uuid)
+        for path in sorted(p for p in folder.rglob("*") if p.is_file()):
+            name = path.relative_to(folder).as_posix()
+            self.assertIn(f"gnome-extension-maximize/{name}", self.fixed)
+            self.assertIn(f'"$STAGE/gnome-extension-maximize/{name}"', self.install)
+            self.assertIn(f'"$PROJECT_DIR/gnome-extension-maximize/{name}"', self.install)
+        self.assertEqual(self.install.count(f"/usr/share/gnome-shell/extensions/{uuid}\n"), 2)
+        self.assertNotIn(f"enable {uuid}", self.install)
+        self.assertNotIn(f"disable {uuid}", self.install)
+        uninstall = (REPO / "uninstall.sh").read_text()
+        self.assertIn(f"MAXIMIZE_EXTENSION_UUID='{uuid}'", uninstall)
+        self.assertEqual(uninstall.count('extensions/$MAXIMIZE_EXTENSION_UUID"'), 2)
+
     def test_every_referenced_library_path_is_installed_and_never_pruned(self):
         referenced = set()
         files = [*(REPO / "systemd").iterdir(), REPO / "integration" / "input-lock-system-sleep",

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema
+      id="org.gnome.shell.extensions.aag-clean-maximize"
+      path="/org/gnome/shell/extensions/aag-clean-maximize/">
+
+    <key name="maximize-clean" type="as">
+      <default>['&lt;Super&gt;Up']</default>
+      <summary>Clean maximize</summary>
+    </key>
+
+    <key name="restore-clean" type="as">
+      <default>['&lt;Super&gt;Down']</default>
+      <summary>Restore from clean maximize</summary>
+    </key>
+  </schema>
+</schemalist>

@@ -72,6 +72,9 @@ IDLE_GRACE_SECONDS: Final = 60
 SECOND_INSTANCE_RETRY_SECONDS: Final = 300.0
 DISCONNECTED_REMINDER_SECONDS: Final = 600.0
 CURSOR_EXTENSION_UUID: Final = "input-lock-cursor@aag-projects-team"
+# Bundled AAG Clean Maximize. The UUID is the one GNOME Shell already knows, so
+# the Settings checkbox takes effect at once, without a new login.
+MAXIMIZE_EXTENSION_UUID: Final = "aag-clean-maximize-v6@aag.local"
 
 # ---------------------------------------------------------------------------
 # User-facing strings. They are English gettext msgids, marked with N_() and
@@ -176,8 +179,8 @@ class SerialWorker:
                 LOG.exception("Background lease task failed")
 
 
-def cursor_extension_enabled(settings=None) -> bool | None:
-    """Whether GNOME Shell is configured to run the cursor-hider extension."""
+def extension_enabled(uuid: str, settings=None) -> bool | None:
+    """Whether GNOME Shell is configured to run an extension; None if unknown."""
     try:
         if settings is None:
             source = Gio.SettingsSchemaSource.get_default()
@@ -186,10 +189,20 @@ def cursor_extension_enabled(settings=None) -> bool | None:
             settings = Gio.Settings.new("org.gnome.shell")
         if settings.get_boolean("disable-user-extensions"):
             return False
-        return (CURSOR_EXTENSION_UUID in settings.get_strv("enabled-extensions")
-                and CURSOR_EXTENSION_UUID not in settings.get_strv("disabled-extensions"))
+        return (uuid in settings.get_strv("enabled-extensions")
+                and uuid not in settings.get_strv("disabled-extensions"))
     except Exception:
         return None
+
+
+def cursor_extension_enabled(settings=None) -> bool | None:
+    """Whether GNOME Shell is configured to run the cursor-hider extension."""
+    return extension_enabled(CURSOR_EXTENSION_UUID, settings)
+
+
+def maximize_extension_enabled(settings=None) -> bool | None:
+    """Whether GNOME Shell is configured to run the bundled Clean Maximize."""
+    return extension_enabled(MAXIMIZE_EXTENSION_UUID, settings)
 
 
 class GnomeIdleGuard:
@@ -1545,6 +1558,15 @@ class TrayNotifier:
         hide_cursor.connect("toggled", update_cursor_sensitivity)
         update_cursor_sensitivity()
 
+        # The checkbox shows GNOME's real state, so it stays right when the
+        # extension is switched elsewhere; None means it cannot be read.
+        maximize_state = maximize_extension_enabled()
+        maximize_windows = Gtk.CheckButton(
+            label=_("Allow maximizing windows to full screen with Super+Up"))
+        maximize_windows.set_active(maximize_state is True)
+        maximize_windows.set_sensitive(maximize_state is not None)
+        box.add(maximize_windows)
+
         box.add(Gtk.Separator())
         language_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         language_label = Gtk.Label(label=_("Language:"))
@@ -1635,6 +1657,9 @@ class TrayNotifier:
                     max(1, cursor_timeout),
                     allowed_keys,
                     chosen_language if chosen_language != initial_language else None,
+                    (maximize_windows.get_active()
+                     if maximize_state is not None
+                     and maximize_windows.get_active() != maximize_state else None),
                 ),
                 name="input-lock-settings",
                 daemon=True,
@@ -1651,6 +1676,7 @@ class TrayNotifier:
         hide_cursor_seconds: int,
         allowed_keys: list[str],
         ui_language: str | None = None,
+        maximize_enabled: bool | None = None,
     ) -> None:
         try:
             response_ok(
@@ -1683,6 +1709,10 @@ class TrayNotifier:
                     timeout=5.0,
                 )
             )
+            if maximize_enabled is not None:
+                ok, message = self._set_maximize_extension(maximize_enabled)
+                if not ok:
+                    raise RuntimeError(message)
         except Exception as exc:
             GLib.idle_add(self._show_error, _("Settings Failed"), daemon_text(str(exc)))
             return
@@ -1831,6 +1861,25 @@ class TrayNotifier:
             return False, _("{detail} If GNOME does not know the extension yet, log out and "
                             "back in once, then try again.").format(detail=detail)
         return True, _("Cursor hiding extension: enabled.")
+
+    @staticmethod
+    def _set_maximize_extension(enabled: bool) -> tuple[bool, str]:
+        """Enable or disable Clean Maximize (blocking; call from a worker)."""
+        tool = shutil.which("gnome-extensions")
+        if not tool:
+            return False, _("The gnome-extensions command is not installed.")
+        try:
+            result = subprocess.run(
+                [tool, "enable" if enabled else "disable", MAXIMIZE_EXTENSION_UUID],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, str(exc)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip() or _("gnome-extensions failed")
+            return False, _("{detail} If GNOME does not know the extension yet, log out and "
+                            "back in once, then try again.").format(detail=detail)
+        return True, ""
 
     def _enable_cursor_extension_worker(self, label: Gtk.Label, button: Gtk.Button) -> None:
         ok, message = self._enable_cursor_extension()

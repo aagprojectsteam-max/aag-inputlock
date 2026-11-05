@@ -1,0 +1,14 @@
+{
+  "uuid": "aag-clean-maximize-v6@aag.local",
+  "name": "AAG Clean Maximize (Umidot compatible)",
+  "description": "Clean maximize for all apps with native fullscreen support for AAG - Zmanim Umidot",
+  "version": 6,
+  "shell-version": [
+    "50"
+  ],
+  "session-modes": [
+    "user",
+    "unlock-dialog"
+  ],
+  "settings-schema": "org.gnome.shell.extensions.aag-clean-maximize"
+}

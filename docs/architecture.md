@@ -63,6 +63,10 @@ The grabbed keyboard still delivers events to the daemon. After the unlock chord
 
 Closing the descriptor also releases the grab. This is the last-resort property used by service stop, process crash, SIGKILL, and reboot.
 
+## Window maximize (Clean Maximize)
+
+The optional Clean Maximize GNOME extension (`aag-clean-maximize-v6@aag.local`, source in `gnome-extension-maximize/`) gives Super+Up a clean full-screen window and Super+Down a restore. It is independent of input locking and of the lid policy. The Settings checkbox runs `gnome-extensions enable` or `disable` and always shows GNOME's real state; no separate setting is stored. The installer writes the files but never enables or disables the extension, so a fresh installation starts with it off and an update keeps the user's choice. New extension code loads at the next login. The extension does not change GNOME's own `maximize` shortcut, so Super+Up does what GNOME is configured to do while the checkbox is off.
+
 ## Cursor hiding
 
 Cursor hiding is deliberately separate from input locking. It runs inside GNOME Shell because Wayland does not allow an ordinary background client to change the global compositor cursor. Settings are written atomically to `~/.config/input-lock/cursor-settings.json`; the extension monitors that directory so atomic file replacement is detected. The extension never grabs input and cannot prevent the emergency unlock shortcuts.

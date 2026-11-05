@@ -54,6 +54,9 @@ PAYLOAD_FIXED=(
     assets/aag-projects-team.png
     gnome-extension/metadata.json
     gnome-extension/extension.js
+    gnome-extension-maximize/metadata.json
+    gnome-extension-maximize/extension.js
+    gnome-extension-maximize/schemas/org.gnome.shell.extensions.aag-clean-maximize.gschema.xml
     systemd/input-lock.service
     systemd/input-lock-protect.service
     systemd/input-lock-failsafe.service
@@ -117,6 +120,7 @@ BACKUP_ITEMS=(
     /usr/share/icons/hicolor/scalable/status/input-lock-unlocked-lid-ignored.svg
     /usr/share/applications/input-lock.desktop
     /usr/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team
+    /usr/share/gnome-shell/extensions/aag-clean-maximize-v6@aag.local
     /usr/share/locale/he/LC_MESSAGES/input-lock.mo
     /etc/UPower/UPower.conf.d/99-zzzz-input-lock-no-auto-sleep.conf
     /etc/UPower/UPower.conf.d/.input-lock-restore-pending.json
@@ -144,6 +148,7 @@ RESTORE_ITEMS=(
     /usr/share/icons/hicolor/scalable/status/input-lock-unlocked-lid-ignored.svg
     /usr/share/applications/input-lock.desktop
     /usr/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team
+    /usr/share/gnome-shell/extensions/aag-clean-maximize-v6@aag.local
     /usr/share/locale/he/LC_MESSAGES/input-lock.mo
 )
 
@@ -399,6 +404,10 @@ PY
     sh -n "$STAGE/integration/input-lock-system-sleep" || fail 'the system-sleep hook has a shell syntax error'
     root_python -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' \
         "$STAGE/gnome-extension/metadata.json" || fail 'gnome-extension/metadata.json is not valid JSON'
+    root_python -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' \
+        "$STAGE/gnome-extension-maximize/metadata.json" || fail 'gnome-extension-maximize/metadata.json is not valid JSON'
+    glib-compile-schemas --dry-run --strict "$STAGE/gnome-extension-maximize/schemas" \
+        || fail 'the Clean Maximize settings schema is not valid'
 
     APP_VERSION=$(tr -d '\r\n' < "$STAGE/VERSION")
     [[ -n "$APP_VERSION" ]] || fail 'VERSION is empty'
@@ -458,6 +467,7 @@ install_packages() {
         pkexec
         evtest
         libinput-tools
+        libglib2.0-bin
     )
     local missing=() package status
     for package in "${packages[@]}"; do
@@ -503,6 +513,17 @@ install_files() {
         "$STAGE/gnome-extension/metadata.json" \
         "$STAGE/gnome-extension/extension.js" \
         /usr/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team/
+    # Clean Maximize is installed but never enabled here: Settings owns that
+    # choice, and the running copy loads the new files at the next login.
+    install -d -m 0755 /usr/share/gnome-shell/extensions/aag-clean-maximize-v6@aag.local/schemas
+    install -m 0644 \
+        "$STAGE/gnome-extension-maximize/metadata.json" \
+        "$STAGE/gnome-extension-maximize/extension.js" \
+        /usr/share/gnome-shell/extensions/aag-clean-maximize-v6@aag.local/
+    install -m 0644 \
+        "$STAGE/gnome-extension-maximize/schemas/org.gnome.shell.extensions.aag-clean-maximize.gschema.xml" \
+        /usr/share/gnome-shell/extensions/aag-clean-maximize-v6@aag.local/schemas/
+    glib-compile-schemas /usr/share/gnome-shell/extensions/aag-clean-maximize-v6@aag.local/schemas
     install -d -m 0755 /usr/share/icons/hicolor/scalable/status
     install -m 0644 \
         "$STAGE/assets/input-lock-locked.svg" \
@@ -780,6 +801,17 @@ main() {
         "$PROJECT_DIR/gnome-extension/metadata.json" \
         "$PROJECT_DIR/gnome-extension/extension.js" \
         "$TARGET_HOME/.local/share/gnome-shell/extensions/input-lock-cursor@aag-projects-team/"
+    run_as_target install -d -m 0755 \
+        "$TARGET_HOME/.local/share/gnome-shell/extensions/aag-clean-maximize-v6@aag.local/schemas"
+    run_as_target install -m 0644 \
+        "$PROJECT_DIR/gnome-extension-maximize/metadata.json" \
+        "$PROJECT_DIR/gnome-extension-maximize/extension.js" \
+        "$TARGET_HOME/.local/share/gnome-shell/extensions/aag-clean-maximize-v6@aag.local/"
+    run_as_target install -m 0644 \
+        "$PROJECT_DIR/gnome-extension-maximize/schemas/org.gnome.shell.extensions.aag-clean-maximize.gschema.xml" \
+        "$TARGET_HOME/.local/share/gnome-shell/extensions/aag-clean-maximize-v6@aag.local/schemas/"
+    run_as_target glib-compile-schemas \
+        "$TARGET_HOME/.local/share/gnome-shell/extensions/aag-clean-maximize-v6@aag.local/schemas"
 
     systemctl daemon-reload
     run_as_target python3 -c 'from pathlib import Path; import os; p=Path.home()/".config/input-lock/cursor-settings.json"; p.parent.mkdir(parents=True, exist_ok=True, mode=0o700); fd=None if p.exists() else os.open(p, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600); fd is None or (os.write(fd, b"{\"enabled\": false, \"seconds\": 60}\n"), os.close(fd))'

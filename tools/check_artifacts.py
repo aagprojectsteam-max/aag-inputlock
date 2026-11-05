@@ -27,6 +27,7 @@ with tarfile.open(sources[0]) as archive:
     for name in ('VERSION','install.sh','uninstall.sh','config/input-lock.conf',
                  'systemd/input-lock.service','systemd/input-lock-protect.service',
                  'src/input-lock-daemon','src/input-lock-power-helper','gnome-extension/extension.js',
+                 'gnome-extension-maximize/extension.js',
                  'src/input_lock_i18n.py','src/input_lock_messages.py',
                  'po/he.po','po/input-lock.pot','tools/po_compile.py',
                  'windows/common.ps1','windows/install.ps1','tools/run_tests.py',

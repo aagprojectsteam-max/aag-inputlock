@@ -126,6 +126,7 @@ gir1.2-ayatanaappindicator3-0.1
 libnotify-bin
 evtest
 libinput-tools
+libglib2.0-bin
 ```
 
 לפני ההתקנה מומלץ לוודא:
@@ -154,6 +155,10 @@ input-lock/
 ├── gnome-extension/
 │   ├── extension.js
 │   └── metadata.json
+├── gnome-extension-maximize/
+│   ├── extension.js
+│   ├── metadata.json
+│   └── schemas/
 ├── src/
 │   ├── input-lock
 │   ├── input-lock-daemon

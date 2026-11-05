@@ -1547,6 +1547,10 @@ msgstr "הסתרת הסמן לאחר"
 msgid "seconds"
 msgstr "שניות"
 
+#: src/input_lock_notifier.py:1565
+msgid "Allow maximizing windows to full screen with Super+Up"
+msgstr "אפשר הגדלת חלונות למסך מלא עם ⁨Super+Up⁩"
+
 #: src/input_lock_notifier.py:1550
 msgid "Language:"
 msgstr "שפה:"
