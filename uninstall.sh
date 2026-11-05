@@ -9,6 +9,7 @@ TARGET_USER=${SUDO_USER:-}
 TARGET_UID=''
 TARGET_HOME=''
 EXTENSION_UUID='input-lock-cursor@aag-projects-team'
+MAXIMIZE_EXTENSION_UUID='aag-clean-maximize-v6@aag.local'
 ARCHIVE_DIR="/var/backups/input-lock/uninstall-$(date -u +%Y%m%dT%H%M%SZ)"
 
 log() {
@@ -137,6 +138,7 @@ main() {
     # User session: tray service, GNOME fallback shortcuts, cursor extension.
     if [[ -S "/run/user/$TARGET_UID/bus" ]]; then
         run_as_target gnome-extensions disable "$EXTENSION_UUID" >/dev/null 2>&1 || true
+        run_as_target gnome-extensions disable "$MAXIMIZE_EXTENSION_UUID" >/dev/null 2>&1 || true
         run_as_target systemctl --user disable --now input-lock-notifier.service >/dev/null 2>&1 || true
     fi
     if [[ -f /usr/lib/input-lock/input_lock_gnome.py ]]; then
@@ -150,17 +152,19 @@ main() {
 import sys
 from gi.repository import Gio
 settings = Gio.Settings.new("org.gnome.shell")
-uuid = sys.argv[1]
 for key in ("enabled-extensions", "disabled-extensions"):
     values = list(settings.get_strv(key))
-    if uuid in values:
-        settings.set_strv(key, [value for value in values if value != uuid])
+    kept = [value for value in values if value not in sys.argv[1:]]
+    if kept != values:
+        settings.set_strv(key, kept)
 Gio.Settings.sync()
-' "$EXTENSION_UUID" || warn "could not remove $EXTENSION_UUID from enabled-extensions"
+' "$EXTENSION_UUID" "$MAXIMIZE_EXTENSION_UUID" \
+        || warn "could not remove the extensions from enabled-extensions"
 
     if [[ -n "$TARGET_HOME" ]]; then
         run_as_target rm -f -- "$TARGET_HOME/.config/systemd/user/graphical-session.target.wants/input-lock-notifier.service" || true
         run_as_target rm -rf -- "$TARGET_HOME/.local/share/gnome-shell/extensions/$EXTENSION_UUID" || true
+        run_as_target rm -rf -- "$TARGET_HOME/.local/share/gnome-shell/extensions/$MAXIMIZE_EXTENSION_UUID" || true
     fi
 
     rm -f -- \
@@ -181,6 +185,7 @@ Gio.Settings.sync()
         /usr/share/icons/hicolor/scalable/status/input-lock-unlocked-lid-ignored.svg \
         /etc/UPower/UPower.conf.d/99-zzzz-input-lock-no-auto-sleep.conf
     rm -rf -- "/usr/share/gnome-shell/extensions/$EXTENSION_UUID"
+    rm -rf -- "/usr/share/gnome-shell/extensions/$MAXIMIZE_EXTENSION_UUID"
     # Translation catalogues of the input-lock text domain, every language.
     rm -f -- /usr/share/locale/*/LC_MESSAGES/input-lock.mo
     rm -rf -- /usr/lib/input-lock /etc/input-lock /usr/share/doc/input-lock

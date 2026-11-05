@@ -612,6 +612,41 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0],
                          ["/usr/bin/gnome-extensions", "enable", notifier.CURSOR_EXTENSION_UUID])
 
+    def test_maximize_extension_status_follows_gnome(self):
+        uuid = notifier.MAXIMIZE_EXTENSION_UUID
+        fake = mock.Mock()
+        fake.get_boolean.return_value = False
+        fake.get_strv.side_effect = lambda key: [uuid] if key == "enabled-extensions" else []
+        self.assertTrue(notifier.maximize_extension_enabled(fake))
+        self.assertFalse(notifier.cursor_extension_enabled(fake))
+        fake.get_strv.side_effect = lambda key: []
+        self.assertFalse(notifier.maximize_extension_enabled(fake))
+        broken = mock.Mock()
+        broken.get_boolean.side_effect = RuntimeError("no schema")
+        self.assertIsNone(notifier.maximize_extension_enabled(broken))
+
+    def test_set_maximize_extension_switches_it_both_ways(self):
+        result = mock.Mock(returncode=0, stdout="", stderr="")
+        for enabled, verb in ((True, "enable"), (False, "disable")):
+            with (mock.patch.object(notifier.shutil, "which", return_value="/usr/bin/gnome-extensions"),
+                  mock.patch.object(notifier.subprocess, "run", return_value=result) as run):
+                ok, _message = TrayNotifier._set_maximize_extension(enabled)
+            self.assertTrue(ok)
+            self.assertEqual(run.call_args.args[0],
+                             ["/usr/bin/gnome-extensions", verb, notifier.MAXIMIZE_EXTENSION_UUID])
+
+    def test_set_maximize_extension_reports_failure(self):
+        with mock.patch.object(notifier.shutil, "which", return_value=None):
+            ok, message = TrayNotifier._set_maximize_extension(True)
+        self.assertFalse(ok)
+        self.assertTrue(message)
+        failed = mock.Mock(returncode=1, stdout="", stderr="Extension does not exist")
+        with (mock.patch.object(notifier.shutil, "which", return_value="/usr/bin/gnome-extensions"),
+              mock.patch.object(notifier.subprocess, "run", return_value=failed)):
+            ok, message = TrayNotifier._set_maximize_extension(True)
+        self.assertFalse(ok)
+        self.assertIn("Extension does not exist", message)
+
     def test_autostart_state_is_applied_without_retoggling(self):
         tray = bare_tray()
         tray.autostart_item = mock.Mock()
