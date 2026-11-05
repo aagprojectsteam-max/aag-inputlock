@@ -8,6 +8,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const TOLERANCE = 3;
 const FIT_RETRIES = 6;
+const NATIVE_FALLBACK_SETTLE_MS = 120;
 const WATCHDOG_INTERVAL_MS = 1000;
 const RELEASE_GRACE_MS = 250;
 const SYSTEM_REPAIR_DELAY_MS = 400;
@@ -46,6 +47,7 @@ export default class AAGCleanMaximizeExtension extends Extension {
         if (!resumeLockState) {
             this._byWorkspace = new Map();
             this._byWindow = new Map();
+            this._nativeFallback = new Map();
         }
         this._signals = [];
         this._timers = new Set();
@@ -314,6 +316,7 @@ export default class AAGCleanMaximizeExtension extends Extension {
         this._lockSuspended = false;
         for (const entry of [...this._byWindow.values()])
             this._dropEntry(entry, true);
+        this._releaseNativeFallbacks();
 
         this._cancelAllTimers();
         this._byWorkspace.clear();
@@ -427,6 +430,7 @@ export default class AAGCleanMaximizeExtension extends Extension {
             try {
                 window.unmake_fullscreen();
                 this._invalidate('aag-zmanim-native-unfullscreen', true, true);
+                this._restoreAfterNativeFallback(window);
             } catch (error) {
                 console.error('[AAG Clean Maximize] AAG Zmanim native restore failed:', error);
             }
@@ -492,7 +496,9 @@ export default class AAGCleanMaximizeExtension extends Extension {
     }
 
     _usesNativeFullscreen(window) {
-        return this._isAAGZmanim(window) || this._isGenoPro(window);
+        return this._isAAGZmanim(window) ||
+            this._isGenoPro(window) ||
+            this._nativeFallback.has(window);
     }
 
     _isAAGZmanim(window) {
@@ -660,13 +666,113 @@ export default class AAGCleanMaximizeExtension extends Extension {
             } else if (attempt + 1 < FIT_RETRIES) {
                 this._fit(entry, attempt + 1, generation);
             } else {
-                console.warn(
-                    '[AAG Clean Maximize] Application refused full size.'
-                );
+                this._logRefusedFit(entry);
                 entry.transitioning = false;
-                this._dropEntry(entry, true);
+                this._fallBackToNativeFullscreen(entry);
             }
         });
+    }
+
+    _logRefusedFit(entry) {
+        try {
+            const frame = entry.window.get_frame_rect();
+            const target = entry.targetRect;
+            console.warn(
+                '[AAG Clean Maximize] Application refused full size: ' +
+                `class=${entry.window.get_wm_class()} ` +
+                `frame=${frame.width}x${frame.height}+${frame.x}+${frame.y} ` +
+                `target=${target.width}x${target.height}+${target.x}+${target.y}`
+            );
+        } catch {
+            console.warn('[AAG Clean Maximize] Application refused full size.');
+        }
+    }
+
+    /*
+     * A client that cannot take the physical monitor size while the panel
+     * is present (the same limit documented for AAG Zmanim and GenoPro)
+     * used to be restored here, so the window grew and shrank straight
+     * back. Native fullscreen avoids that workarea dependency. The window
+     * stays on the native path from now on, and the dropped entry keeps
+     * the geometry Super+Down must return to: Mutter itself would only
+     * return to the almost-full frame this attempt left behind.
+     */
+    _fallBackToNativeFullscreen(entry) {
+        const window = entry.window;
+        this._dropEntry(entry, false);
+
+        try {
+            const unmanagedId = window.connect('unmanaged', () => {
+                this._nativeFallback.delete(window);
+            });
+            this._nativeFallback.set(window, {entry, unmanagedId});
+            window.make_fullscreen();
+            this._invalidate('native-fullscreen-fallback', true, true);
+        } catch (error) {
+            console.error(`[AAG Clean Maximize] Native fallback: ${error}`);
+            this._forgetNativeFallback(window);
+            this._restoreGeometry(entry);
+            return;
+        }
+
+        this._timer(NATIVE_FALLBACK_SETTLE_MS, () => {
+            if (
+                this._nativeFallback.get(window)?.entry !== entry ||
+                window.is_fullscreen()
+            ) {
+                return;
+            }
+
+            console.warn('[AAG Clean Maximize] Native fallback was refused.');
+            this._forgetNativeFallback(window);
+            this._restoreGeometry(entry);
+        });
+    }
+
+    _restoreAfterNativeFallback(window) {
+        const record = this._nativeFallback.get(window);
+        const entry = record?.entry;
+        if (!entry)
+            return;
+
+        record.entry = null;
+        this._timer(NATIVE_FALLBACK_SETTLE_MS, () => {
+            if (
+                this._nativeFallback.has(window) &&
+                !this._byWindow.has(window) &&
+                !window.is_fullscreen()
+            ) {
+                this._restoreGeometry(entry);
+            }
+        });
+    }
+
+    _forgetNativeFallback(window) {
+        const record = this._nativeFallback.get(window);
+        if (!record)
+            return;
+
+        this._nativeFallback.delete(window);
+        try {
+            window.disconnect(record.unmanagedId);
+        } catch {
+            // The window may already be closing.
+        }
+    }
+
+    _releaseNativeFallbacks() {
+        for (const [window, record] of [...this._nativeFallback]) {
+            try {
+                if (window.is_fullscreen()) {
+                    window.unmake_fullscreen();
+                    if (record.entry)
+                        this._restoreGeometry(record.entry);
+                }
+            } catch (error) {
+                console.warn(`[AAG Clean Maximize] Native release: ${error}`);
+            }
+            this._forgetNativeFallback(window);
+        }
     }
 
     _geometryChanged(entry) {

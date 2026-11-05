@@ -694,6 +694,15 @@ class InstallPayloadTests(unittest.TestCase):
         self.assertIn(f"MAXIMIZE_EXTENSION_UUID='{uuid}'", uninstall)
         self.assertEqual(uninstall.count('extensions/$MAXIMIZE_EXTENSION_UUID"'), 2)
 
+    def test_clean_maximize_keeps_a_refused_window_full_screen(self):
+        source = (REPO / "gnome-extension-maximize" / "extension.js").read_text()
+        give_up = source[source.index("attempt + 1 < FIT_RETRIES"):source.index("_logRefusedFit(entry) {")]
+        self.assertIn("this._fallBackToNativeFullscreen(entry);", give_up)
+        self.assertNotIn("this._dropEntry(entry, true);", give_up)
+        self.assertIn("this._nativeFallback.has(window)", source)
+        self.assertIn("this._restoreAfterNativeFallback(window);", source)
+        self.assertIn("this._releaseNativeFallbacks();", source)
+
     def test_every_referenced_library_path_is_installed_and_never_pruned(self):
         referenced = set()
         files = [*(REPO / "systemd").iterdir(), REPO / "integration" / "input-lock-system-sleep",
